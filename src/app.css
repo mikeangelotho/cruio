@@ -1,0 +1,8 @@
+@import "tailwindcss";
+
+/* Cruio is light-mode by design (whitepaper V1). */
+body {
+  background: #fffefe;
+  color: #262626;
+  overscroll-behavior: none;
+}
