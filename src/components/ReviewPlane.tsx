@@ -27,6 +27,10 @@ export function ReviewPlane(props: {
   annotations: Annotation[];
   selectedId: string | null;
   onSelectPin: (id: string) => void;
+  /** false for guests: they wait for a version instead of uploading one */
+  canUpload: boolean;
+  /** ring highlight while comparing versions */
+  highlight?: boolean;
 }) {
   return (
     <div
@@ -36,6 +40,10 @@ export function ReviewPlane(props: {
         top: `${props.rect.y}px`,
         width: `${props.rect.w}px`,
         height: `${props.rect.h}px`,
+        outline: props.highlight
+          ? `${3 / props.zoom}px solid rgb(56 189 248)`
+          : undefined,
+        "outline-offset": props.highlight ? `${8 / props.zoom}px` : undefined,
       }}
     >
       <Show
@@ -45,8 +53,15 @@ export function ReviewPlane(props: {
             data-plane="drop"
             class="w-full h-full rounded-sm border-2 border-dashed border-neutral-300 bg-white/60 flex flex-col items-center justify-center gap-3 text-neutral-400"
           >
-            <Icon icon="iconoir:media-image-plus" width="48" />
-            <span class="text-lg">Drop an image or press U to upload the first version</span>
+            <Icon
+              icon={props.canUpload ? "iconoir:media-image-plus" : "iconoir:clock"}
+              width="48"
+            />
+            <span class="text-lg">
+              {props.canUpload
+                ? "Drop an image or press U to upload the first version"
+                : "Waiting for the first version"}
+            </span>
           </div>
         }
       >

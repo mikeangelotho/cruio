@@ -1,7 +1,7 @@
 import { For, Show, createEffect } from "solid-js";
 import { Icon } from "@iconify-icon/solid";
 import type { Annotation, AnnotationStatus } from "../lib/types";
-import { author, setAuthor } from "../lib/author";
+import { Avatar } from "./Avatar";
 
 function timeAgo(ts: number) {
   const s = Math.floor((Date.now() - ts) / 1000);
@@ -30,7 +30,6 @@ export function ThreadSidebar(props: {
   function submit(a: Annotation, el: HTMLTextAreaElement) {
     const body = el.value.trim();
     if (!body) return;
-    if (!author()) return; // name input shown instead
     props.onComment(a.id, body);
     el.value = "";
   }
@@ -87,9 +86,12 @@ export function ThreadSidebar(props: {
                         when={a.comments.length > 0}
                         fallback={<p class="text-xs text-neutral-400 italic">New thread…</p>}
                       >
-                        <p class="text-xs text-neutral-700 truncate">
-                          <span class="font-medium">{a.comments[0].authorName}</span>{" "}
-                          {a.comments[0].body}
+                        <p class="text-xs text-neutral-700 truncate flex items-center gap-1.5">
+                          <Avatar name={a.comments[0].authorName} size={16} />
+                          <span class="truncate">
+                            <span class="font-medium">{a.comments[0].authorName}</span>{" "}
+                            {a.comments[0].body}
+                          </span>
                         </p>
                       </Show>
                       <p class="text-[10px] text-neutral-400 mt-0.5">
@@ -111,36 +113,18 @@ export function ThreadSidebar(props: {
                         <div class="ml-7 mb-2 space-y-1.5">
                           <For each={a.comments.slice(1)}>
                             {c => (
-                              <p class="text-xs text-neutral-700">
-                                <span class="font-medium">{c.authorName}</span> {c.body}
+                              <p class="text-xs text-neutral-700 flex items-start gap-1.5">
+                                <Avatar name={c.authorName} size={16} />
+                                <span>
+                                  <span class="font-medium">{c.authorName}</span> {c.body}
+                                </span>
                               </p>
                             )}
                           </For>
                         </div>
                       </Show>
 
-                      <Show
-                        when={author()}
-                        fallback={
-                          <div class="ml-7 mb-2">
-                            <label class="text-[10px] text-neutral-500 block mb-1">
-                              Your name (shown on comments)
-                            </label>
-                            <input
-                              class="w-full text-xs border border-neutral-200 rounded px-2 py-1.5 outline-none focus:border-sky-400"
-                              placeholder="e.g. Mike"
-                              onKeyDown={e => {
-                                e.stopPropagation();
-                                if (e.key === "Enter") {
-                                  const v = (e.currentTarget as HTMLInputElement).value.trim();
-                                  if (v) setAuthor(v);
-                                }
-                              }}
-                            />
-                          </div>
-                        }
-                      >
-                        <div class="ml-7 flex flex-col gap-1.5">
+                      <div class="ml-7 flex flex-col gap-1.5">
                           <textarea
                             ref={el => {
                               if (selected()) composerRef = el;
@@ -186,7 +170,6 @@ export function ThreadSidebar(props: {
                             </button>
                           </Show>
                         </div>
-                      </Show>
                     </div>
                   </Show>
                 </div>

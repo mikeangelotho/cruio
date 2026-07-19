@@ -24,6 +24,10 @@ export function CommandPalette(props: {
     requestRevisions: () => void;
     exitReview: () => void;
     fit: () => void;
+    compare: () => void;
+    history: () => void;
+    deleteVersion: () => void;
+    deleteDeliverable: () => void;
   };
 }) {
   const [query, setQuery] = createSignal("");
@@ -40,17 +44,37 @@ export function CommandPalette(props: {
 
   const items = createMemo<Item[]>(() => {
     const a = props.actions;
+    const can = props.store.can;
     const inReview = !!props.currentDeliverable;
     const base: Item[] = inReview
       ? [
-          { id: "upload", label: "Upload new version", hint: "U", icon: "iconoir:upload", run: a.upload },
-          { id: "approve", label: "Approve version", icon: "iconoir:check", run: a.approve },
-          { id: "revise", label: "Request revisions", icon: "iconoir:refresh", run: a.requestRevisions },
+          ...(can("version", "upload")
+            ? [{ id: "upload", label: "Upload new version", hint: "U", icon: "iconoir:upload", run: a.upload }]
+            : []),
+          ...(can("approval", "decide")
+            ? [
+                { id: "approve", label: "Approve version", icon: "iconoir:check", run: a.approve },
+                { id: "revise", label: "Request revisions", icon: "iconoir:refresh", run: a.requestRevisions },
+              ]
+            : []),
+          ...(props.currentDeliverable!.versions.length > 1
+            ? [{ id: "compare", label: "Compare versions", hint: "C", icon: "iconoir:media-image-list", run: a.compare }]
+            : []),
+          ...(can("version", "delete") && props.currentDeliverable!.versions.length > 0
+            ? [{ id: "delete-version", label: "Delete current version", icon: "iconoir:trash", run: a.deleteVersion }]
+            : []),
+          ...(can("deliverable", "delete")
+            ? [{ id: "delete-deliverable", label: "Delete deliverable", icon: "iconoir:trash", run: a.deleteDeliverable }]
+            : []),
+          { id: "history", label: "Project history", hint: "H", icon: "iconoir:clock", run: a.history },
           { id: "fit", label: "Fit to screen", hint: "F", icon: "iconoir:frame", run: a.fit },
           { id: "back", label: "Back to workspace", hint: "Esc", icon: "iconoir:arrow-left", run: a.exitReview },
         ]
       : [
-          { id: "new", label: "New deliverable", hint: "N", icon: "iconoir:plus", run: a.newDeliverable },
+          ...(can("deliverable", "create")
+            ? [{ id: "new", label: "New deliverable", hint: "N", icon: "iconoir:plus", run: a.newDeliverable }]
+            : []),
+          { id: "history", label: "Project history", hint: "H", icon: "iconoir:clock", run: a.history },
           { id: "fit", label: "Fit to screen", hint: "F", icon: "iconoir:frame", run: a.fit },
         ];
     const jumps: Item[] = props.store.deliverables().map(d => ({

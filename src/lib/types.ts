@@ -10,13 +10,34 @@ export type AnnotationStatus = "open" | "resolved_approved" | "resolved_revision
 
 export type Decision = "approved" | "revision_requested";
 
-export interface Project {
+export type OrgRole = "owner" | "admin" | "member" | "guest";
+
+/** Org-level client company (or internal department) that groups projects. */
+export interface Client {
   id: string;
   name: string;
-  clientName: string;
+  projectCount?: number;
+}
+
+export interface Project {
+  id: string;
+  organizationId: string;
+  name: string;
+  clientId: string | null;
+  /** joined from the clients table for display */
+  clientName: string | null;
   phase: Phase;
+  createdBy: string;
   createdAt: number;
+  archivedAt?: number | null;
   deliverableCount?: number;
+}
+
+/** The signed-in user as seen by the project graph; drives role-adaptive UI. */
+export interface Viewer {
+  userId: string;
+  name: string;
+  role: OrgRole;
 }
 
 export interface Version {
@@ -32,6 +53,7 @@ export interface Version {
 export interface Comment {
   id: string;
   annotationId: string;
+  userId: string;
   authorName: string;
   body: string;
   createdAt: number;
@@ -45,6 +67,7 @@ export interface Annotation {
   x: number;
   y: number;
   status: AnnotationStatus;
+  createdBy: string;
   createdAt: number;
   comments: Comment[];
 }
@@ -54,6 +77,7 @@ export interface Approval {
   deliverableId: string;
   versionId: string;
   decision: Decision;
+  userId: string;
   approverName: string;
   note: string;
   createdAt: number;
@@ -75,7 +99,40 @@ export interface Deliverable {
 
 export interface ProjectGraph {
   project: Project;
+  viewer: Viewer;
   deliverables: Deliverable[];
+}
+
+export type HistoryType =
+  | "project_created"
+  | "project_archived"
+  | "project_restored"
+  | "deliverable_created"
+  | "deliverable_renamed"
+  | "deliverable_deleted"
+  | "deliverable_restored"
+  | "version_uploaded"
+  | "version_deleted"
+  | "version_restored"
+  | "comment_added"
+  | "thread_resolved"
+  | "thread_reopened"
+  | "decision_approved"
+  | "decision_revisions";
+
+export interface HistoryEntry {
+  id: string;
+  projectId: string;
+  deliverableId: string | null;
+  subjectId: string | null;
+  userId: string;
+  actorName: string;
+  type: HistoryType;
+  /** human sentence remainder, e.g. `deleted v2 of “Hero banner”` */
+  detail: string;
+  createdAt: number;
+  /** deleted-type entries only: subject is still deleted and can be restored */
+  restorable?: boolean;
 }
 
 export function fileUrl(fileName: string) {

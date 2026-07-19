@@ -19,11 +19,20 @@ export function DeliverableCard(props: {
   onOpen: (d: Deliverable) => void;
   onMove: (d: Deliverable, x: number, y: number, done: boolean) => void;
   onRename: (d: Deliverable, name: string) => void;
+  /** Delete/Backspace on a focused card; omit to disable deletion */
+  onDelete?: (d: Deliverable) => void;
+  /** open the shared context menu at screen coords (right-click / ⋯ button) */
+  onMenu?: (d: Deliverable, x: number, y: number) => void;
+  /** lets the canvas menu trigger this card's inline rename */
+  registerActions?: (id: string, actions: { startRename: () => void }) => void;
   /** convert a screen delta to a world delta (depends on zoom) */
   screenToWorldDelta: (dx: number, dy: number) => { x: number; y: number };
   hidden?: boolean;
+  /** viewer can open but not drag or rename (guest role) */
+  readOnly?: boolean;
 }) {
   const [editing, setEditing] = createSignal(false);
+  props.registerActions?.(props.d.id, { startRename: () => setEditing(true) });
   const latest = () => props.d.versions[props.d.versions.length - 1];
   const openThreads = () => props.d.annotations.filter(a => a.status === "open").length;
 
@@ -40,6 +49,7 @@ export function DeliverableCard(props: {
     let dragged = false;
 
     const onMove = (ev: PointerEvent) => {
+      if (props.readOnly) return;
       const dx = ev.clientX - startX;
       const dy = ev.clientY - startY;
       if (!dragged && Math.hypot(dx, dy) < 4) return;
@@ -65,7 +75,7 @@ export function DeliverableCard(props: {
   return (
     <div
       data-card={props.d.id}
-      class="absolute select-none rounded-lg bg-white border border-neutral-200 shadow-[0_1px_4px_rgba(0,0,0,0.06)] hover:shadow-[0_2px_10px_rgba(0,0,0,0.10)] hover:border-neutral-300 transition-shadow cursor-default outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+      class="group absolute select-none rounded-lg bg-white border border-neutral-200 shadow-[0_1px_4px_rgba(0,0,0,0.06)] hover:shadow-[0_2px_10px_rgba(0,0,0,0.10)] hover:border-neutral-300 transition-shadow cursor-default outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
       style={{
         left: `${props.d.posX}px`,
         top: `${props.d.posY}px`,
@@ -74,10 +84,19 @@ export function DeliverableCard(props: {
       }}
       tabindex="0"
       onPointerDown={onPointerDown}
+      onContextMenu={e => {
+        e.preventDefault();
+        e.stopPropagation();
+        props.onMenu?.(props.d, e.clientX, e.clientY);
+      }}
       onKeyDown={e => {
         if (e.key === "Enter" && !editing()) {
           e.preventDefault();
           props.onOpen(props.d);
+        }
+        if ((e.key === "Delete" || e.key === "Backspace") && !editing() && !props.readOnly) {
+          e.preventDefault();
+          props.onDelete?.(props.d);
         }
       }}
     >
@@ -110,7 +129,7 @@ export function DeliverableCard(props: {
           when={!editing()}
           fallback={
             <input
-              class="text-xs font-medium bg-neutral-50 border border-neutral-200 rounded px-1 py-0.5 w-full outline-none"
+              class="text-xs font-medium bg-neutral-50 border border-neutral-200 rounded px-1 py-0.5 w-full outline-none select-text"
               value={props.d.name}
               ref={el => queueMicrotask(() => { el.focus(); el.select(); })}
               onPointerDown={e => e.stopPropagation()}
@@ -132,10 +151,10 @@ export function DeliverableCard(props: {
         >
           <span
             class="text-xs font-medium text-neutral-800 truncate"
-            title={`${props.d.name} — double-click to rename`}
+            title={props.readOnly ? props.d.name : `${props.d.name} — double-click to rename`}
             onDblClick={e => {
               e.stopPropagation();
-              setEditing(true);
+              if (!props.readOnly) setEditing(true);
             }}
           >
             {props.d.name}
@@ -143,6 +162,20 @@ export function DeliverableCard(props: {
         </Show>
 
         <div class="flex items-center gap-1.5 shrink-0">
+          <Show when={props.onMenu}>
+            <button
+              class="p-0.5 rounded text-neutral-300 opacity-0 group-hover:opacity-100 hover:text-neutral-600 hover:bg-neutral-100 cursor-pointer"
+              title="Deliverable actions"
+              onPointerDown={e => e.stopPropagation()}
+              onClick={e => {
+                e.stopPropagation();
+                const r = e.currentTarget.getBoundingClientRect();
+                props.onMenu!(props.d, r.left, r.bottom + 4);
+              }}
+            >
+              <Icon icon="iconoir:more-horiz" width="13" />
+            </button>
+          </Show>
           <Show when={openThreads() > 0}>
             <span class="flex items-center gap-0.5 text-[10px] text-orange-600 bg-orange-50 rounded-full px-1.5 py-px">
               <Icon icon="iconoir:message-text" width="10" />
