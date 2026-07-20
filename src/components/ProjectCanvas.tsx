@@ -137,6 +137,15 @@ export function ProjectCanvas() {
     animate ? camera.flyTo(target, duration) : camera.jumpTo(target);
   }
 
+  function zoomAtCenter(factor: number) {
+    if (locked()) return;
+    camera.zoomAt(viewport().w / 2, viewport().h / 2, factor, 0.05, 64);
+  }
+
+  function fitCurrent() {
+    current() ? fitPlane(true, 250) : fitWorkspace(true);
+  }
+
   function toggleCompare() {
     const d = current();
     if (!d || d.versions.length < 2) return;
@@ -478,65 +487,11 @@ export function ProjectCanvas() {
     e.preventDefault();
     const d = current();
     if (d) {
-      const v = currentVersion();
-      setCtxMenu({
-        x: e.clientX,
-        y: e.clientY,
-        entries: [
-          ...(canUpload()
-            ? [{ label: "Upload new version", icon: "iconoir:upload", hint: "U", run: () => openFilePicker(d) }]
-            : []),
-          ...(d.versions.length > 1
-            ? [
-                {
-                  label: compare() ? "Exit compare" : "Compare versions",
-                  icon: "iconoir:media-image-list",
-                  hint: "C",
-                  run: toggleCompare,
-                },
-              ]
-            : []),
-          { label: "Project history", icon: "iconoir:clock", hint: "H", run: () => setHistoryOpen(o => !o) },
-          { label: "Fit to screen", icon: "iconoir:frame", hint: "F", run: () => fitPlane(true, 250) },
-          ...(canDeleteVersion() && v
-            ? [
-                { separator: true } as const,
-                {
-                  label: `Delete v${v.number}`,
-                  icon: "iconoir:trash",
-                  danger: true,
-                  run: () => confirmDeleteVersion(v),
-                },
-              ]
-            : []),
-          ...(canDeleteDeliverable()
-            ? [
-                {
-                  label: "Delete deliverable",
-                  icon: "iconoir:trash",
-                  danger: true,
-                  run: () => confirmDeleteDeliverable(d),
-                },
-              ]
-            : []),
-        ],
-      });
+      setCtxMenu({ x: e.clientX, y: e.clientY, entries: reviewMenuEntries(d) });
     } else {
       const p = localPoint(e);
       const w = camera.screenToWorld(p.x, p.y);
-      setCtxMenu({
-        x: e.clientX,
-        y: e.clientY,
-        entries: [
-          ...(canCreate()
-            ? [{ label: "New deliverable here", icon: "iconoir:plus", hint: "N", run: () => createDeliverableAt(w.x, w.y) }]
-            : []),
-          { label: "Project history", icon: "iconoir:clock", hint: "H", run: () => setHistoryOpen(o => !o) },
-          ...(!locked()
-            ? [{ label: "Fit to screen", icon: "iconoir:frame", hint: "F", run: () => fitWorkspace(true) }]
-            : []),
-        ],
-      });
+      setCtxMenu({ x: e.clientX, y: e.clientY, entries: workspaceMenuEntries(w) });
     }
   }
 
@@ -860,6 +815,18 @@ export function ProjectCanvas() {
                 </>
               )}
             </Show>
+
+            {/* the mode's context-menu actions, discoverable without right-click */}
+            <button
+              class="flex items-center p-1.5 rounded cursor-pointer text-neutral-500 hover:text-neutral-800 hover:bg-neutral-200/50"
+              title="More actions"
+              onClick={e => {
+                const d = current();
+                openMenuAt(e, d ? reviewMenuEntries(d) : workspaceMenuEntries());
+              }}
+            >
+              <Icon icon="iconoir:more-horiz" width="15" />
+            </button>
           </div>
         </nav>
 
@@ -1002,6 +969,42 @@ export function ProjectCanvas() {
             <Show when={store.state.error}>
               <div class="absolute inset-0 flex items-center justify-center">
                 <p class="text-sm text-neutral-500">{store.state.error}</p>
+              </div>
+            </Show>
+
+            {/* navigation controls — the visible face of scroll-zoom and F */}
+            <Show when={!locked()}>
+              <div
+                class="absolute bottom-3 right-3 z-10 flex flex-col rounded-lg border border-neutral-200 bg-white/95 shadow-sm overflow-clip"
+                onPointerDown={e => e.stopPropagation()}
+                onDblClick={e => e.stopPropagation()}
+                onWheel={e => e.stopPropagation()}
+                onContextMenu={e => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                }}
+              >
+                <button
+                  class="p-1.5 text-neutral-500 hover:text-neutral-800 hover:bg-neutral-50 cursor-pointer"
+                  title="Zoom in"
+                  onClick={() => zoomAtCenter(1.25)}
+                >
+                  <Icon icon="iconoir:plus" width="14" />
+                </button>
+                <button
+                  class="p-1.5 text-neutral-500 hover:text-neutral-800 hover:bg-neutral-50 cursor-pointer border-t border-neutral-100"
+                  title="Zoom out"
+                  onClick={() => zoomAtCenter(0.8)}
+                >
+                  <Icon icon="iconoir:minus" width="14" />
+                </button>
+                <button
+                  class="p-1.5 text-neutral-500 hover:text-neutral-800 hover:bg-neutral-50 cursor-pointer border-t border-neutral-100"
+                  title="Fit to screen (F)"
+                  onClick={fitCurrent}
+                >
+                  <Icon icon="iconoir:frame" width="14" />
+                </button>
               </div>
             </Show>
           </div>

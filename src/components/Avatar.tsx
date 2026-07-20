@@ -56,3 +56,21 @@ export function SquareAvatar(props: { name: string; size?: number }) {
     </span>
   );
 }
+
+export function EntityAvatar(props: { name: string; size?: number }) {
+  const size = () => props.size ?? 18;
+  return (
+    <span
+      class={`
+        inline-flex items-center justify-center rotate-45 rounded-md text-white font-semibold shrink-0 ${colorFor(props.name)}`}
+      style={{
+        width: `${size() - 2}px`,
+        height: `${size() - 2}px`,
+        "font-size": `${Math.round(size() * 0.42)}px`,
+      }}
+      title={props.name}
+    >
+      <span class="-rotate-45">{initials(props.name)}</span>
+    </span>
+  );
+}
