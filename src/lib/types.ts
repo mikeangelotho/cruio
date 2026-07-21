@@ -12,8 +12,8 @@ export type Decision = "approved" | "revision_requested";
 
 export type OrgRole = "owner" | "admin" | "member" | "guest";
 
-/** Org-level client company (or internal department) that groups projects. */
-export interface Client {
+/** Org-level entity — client company or internal department — that groups projects. */
+export interface Entity {
   id: string;
   name: string;
   projectCount?: number;
@@ -23,9 +23,9 @@ export interface Project {
   id: string;
   organizationId: string;
   name: string;
-  clientId: string | null;
-  /** joined from the clients table for display */
-  clientName: string | null;
+  entityId: string | null;
+  /** joined from the entities table for display */
+  entityName: string | null;
   phase: Phase;
   createdBy: string;
   createdAt: number;
@@ -118,7 +118,9 @@ export type HistoryType =
   | "thread_resolved"
   | "thread_reopened"
   | "decision_approved"
-  | "decision_revisions";
+  | "decision_revisions"
+  | "task_created"
+  | "task_completed";
 
 export interface HistoryEntry {
   id: string;
@@ -133,6 +135,58 @@ export interface HistoryEntry {
   createdAt: number;
   /** deleted-type entries only: subject is still deleted and can be restored */
   restorable?: boolean;
+}
+
+export type TaskStatus = "todo" | "in_progress" | "done";
+
+export type TaskPriority = "none" | "low" | "medium" | "high" | "urgent";
+
+export interface Task {
+  id: string;
+  organizationId: string;
+  title: string;
+  description: string;
+  status: TaskStatus;
+  priority: TaskPriority;
+  assigneeId: string | null;
+  /** joined for display */
+  assigneeName: string | null;
+  dueDate: number | null;
+  projectId: string | null;
+  /** joined for display + entity scoping */
+  projectName: string | null;
+  entityId: string | null;
+  deliverableId: string | null;
+  createdBy: string;
+  createdAt: number;
+  completedAt: number | null;
+}
+
+export interface LibraryFolder {
+  id: string;
+  /** set = the auto-created project folder; null = workspace-level folder */
+  projectId: string | null;
+  name: string;
+  createdAt: number;
+  /** project folders only: the owning project's entity (drives scoping) */
+  entityId: string | null;
+}
+
+export interface LibraryFile {
+  id: string;
+  folderId: string;
+  name: string;
+  fileName: string;
+  mime: string;
+  size: number;
+  width: number | null;
+  height: number | null;
+  /** set = mirror of a deliverable version (managed by the canvas) */
+  versionId: string | null;
+  /** mirrors only: for linking back to the review canvas */
+  deliverableId: string | null;
+  uploadedBy: string;
+  createdAt: number;
 }
 
 export function fileUrl(fileName: string) {

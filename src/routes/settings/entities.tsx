@@ -1,14 +1,17 @@
-import { For, Show, createMemo, createResource, createSignal } from "solid-js";
-import { A, createAsync, useNavigate } from "@solidjs/router";
+import { For, Show, createResource, createSignal } from "solid-js";
+import { createAsync, useNavigate } from "@solidjs/router";
 import { Icon } from "@iconify-icon/solid";
 import {
-  createClient,
-  deleteClient,
-  listClients,
+  createEntity,
+  deleteEntity,
+  listEntities,
   myOrgsQuery,
-  renameClient,
+  renameEntity,
   requireUserQuery,
 } from "../../lib/org-api";
+import { useViewerRole } from "../../lib/viewer";
+import { SettingsNav } from "../../components/SettingsNav";
+import { AppFooter } from "../../components/AppFooter";
 
 export const route = {
   preload: () => {
@@ -17,16 +20,15 @@ export const route = {
   },
 };
 
-export default function ClientsPage() {
+export default function EntitiesPage() {
   const navigate = useNavigate();
   const user = createAsync(() => requireUserQuery());
   const orgs = createAsync(() => myOrgsQuery());
 
   const orgId = () => user()?.activeOrganizationId ?? null;
-  const myRole = createMemo(() => orgs()?.find(o => o.id === orgId())?.role);
-  const isAdmin = () => myRole() === "admin" || myRole() === "owner";
+  const { activeOrg, myRole, isAdmin } = useViewerRole(user, orgs);
 
-  const [clients, { refetch }] = createResource(orgId, () => listClients());
+  const [entities, { refetch }] = createResource(orgId, () => listEntities());
   const [error, setError] = createSignal("");
 
   async function add(e: SubmitEvent) {
@@ -36,7 +38,7 @@ export default function ClientsPage() {
     if (!name) return;
     setError("");
     try {
-      await createClient(name);
+      await createEntity(name);
       form.reset();
       await refetch();
     } catch (err) {
@@ -48,7 +50,7 @@ export default function ClientsPage() {
     if (!name || name === prev) return;
     setError("");
     try {
-      await renameClient(id, name);
+      await renameEntity(id, name);
       await refetch();
     } catch (err) {
       setError(String(err));
@@ -59,12 +61,12 @@ export default function ClientsPage() {
   async function remove(id: string, name: string, projectCount: number) {
     const note =
       projectCount > 0
-        ? `Delete ${name}? ${projectCount} project${projectCount === 1 ? "" : "s"} will be left without a client.`
+        ? `Delete ${name}? ${projectCount} project${projectCount === 1 ? "" : "s"} will be left without an entity.`
         : `Delete ${name}?`;
     if (!window.confirm(note)) return;
     setError("");
     try {
-      await deleteClient(id);
+      await deleteEntity(id);
       await refetch();
     } catch (err) {
       setError(String(err));
@@ -74,27 +76,11 @@ export default function ClientsPage() {
   return (
     <div class="p-1 h-screen bg-[#fffefe]">
       <div class="rounded-lg overflow-clip w-full flex flex-col h-full border border-[#eceaea]">
-        <nav class="min-h-12 px-4 flex items-center justify-between bg-[#f8f7f7] border-b border-[#f0eeee]">
-          <div class="flex items-center gap-2 text-sm">
-            <A href="/" class="flex items-center text-neutral-500 hover:text-neutral-800 p-1">
-              <Icon icon="iconoir:arrow-left" width="16" />
-            </A>
-            <span class="font-medium text-neutral-800">Clients</span>
-            <Show when={orgs()?.find(o => o.id === orgId())}>
-              {o => (
-                <span class="bg-[#efeded] text-neutral-500 text-xs py-0.5 px-1.5 rounded">
-                  {o().name}
-                </span>
-              )}
-            </Show>
-          </div>
-          <A
-            href="/settings/members"
-            class="flex items-center gap-1 text-xs text-neutral-500 hover:text-neutral-800"
-          >
-            <Icon icon="iconoir:group" width="14" /> Members
-          </A>
-        </nav>
+        <SettingsNav
+          title="Entities"
+          orgName={activeOrg()?.name}
+          crossLink={{ href: "/settings/members", label: "Members", icon: "iconoir:group" }}
+        />
 
         <main class="flex-1 overflow-y-auto p-8">
           <Show
@@ -106,8 +92,9 @@ export default function ClientsPage() {
           >
             <div class="max-w-2xl mx-auto space-y-6">
               <p class="text-xs text-neutral-400 leading-relaxed">
-                Clients are the companies (or internal departments) your projects belong to.
-                Create them once here, then pick one when starting a project.
+                Entities are who your projects belong to — a client if you're an agency,
+                or a department if this is an internal workspace. Create them once here,
+                then pick one when starting a project.
               </p>
 
               <Show when={error()}>
@@ -118,7 +105,7 @@ export default function ClientsPage() {
 
               <form onSubmit={add} class="flex gap-3 items-end">
                 <label class="flex-1 text-xs text-neutral-500">
-                  New client
+                  New entity
                   <input
                     name="name"
                     required
@@ -130,12 +117,12 @@ export default function ClientsPage() {
                   type="submit"
                   class="text-xs bg-neutral-900 text-white rounded px-3 py-2 hover:bg-neutral-700 cursor-pointer"
                 >
-                  Add client
+                  Add entity
                 </button>
               </form>
 
               <div class="border border-neutral-200 rounded-lg bg-white divide-y divide-neutral-100">
-                <For each={clients() ?? []}>
+                <For each={entities() ?? []}>
                   {c => (
                     <div class="px-4 py-2.5 flex items-center gap-3">
                       <Icon icon="iconoir:building" width="14" class="text-neutral-300" />
@@ -164,9 +151,9 @@ export default function ClientsPage() {
                     </div>
                   )}
                 </For>
-                <Show when={(clients() ?? []).length === 0 && !clients.loading}>
+                <Show when={(entities() ?? []).length === 0 && !entities.loading}>
                   <p class="px-4 py-6 text-xs text-neutral-400 text-center">
-                    No clients yet — add the first one above.
+                    No entities yet — add the first one above.
                   </p>
                 </Show>
               </div>
@@ -174,9 +161,7 @@ export default function ClientsPage() {
           </Show>
         </main>
 
-        <footer class="min-h-7 px-3 flex items-center bg-[#f8f7f7] border-t border-[#f0eeee] text-[11px] text-neutral-400">
-          cruio · crew I/O
-        </footer>
+        <AppFooter />
       </div>
     </div>
   );

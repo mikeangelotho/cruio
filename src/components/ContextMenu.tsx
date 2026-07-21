@@ -27,7 +27,10 @@ const ROW_H = 30;
  */
 export function ContextMenu(props: { state: MenuState | null; onClose: () => void }) {
   function onKey(e: KeyboardEvent) {
-    if (e.key === "Escape") {
+    // only intercept Escape while a menu is actually open — otherwise this
+    // global capture-phase listener would swallow Escape for every other
+    // Escape-driven UI on the page (search, dialogs, etc.)
+    if (e.key === "Escape" && props.state) {
       e.stopPropagation();
       props.onClose();
     }

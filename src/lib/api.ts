@@ -3,7 +3,7 @@ import { getDb } from "../db";
 import {
   annotations,
   approvals,
-  clients,
+  entities,
   comments,
   deliverables,
   history,
@@ -32,6 +32,22 @@ import {
   resolveAnnotationProject,
   resolveDeliverableProject,
 } from "./guard";
+import {
+  createProjectFolder,
+  setDeliverableMirrorsDeleted,
+  setMirrorDeleted,
+} from "./library";
+import {
+  AnnotationStatusSchema,
+  CommentBody,
+  DecisionSchema,
+  FiniteNumber,
+  Id,
+  LongText,
+  Norm01,
+  ShortText,
+  parseOrThrow,
+} from "./validate";
 
 export async function listProjects(): Promise<Project[]> {
   "use server";
@@ -44,9 +60,9 @@ export async function listProjects(): Promise<Project[]> {
   const rows =
     role === "guest"
       ? await db
-          .select({ p: projects, clientName: clients.name })
+          .select({ p: projects, entityName: entities.name })
           .from(projects)
-          .leftJoin(clients, eq(clients.id, projects.clientId))
+          .leftJoin(entities, eq(entities.id, projects.entityId))
           .innerJoin(
             projectShares,
             and(
@@ -57,9 +73,9 @@ export async function listProjects(): Promise<Project[]> {
           .where(and(eq(projects.organizationId, orgId), isNull(projects.archivedAt)))
           .orderBy(desc(projects.createdAt))
       : await db
-          .select({ p: projects, clientName: clients.name })
+          .select({ p: projects, entityName: entities.name })
           .from(projects)
-          .leftJoin(clients, eq(clients.id, projects.clientId))
+          .leftJoin(entities, eq(entities.id, projects.entityId))
           .where(and(eq(projects.organizationId, orgId), isNull(projects.archivedAt)))
           .orderBy(desc(projects.createdAt));
 
@@ -72,7 +88,7 @@ export async function listProjects(): Promise<Project[]> {
     : [];
   return rows.map((r) => ({
     ...(r.p as unknown as Project),
-    clientName: r.clientName ?? null,
+    entityName: r.entityName ?? null,
     phase: r.p.phase as Phase,
     deliverableCount: counts.filter((c) => c.projectId === r.p.id).length,
   }));
@@ -81,30 +97,34 @@ export async function listProjects(): Promise<Project[]> {
 export async function createProject(
   id: string,
   name: string,
-  clientId: string | null,
+  entityId: string | null,
 ): Promise<void> {
   "use server";
+  id = parseOrThrow(Id, id);
+  name = parseOrThrow(ShortText, name);
+  entityId = entityId ? parseOrThrow(Id, entityId) : null;
   const session = await requireSession();
   const orgId = session.activeOrganizationId;
   if (!orgId) throw new Error("No active organization");
   const { role } = await requireMember(orgId);
   authorize(role, "project", "create");
   const db = await getDb();
-  if (clientId) {
+  if (entityId) {
     const [c] = await db
-      .select({ id: clients.id })
-      .from(clients)
-      .where(and(eq(clients.id, clientId), eq(clients.organizationId, orgId)));
-    if (!c) throw new Error("Unknown client");
+      .select({ id: entities.id })
+      .from(entities)
+      .where(and(eq(entities.id, entityId), eq(entities.organizationId, orgId)));
+    if (!c) throw new Error("Unknown entity");
   }
   await db.insert(projects).values({
     id,
     organizationId: orgId,
     name,
-    clientId,
+    entityId,
     createdBy: session.userId,
     createdAt: Date.now(),
   });
+  await createProjectFolder(db, { id, organizationId: orgId, name });
   await recordHistory(db, {
     projectId: id,
     userId: session.userId,
@@ -118,18 +138,19 @@ export async function getProjectGraph(
   projectId: string,
 ): Promise<ProjectGraph | null> {
   "use server";
+  projectId = parseOrThrow(Id, projectId);
   const { session, role, project } = await requireProjectAccess(projectId);
   // archived projects are only reachable by admins (to review before restore)
   if (project.archivedAt && role !== "admin" && role !== "owner") return null;
   const db = await getDb();
 
-  let clientName: string | null = null;
-  if (project.clientId) {
+  let entityName: string | null = null;
+  if (project.entityId) {
     const [c] = await db
-      .select({ name: clients.name })
-      .from(clients)
-      .where(eq(clients.id, project.clientId));
-    clientName = c?.name ?? null;
+      .select({ name: entities.name })
+      .from(entities)
+      .where(eq(entities.id, project.entityId));
+    entityName = c?.name ?? null;
   }
 
   const dRows = await db
@@ -160,7 +181,7 @@ export async function getProjectGraph(
     : [];
 
   const graph: ProjectGraph = {
-    project: { ...(project as unknown as Project), clientName, phase: project.phase as Phase },
+    project: { ...(project as unknown as Project), entityName, phase: project.phase as Phase },
     viewer: { userId: session.userId, name: session.name, role },
     deliverables: dRows.map(d => ({
       ...(d as unknown as Deliverable),
@@ -191,6 +212,12 @@ export async function createDeliverable(
   spec = ""
 ): Promise<void> {
   "use server";
+  id = parseOrThrow(Id, id);
+  projectId = parseOrThrow(Id, projectId);
+  name = parseOrThrow(ShortText, name);
+  posX = parseOrThrow(FiniteNumber, posX);
+  posY = parseOrThrow(FiniteNumber, posY);
+  spec = parseOrThrow(LongText, spec);
   const { session } = await requireProjectAccess(projectId, { resource: "deliverable", action: "create" });
   const db = await getDb();
   await db.insert(deliverables).values({ id, projectId, name, spec, posX, posY, createdAt: Date.now() });
@@ -207,6 +234,9 @@ export async function createDeliverable(
 
 export async function moveDeliverable(id: string, posX: number, posY: number): Promise<void> {
   "use server";
+  id = parseOrThrow(Id, id);
+  posX = parseOrThrow(FiniteNumber, posX);
+  posY = parseOrThrow(FiniteNumber, posY);
   const projectId = await resolveDeliverableProject(id);
   await requireProjectAccess(projectId, { resource: "deliverable", action: "move" });
   const db = await getDb();
@@ -215,6 +245,8 @@ export async function moveDeliverable(id: string, posX: number, posY: number): P
 
 export async function renameDeliverable(id: string, name: string): Promise<void> {
   "use server";
+  id = parseOrThrow(Id, id);
+  name = parseOrThrow(ShortText, name);
   const projectId = await resolveDeliverableProject(id);
   const { session } = await requireProjectAccess(projectId, { resource: "deliverable", action: "update" });
   const db = await getDb();
@@ -241,6 +273,11 @@ export async function createAnnotation(
   y: number
 ): Promise<void> {
   "use server";
+  id = parseOrThrow(Id, id);
+  deliverableId = parseOrThrow(Id, deliverableId);
+  versionId = parseOrThrow(Id, versionId);
+  x = parseOrThrow(Norm01, x);
+  y = parseOrThrow(Norm01, y);
   const projectId = await resolveDeliverableProject(deliverableId);
   const { session } = await requireProjectAccess(projectId, {
     resource: "annotation",
@@ -260,6 +297,7 @@ export async function createAnnotation(
 
 export async function deleteAnnotation(id: string): Promise<void> {
   "use server";
+  id = parseOrThrow(Id, id);
   const projectId = await resolveAnnotationProject(id);
   await requireProjectAccess(projectId, { resource: "annotation", action: "delete" });
   const db = await getDb();
@@ -273,6 +311,9 @@ export async function addComment(
   body: string
 ): Promise<void> {
   "use server";
+  id = parseOrThrow(Id, id);
+  annotationId = parseOrThrow(Id, annotationId);
+  body = parseOrThrow(CommentBody, body);
   const projectId = await resolveAnnotationProject(annotationId);
   const { session } = await requireProjectAccess(projectId, {
     resource: "annotation",
@@ -308,6 +349,8 @@ export async function addComment(
 
 export async function resolveAnnotation(id: string, status: AnnotationStatus): Promise<void> {
   "use server";
+  id = parseOrThrow(Id, id);
+  status = parseOrThrow(AnnotationStatusSchema, status);
   const projectId = await resolveAnnotationProject(id);
   const { session } = await requireProjectAccess(projectId, { resource: "annotation", action: "resolve" });
   const db = await getDb();
@@ -347,6 +390,11 @@ export async function decideVersion(
   note = ""
 ): Promise<{ ok: boolean; error?: string }> {
   "use server";
+  id = parseOrThrow(Id, id);
+  deliverableId = parseOrThrow(Id, deliverableId);
+  versionId = parseOrThrow(Id, versionId);
+  decision = parseOrThrow(DecisionSchema, decision);
+  note = parseOrThrow(LongText, note);
   const projectId = await resolveDeliverableProject(deliverableId);
   const { session } = await requireProjectAccess(projectId, {
     resource: "approval",
@@ -399,6 +447,7 @@ export async function decideVersion(
 /** Soft-delete a version; the file and threads stay restorable from History. */
 export async function deleteVersion(versionId: string): Promise<void> {
   "use server";
+  versionId = parseOrThrow(Id, versionId);
   const db = await getDb();
   const [v] = await db.select().from(versions).where(eq(versions.id, versionId));
   if (!v || v.deletedAt) throw new Error("Not found");
@@ -407,10 +456,12 @@ export async function deleteVersion(versionId: string): Promise<void> {
     resource: "version",
     action: "delete",
   });
+  const deletedAt = Date.now();
   await db
     .update(versions)
-    .set({ deletedAt: Date.now(), deletedBy: session.userId })
+    .set({ deletedAt, deletedBy: session.userId })
     .where(eq(versions.id, versionId));
+  await setMirrorDeleted(db, versionId, deletedAt, session.userId);
   await recomputeStatus(db, v.deliverableId);
   const [d] = await db
     .select({ name: deliverables.name })
@@ -429,6 +480,7 @@ export async function deleteVersion(versionId: string): Promise<void> {
 
 export async function restoreVersion(versionId: string): Promise<void> {
   "use server";
+  versionId = parseOrThrow(Id, versionId);
   const db = await getDb();
   const [v] = await db.select().from(versions).where(eq(versions.id, versionId));
   if (!v || !v.deletedAt) throw new Error("Not found");
@@ -441,6 +493,7 @@ export async function restoreVersion(versionId: string): Promise<void> {
     .update(versions)
     .set({ deletedAt: null, deletedBy: null })
     .where(eq(versions.id, versionId));
+  await setMirrorDeleted(db, versionId, null, null);
   await recomputeStatus(db, v.deliverableId);
   const [d] = await db
     .select({ name: deliverables.name })
@@ -460,6 +513,7 @@ export async function restoreVersion(versionId: string): Promise<void> {
 /** Soft-delete a deliverable (with all its versions/threads); restorable. */
 export async function deleteDeliverable(id: string): Promise<void> {
   "use server";
+  id = parseOrThrow(Id, id);
   const projectId = await resolveDeliverableProject(id);
   const { session } = await requireProjectAccess(projectId, {
     resource: "deliverable",
@@ -468,10 +522,12 @@ export async function deleteDeliverable(id: string): Promise<void> {
   const db = await getDb();
   const [d] = await db.select().from(deliverables).where(eq(deliverables.id, id));
   if (!d || d.deletedAt) throw new Error("Not found");
+  const deletedAt = Date.now();
   await db
     .update(deliverables)
-    .set({ deletedAt: Date.now(), deletedBy: session.userId })
+    .set({ deletedAt, deletedBy: session.userId })
     .where(eq(deliverables.id, id));
+  await setDeliverableMirrorsDeleted(db, id, deletedAt, session.userId);
   await recordHistory(db, {
     projectId,
     deliverableId: id,
@@ -485,6 +541,7 @@ export async function deleteDeliverable(id: string): Promise<void> {
 
 export async function restoreDeliverable(id: string): Promise<void> {
   "use server";
+  id = parseOrThrow(Id, id);
   const projectId = await resolveDeliverableProject(id);
   const { session } = await requireProjectAccess(projectId, {
     resource: "deliverable",
@@ -497,6 +554,7 @@ export async function restoreDeliverable(id: string): Promise<void> {
     .update(deliverables)
     .set({ deletedAt: null, deletedBy: null })
     .where(eq(deliverables.id, id));
+  await setDeliverableMirrorsDeleted(db, id, null, null);
   await recordHistory(db, {
     projectId,
     deliverableId: id,
@@ -511,6 +569,7 @@ export async function restoreDeliverable(id: string): Promise<void> {
 /** Project activity log, newest first. Deleted-type entries carry `restorable`. */
 export async function listHistory(projectId: string): Promise<HistoryEntry[]> {
   "use server";
+  projectId = parseOrThrow(Id, projectId);
   await requireProjectAccess(projectId);
   const db = await getDb();
   const rows = await db
@@ -562,6 +621,7 @@ export async function listHistory(projectId: string): Promise<HistoryEntry[]> {
 /** Archive a project (admin+). It leaves all lists but is restorable. */
 export async function archiveProject(id: string): Promise<void> {
   "use server";
+  id = parseOrThrow(Id, id);
   const session = await requireSession();
   const db = await getDb();
   const [p] = await db.select().from(projects).where(eq(projects.id, id));
@@ -583,6 +643,7 @@ export async function archiveProject(id: string): Promise<void> {
 
 export async function restoreProject(id: string): Promise<void> {
   "use server";
+  id = parseOrThrow(Id, id);
   const session = await requireSession();
   const db = await getDb();
   const [p] = await db.select().from(projects).where(eq(projects.id, id));
@@ -612,16 +673,16 @@ export async function listArchivedProjects(): Promise<Project[]> {
   if (role !== "admin" && role !== "owner") return [];
   const db = await getDb();
   const rows = await db
-    .select({ p: projects, clientName: clients.name })
+    .select({ p: projects, entityName: entities.name })
     .from(projects)
-    .leftJoin(clients, eq(clients.id, projects.clientId))
+    .leftJoin(entities, eq(entities.id, projects.entityId))
     .where(eq(projects.organizationId, orgId))
     .orderBy(desc(projects.createdAt));
   return rows
     .filter(r => r.p.archivedAt != null)
     .map(r => ({
       ...(r.p as unknown as Project),
-      clientName: r.clientName ?? null,
+      entityName: r.entityName ?? null,
       phase: r.p.phase as Phase,
     }));
 }

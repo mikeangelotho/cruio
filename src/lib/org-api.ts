@@ -5,7 +5,7 @@ import { getRequestEvent } from "solid-js/web";
 import { auth } from "./auth";
 import { getDb } from "../db";
 import {
-  clients,
+  entities,
   invitation,
   invitationGrants,
   member,
@@ -20,7 +20,8 @@ import {
   requireMember,
   requireSession,
 } from "./guard";
-import type { Client, OrgRole } from "./types";
+import type { Entity, OrgRole } from "./types";
+import { AuthId, Id, OrgRoleSchema, ShortText, parseOrThrow } from "./validate";
 
 export interface MemberRow {
   memberId: string;
@@ -85,6 +86,7 @@ export const requireUserQuery = query(async () => {
 
 export async function listMembers(orgId: string): Promise<MemberRow[]> {
   "use server";
+  orgId = parseOrThrow(AuthId, orgId);
   const { role } = await requireMember(orgId);
   authorize(role, "member", "update");
   const db = await getDb();
@@ -132,6 +134,9 @@ export async function updateMemberRole(
   role: OrgRole,
 ): Promise<void> {
   "use server";
+  orgId = parseOrThrow(AuthId, orgId);
+  memberId = parseOrThrow(AuthId, memberId);
+  role = parseOrThrow(OrgRoleSchema, role);
   // Delegated: the org plugin enforces its own access control (incl. owner rules).
   await auth.api.updateMemberRole({
     body: { memberId, role, organizationId: orgId },
@@ -144,6 +149,8 @@ export async function removeMember(
   memberId: string,
 ): Promise<void> {
   "use server";
+  orgId = parseOrThrow(AuthId, orgId);
+  memberId = parseOrThrow(AuthId, memberId);
   await auth.api.removeMember({
     body: { memberIdOrEmail: memberId, organizationId: orgId },
     headers: headers(),
@@ -152,6 +159,7 @@ export async function removeMember(
 
 export async function listInvitations(orgId: string): Promise<InvitationRow[]> {
   "use server";
+  orgId = parseOrThrow(AuthId, orgId);
   const { role } = await requireMember(orgId);
   authorize(role, "invitation", "create");
   const db = await getDb();
@@ -181,6 +189,7 @@ export async function listInvitations(orgId: string): Promise<InvitationRow[]> {
 
 export async function cancelInvitation(invitationId: string): Promise<void> {
   "use server";
+  invitationId = parseOrThrow(AuthId, invitationId);
   await auth.api.cancelInvitation({
     body: { invitationId },
     headers: headers(),
@@ -193,6 +202,8 @@ export async function grantInvitationProjects(
   projectIds: string[],
 ): Promise<void> {
   "use server";
+  invitationId = parseOrThrow(AuthId, invitationId);
+  projectIds = projectIds.map((id) => parseOrThrow(Id, id));
   const db = await getDb();
   const [inv] = await db
     .select()
@@ -234,6 +245,7 @@ export async function grantInvitationProjects(
  */
 export async function claimInvitationGrants(invitationId: string): Promise<void> {
   "use server";
+  invitationId = parseOrThrow(AuthId, invitationId);
   const session = await requireSession();
   const db = await getDb();
   const [inv] = await db
@@ -282,6 +294,7 @@ export async function getInvitationPublic(invitationId: string): Promise<{
   inviterName: string;
 } | null> {
   "use server";
+  invitationId = parseOrThrow(AuthId, invitationId);
   const db = await getDb();
   const [row] = await db
     .select({
@@ -306,10 +319,10 @@ export async function getInvitationPublic(invitationId: string): Promise<{
   };
 }
 
-// ---- clients (org-level client companies / departments) --------------------
+// ---- entities (org-level client companies / departments) -------------------
 
-/** All clients of the active org. Any member may list (needed for display). */
-export async function listClients(): Promise<Client[]> {
+/** All entities of the active org. Any member may list (needed for display). */
+export async function listEntities(): Promise<Entity[]> {
   "use server";
   const session = await requireSession();
   const orgId = session.activeOrganizationId;
@@ -318,35 +331,34 @@ export async function listClients(): Promise<Client[]> {
   const db = await getDb();
   const rows = await db
     .select()
-    .from(clients)
-    .where(eq(clients.organizationId, orgId))
-    .orderBy(asc(clients.name));
+    .from(entities)
+    .where(eq(entities.organizationId, orgId))
+    .orderBy(asc(entities.name));
   const counts = await db
-    .select({ clientId: projects.clientId })
+    .select({ entityId: projects.entityId })
     .from(projects)
     .where(eq(projects.organizationId, orgId));
   return rows.map((r) => ({
     id: r.id,
     name: r.name,
-    projectCount: counts.filter((c) => c.clientId === r.id).length,
+    projectCount: counts.filter((c) => c.entityId === r.id).length,
   }));
 }
 
-export async function createClient(name: string): Promise<Client> {
+export async function createEntity(name: string): Promise<Entity> {
   "use server";
+  const trimmed = parseOrThrow(ShortText, name);
   const session = await requireSession();
   const orgId = session.activeOrganizationId;
   if (!orgId) throw new Error("No active organization");
   const { role } = await requireMember(orgId);
-  authorize(role, "client", "manage");
-  const trimmed = name.trim();
-  if (!trimmed) throw new Error("Client name is required");
+  authorize(role, "entity", "manage");
   const db = await getDb();
-  // reuse an existing client with the same name instead of duplicating
+  // reuse an existing entity with the same name instead of duplicating
   const [existing] = await db
     .select()
-    .from(clients)
-    .where(and(eq(clients.organizationId, orgId), eq(clients.name, trimmed)));
+    .from(entities)
+    .where(and(eq(entities.organizationId, orgId), eq(entities.name, trimmed)));
   if (existing) return { id: existing.id, name: existing.name };
   const row = {
     id: randomUUID(),
@@ -354,32 +366,33 @@ export async function createClient(name: string): Promise<Client> {
     name: trimmed,
     createdAt: Date.now(),
   };
-  await db.insert(clients).values(row);
+  await db.insert(entities).values(row);
   return { id: row.id, name: row.name };
 }
 
-export async function renameClient(id: string, name: string): Promise<void> {
+export async function renameEntity(id: string, name: string): Promise<void> {
   "use server";
+  const entityId = parseOrThrow(Id, id);
+  const trimmed = parseOrThrow(ShortText, name);
   const db = await getDb();
-  const [row] = await db.select().from(clients).where(eq(clients.id, id));
+  const [row] = await db.select().from(entities).where(eq(entities.id, entityId));
   if (!row) throw new Error("Not found");
   const { role } = await requireMember(row.organizationId);
-  authorize(role, "client", "manage");
-  const trimmed = name.trim();
-  if (!trimmed) throw new Error("Client name is required");
-  await db.update(clients).set({ name: trimmed }).where(eq(clients.id, id));
+  authorize(role, "entity", "manage");
+  await db.update(entities).set({ name: trimmed }).where(eq(entities.id, entityId));
 }
 
-/** Deleting a client detaches its projects (they keep working, unassigned). */
-export async function deleteClient(id: string): Promise<void> {
+/** Deleting an entity detaches its projects (they keep working, unassigned). */
+export async function deleteEntity(id: string): Promise<void> {
   "use server";
+  const entityId = parseOrThrow(Id, id);
   const db = await getDb();
-  const [row] = await db.select().from(clients).where(eq(clients.id, id));
+  const [row] = await db.select().from(entities).where(eq(entities.id, entityId));
   if (!row) throw new Error("Not found");
   const { role } = await requireMember(row.organizationId);
-  authorize(role, "client", "manage");
-  await db.update(projects).set({ clientId: null }).where(eq(projects.clientId, id));
-  await db.delete(clients).where(eq(clients.id, id));
+  authorize(role, "entity", "manage");
+  await db.update(projects).set({ entityId: null }).where(eq(projects.entityId, entityId));
+  await db.delete(entities).where(eq(entities.id, entityId));
 }
 
 export async function shareProject(
@@ -387,6 +400,8 @@ export async function shareProject(
   userId: string,
 ): Promise<void> {
   "use server";
+  projectId = parseOrThrow(Id, projectId);
+  userId = parseOrThrow(AuthId, userId);
   const db = await getDb();
   const [project] = await db
     .select()
@@ -416,6 +431,8 @@ export async function unshareProject(
   userId: string,
 ): Promise<void> {
   "use server";
+  projectId = parseOrThrow(Id, projectId);
+  userId = parseOrThrow(AuthId, userId);
   const db = await getDb();
   const [project] = await db
     .select()

@@ -9,6 +9,8 @@ import {
   approvals,
   deliverables,
   history,
+  libraryFiles,
+  libraryFolders,
   member,
   projects,
   projectShares,
@@ -194,6 +196,58 @@ export async function recomputeStatus(db: Db, deliverableId: string): Promise<vo
       : "in_review";
   }
   await db.update(deliverables).set({ status }).where(eq(deliverables.id, deliverableId));
+}
+
+/**
+ * Library folder access: workspace folders require org membership (guests
+ * excluded); project folders defer to requireProjectAccess (guests need a
+ * share). Optional `action` authorizes against the library resource.
+ */
+export async function requireFolderAccess(
+  folderId: string,
+  action?: string,
+  headers?: Headers,
+): Promise<{
+  session: SessionInfo;
+  role: OrgRole;
+  folder: typeof libraryFolders.$inferSelect;
+}> {
+  const db = await getDb();
+  const [folder] = await db
+    .select()
+    .from(libraryFolders)
+    .where(eq(libraryFolders.id, folderId));
+  if (!folder) throw new Error("Not found");
+  if (folder.projectId) {
+    const { session, role } = await requireProjectAccess(
+      folder.projectId,
+      action ? { resource: "library", action } : undefined,
+      headers,
+    );
+    return { session, role, folder };
+  }
+  const { session, role } = await requireMember(folder.organizationId, headers);
+  if (role === "guest") throw new Error("Forbidden");
+  if (action) authorize(role, "library", action);
+  return { session, role, folder };
+}
+
+/** Map a stored library file name to its folder (for the files route). */
+export async function resolveLibraryFile(
+  fileName: string,
+): Promise<{ file: typeof libraryFiles.$inferSelect; folder: typeof libraryFolders.$inferSelect } | null> {
+  const db = await getDb();
+  const [file] = await db
+    .select()
+    .from(libraryFiles)
+    .where(eq(libraryFiles.fileName, fileName));
+  if (!file) return null;
+  const [folder] = await db
+    .select()
+    .from(libraryFolders)
+    .where(eq(libraryFolders.id, file.folderId));
+  if (!folder) return null;
+  return { file, folder };
 }
 
 export async function resolveVersionProject(

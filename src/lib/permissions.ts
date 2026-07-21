@@ -15,7 +15,9 @@ const statement = {
   version: ["upload", "delete"],
   annotation: ["create", "comment", "resolve", "delete"],
   approval: ["decide"],
-  client: ["manage"],
+  entity: ["manage"],
+  library: ["read", "upload", "manage"],
+  task: ["create", "update", "assign", "delete"],
 } as const;
 
 export const ac = createAccessControl(statement);
@@ -24,6 +26,8 @@ export const guest = ac.newRole({
   project: ["read"],
   annotation: ["create", "comment", "resolve", "delete"],
   approval: ["decide"],
+  // read = shared-project folders only; enforced server-side in guard.ts
+  library: ["read"],
 });
 
 export const member = ac.newRole({
@@ -32,6 +36,8 @@ export const member = ac.newRole({
   version: ["upload", "delete"],
   annotation: ["create", "comment", "resolve", "delete"],
   approval: ["decide"],
+  library: ["read", "upload"],
+  task: ["create", "update", "assign", "delete"],
 });
 
 export const admin = ac.newRole({
@@ -41,7 +47,9 @@ export const admin = ac.newRole({
   version: ["upload", "delete"],
   annotation: ["create", "comment", "resolve", "delete"],
   approval: ["decide"],
-  client: ["manage"],
+  entity: ["manage"],
+  library: ["read", "upload", "manage"],
+  task: ["create", "update", "assign", "delete"],
 });
 
 export const owner = ac.newRole({
@@ -51,7 +59,9 @@ export const owner = ac.newRole({
   version: ["upload", "delete"],
   annotation: ["create", "comment", "resolve", "delete"],
   approval: ["decide"],
-  client: ["manage"],
+  entity: ["manage"],
+  library: ["read", "upload", "manage"],
+  task: ["create", "update", "assign", "delete"],
 });
 
 export const roles = { owner, admin, member, guest };

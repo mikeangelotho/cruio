@@ -2,7 +2,6 @@ import {
   For,
   Show,
   createEffect,
-  createMemo,
   createResource,
   createSignal,
 } from "solid-js";
@@ -16,13 +15,18 @@ import {
   restoreProject,
 } from "../lib/api";
 import {
-  createClient,
-  listClients,
+  createEntity,
+  listEntities,
   myOrgsQuery,
   requireUserQuery,
+  sessionQuery,
 } from "../lib/org-api";
 import { authClient } from "../lib/auth-client";
-import { Avatar, EntityAvatar, SquareAvatar } from "../components/Avatar";
+import { useViewerRole } from "../lib/viewer";
+import { EntityAvatar } from "../components/Avatar";
+import { AppNav } from "../components/AppNav";
+import { AppFooter } from "../components/AppFooter";
+import { useScope } from "../components/ScopeProvider";
 import { ContextMenu, type MenuState } from "../components/ContextMenu";
 import type { Project } from "../lib/types";
 
@@ -41,17 +45,15 @@ export default function Home() {
   const [filteredProjects, setFilteredProjects] = createSignal<Project[]>();
   const [archived, { refetch: refetchArchived }] =
     createResource(listArchivedProjects);
-  const [clientsList, { refetch: refetchClients }] =
-    createResource(listClients);
+  const [entitiesList, { refetch: refetchEntities }] =
+    createResource(listEntities);
   const [creating, setCreating] = createSignal(false);
-  const [userMenuOpen, setUserMenuOpen] = createSignal(false);
-  const [orgMenuOpen, setOrgMenuOpen] = createSignal(false);
-  const [entityMenuOpen, setEntityMenuOpen] = createSignal(false);
-  const [clientSel, setClientSel] = createSignal<string | null>(null);
+  const scope = useScope();
+  // entity picked in the create-project form ("", entity id, or "__new")
+  const [formEntity, setFormEntity] = createSignal("");
   const [ctxMenu, setCtxMenu] = createSignal<MenuState | null>(null);
 
   function openProjectMenu(p: Project, x: number, y: number) {
-    closeMenus();
     setCtxMenu({
       x,
       y,
@@ -94,11 +96,7 @@ export default function Home() {
     void refetchArchived();
   }
 
-  const activeOrg = createMemo(() =>
-    orgs()?.find((o) => o.id === user()?.activeOrganizationId),
-  );
-  const myRole = () => activeOrg()?.role;
-  const isAdmin = () => myRole() === "admin" || myRole() === "owner";
+  const { myRole, isAdmin } = useViewerRole(user, orgs);
 
   // no org yet → onboarding; org exists but none active → activate the first
   createEffect(() => {
@@ -111,34 +109,20 @@ export default function Home() {
       void authClient.organization
         .setActive({ organizationId: o[0].id })
         .then(async () => {
-          await revalidate(requireUserQuery.key);
+          await revalidate([requireUserQuery.key, sessionQuery.key, myOrgsQuery.key]);
           await refetch();
         });
     }
   });
 
   createEffect(() => {
-    if (clientSel()) {
-      setFilteredProjects(
-        projects()?.filter((p) => p.clientName === clientSel()),
-      );
+    const sel = scope.entity();
+    if (sel) {
+      setFilteredProjects(projects()?.filter((p) => p.entityId === sel.id));
     } else {
       setFilteredProjects(projects());
     }
   });
-
-  async function switchOrg(orgId: string) {
-    if (orgId === user()?.activeOrganizationId) return;
-    await authClient.organization.setActive({ organizationId: orgId });
-    await revalidate(requireUserQuery.key);
-    await refetch();
-  }
-
-  async function signOut() {
-    await authClient.signOut();
-    await revalidate(requireUserQuery.key);
-    navigate("/sign-in", { replace: true });
-  }
 
   async function submit(e: SubmitEvent) {
     e.preventDefault();
@@ -147,200 +131,37 @@ export default function Home() {
       form.elements.namedItem("name") as HTMLInputElement
     ).value.trim();
     if (!name) return;
-    let clientId: string | null = clientSel() || null;
-    if (clientSel() === "__new") {
+    let entityId: string | null = formEntity() || null;
+    if (formEntity() === "__new") {
       const newName = (
-        form.elements.namedItem("newClient") as HTMLInputElement
+        form.elements.namedItem("newEntity") as HTMLInputElement
       ).value.trim();
-      clientId = newName ? (await createClient(newName)).id : null;
-      void refetchClients();
+      entityId = newName ? (await createEntity(newName)).id : null;
+      void refetchEntities();
     }
     const id = crypto.randomUUID();
-    await createProject(id, name, clientId);
+    await createProject(id, name, entityId);
     navigate(`/p/${id}`);
   }
 
-  function closeMenus() {
-    setUserMenuOpen(false);
-    setOrgMenuOpen(false);
-    setEntityMenuOpen(false);
-  }
-
   return (
-    <div
-      class="p-1 h-screen bg-[#fffefe]"
-      onClick={() => {
-        closeMenus();
-      }}
-    >
+    <div class="p-1 h-screen bg-[#fffefe]">
       <div class="rounded-lg overflow-clip w-full flex flex-col h-full border border-[#eceaea]">
-        <nav class="min-h-12 px-4 flex items-center justify-between bg-[#f8f7f7] border-b border-[#f0eeee]">
-          <div class="flex items-center gap-3">
-            <Show when={activeOrg()}>
-              {(o) => (
-                <div class="relative" onClick={(e) => e.stopPropagation()}>
-                  <button
-                    class="flex items-center gap-1.5 cursor-pointer px-2 py-2 rounded-lg hover:bg-neutral-200/80"
-                    onClick={() => {
-                      closeMenus();
-                      setOrgMenuOpen((o) => !o);
-                    }}
-                  >
-                    <SquareAvatar name={o().name} size={21} />
-                    <span class="text-xs">{o().name}</span>
-                    <Icon
-                      icon="iconoir:nav-arrow-down"
-                      width="10"
-                      class="text-neutral-400"
-                    />
-                  </button>
-                  <Show when={orgMenuOpen()}>
-                    <div class="absolute top-full left-0 mt-1 w-48 bg-white border border-neutral-200 rounded-lg shadow-xl z-30">
-                      <div class="p-3 flex gap-3 items-center">
-                        <SquareAvatar name={o().name} size={32} />
-                        <div class="border-b border-neutral-100">
-                          <p class="text-xs font-medium text-neutral-800 truncate">
-                            {o().name}
-                          </p>
-                          <Show when={myRole()}>
-                            <p class="mt-0.5 text-[10px] text-neutral-400">
-                              {myRole()} · {activeOrg()?.name}
-                            </p>
-                          </Show>
-                        </div>
-                      </div>
-                      <Show when={isAdmin()}>
-                        <div class="p-3 border-b border-neutral-100">
-                          <A
-                            href="/settings/clients"
-                            class="rounded-md w-full flex items-center gap-2 px-3 py-2 text-left text-xs text-neutral-600 hover:bg-neutral-50 cursor-pointer"
-                          >
-                            <Icon icon="iconoir:building" width="14" /> Clients
-                          </A>
-                          <A
-                            href="/settings/members"
-                            class="rounded-md w-full flex items-center gap-2 px-3 py-2 text-left text-xs text-neutral-600 hover:bg-neutral-50 cursor-pointer"
-                          >
-                            <Icon icon="iconoir:group" width="14" /> Members
-                          </A>
-                        </div>
-                      </Show>
-                      <div class="p-3">
-                        <button
-                          class="rounded-md w-full flex items-center gap-2 px-3 py-2 text-left text-xs text-neutral-600 hover:bg-neutral-50 cursor-pointer"
-                          onClick={() => void signOut()}
-                        >
-                          <span class="w-full flex items-center justify-between">
-                            Switch Workspace
-                            <Icon icon="iconoir:nav-arrow-right" width="13" />
-                          </span>
-                        </button>
-                      </div>
-                    </div>
-                  </Show>
-                </div>
-              )}
-            </Show>
-            <Show when={clientsList()}>
-              {(l) => (
-                <div class="relative" onClick={(e) => e.stopPropagation()}>
-                  <button
-                    class="outline outline-neutral-200/80 flex items-center gap-1.5 cursor-pointer px-2 py-2 rounded-lg hover:bg-neutral-200/80"
-                    onClick={() => {
-                      closeMenus();
-                      setEntityMenuOpen((o) => !o);
-                    }}
-                  >
-                    <EntityAvatar name={clientSel() || "•"} size={21} />
-                    <span class="text-xs">{clientSel() || "All"}</span>
-                    <Icon
-                      icon="iconoir:arrow-separate-vertical"
-                      width="10"
-                      class="text-neutral-400"
-                    />
-                  </button>
-                  <Show when={entityMenuOpen()}>
-                    <div class="absolute top-full left-0 mt-1 w-48 bg-white border border-neutral-200 rounded-lg shadow-xl z-30">
-                      <div class="p-3">
-                        <div
-                          class="rounded-md w-full flex items-center gap-2 px-3 py-2 text-left text-xs text-neutral-600 hover:bg-neutral-50 cursor-pointer"
-                          onClick={() => {
-                            closeMenus();
-                            setClientSel(null);
-                          }}
-                        >
-                          <EntityAvatar name="•" size={18} />
-                          All Entities
-                        </div>
-                        <For each={l()}>
-                          {(c) => (
-                            <div
-                              class="rounded-md w-full flex items-center gap-2 px-3 py-2 text-left text-xs text-neutral-600 hover:bg-neutral-50 cursor-pointer"
-                              onClick={() => {
-                                closeMenus();
-                                setClientSel(c.name);
-                              }}
-                            >
-                              <EntityAvatar name={c.name} size={18} />
-                              {c.name}
-                            </div>
-                          )}
-                        </For>
-                      </div>
-                    </div>
-                  </Show>
-                </div>
-              )}
-            </Show>
-            {/* org switcher 
-            <Show when={(orgs() ?? []).length > 0}>
-              <select
-                class="text-xs border border-transparent hover:border-neutral-200 rounded px-1.5 py-1 bg-transparent outline-none cursor-pointer text-neutral-600"
-                value={user()?.activeOrganizationId ?? ""}
-                onChange={(e) => void switchOrg(e.currentTarget.value)}
-              >
-                <For each={orgs()}>
-                  {(o) => <option value={o.id}>{o.name}</option>}
-                </For>
-              </select>
-            </Show>
-            */}
-          </div>
-
-          <div class="flex items-center gap-6">
-            <Show when={isAdmin()}>
-              <A
-                href="/settings/clients"
-                class="flex items-center gap-1 text-xs text-neutral-500 hover:text-neutral-800"
-              >
-                <Icon icon="iconoir:building" width="14" />
-                Tasks
-              </A>
-              <A
-                href="/settings/clients"
-                class="flex items-center gap-1 text-xs text-neutral-500 hover:text-neutral-800"
-              >
-                <Icon icon="iconoir:building" width="14" />
-                Projects
-              </A>
-              <A
-                href="/settings/members"
-                class="flex items-center gap-1 text-xs text-neutral-500 hover:text-neutral-800"
-              >
-                <Icon icon="iconoir:media-image-folder" width="14" />
-                Library
-              </A>
-            </Show>
-            <div class="opacity-50 p-1 rounded hover:bg-neutral-200/80 cursor-pointer hover:opacity-100 flex items-center">
-              <Icon icon="iconoir:sidebar-expand" width="18" rotate={90} />
-            </div>
-          </div>
-        </nav>
+        <AppNav
+          onOrgSwitch={() => {
+            void refetch();
+            void refetchArchived();
+            void refetchEntities();
+          }}
+        />
 
         <main class="flex-1 overflow-y-auto p-8">
           <div class="max-w-3xl mx-auto">
             <div class="flex items-center justify-between mb-6">
-              <h1 class="text-lg font-semibold text-neutral-800">Projects</h1>
+              <div class="flex items-center gap-3">
+              <EntityAvatar name={scope.entity()?.name || "•"} size={32} />
+              <h1 class="text-lg font-semibold text-neutral-800">{scope.entity()?.name || "All"} Projects</h1>
+              </div>
               <Show when={isAdmin()}>
                 <button
                   class="flex items-center gap-1 text-xs bg-neutral-900 text-white rounded-md px-3 py-1.5 hover:bg-neutral-700 cursor-pointer"
@@ -367,31 +188,31 @@ export default function Home() {
                   />
                 </label>
                 <label class="flex-1 text-xs text-neutral-500">
-                  Client
+                  Entity
                   <select
                     class="mt-1 block w-full text-sm border border-neutral-200 rounded px-2 py-1.5 outline-none focus:border-sky-400 bg-white"
-                    onChange={(e) => setClientSel(e.currentTarget.value)}
+                    onChange={(e) => setFormEntity(e.currentTarget.value)}
                   >
-                    <option value="" selected={clientSel() === ""}>
-                      No client
+                    <option value="" selected={formEntity() === ""}>
+                      No entity
                     </option>
-                    <For each={clientsList() ?? []}>
+                    <For each={entitiesList() ?? []}>
                       {(c) => (
-                        <option value={c.id} selected={clientSel() === c.id}>
+                        <option value={c.id} selected={formEntity() === c.id}>
                           {c.name}
                         </option>
                       )}
                     </For>
-                    <option value="__new" selected={clientSel() === "__new"}>
-                      ＋ New client…
+                    <option value="__new" selected={formEntity() === "__new"}>
+                      ＋ New entity…
                     </option>
                   </select>
                 </label>
-                <Show when={clientSel() === "__new"}>
+                <Show when={formEntity() === "__new"}>
                   <label class="flex-1 text-xs text-neutral-500">
-                    New client name
+                    New entity name
                     <input
-                      name="newClient"
+                      name="newEntity"
                       required
                       class="mt-1 w-full text-sm border border-neutral-200 rounded px-2 py-1.5 outline-none focus:border-sky-400"
                       placeholder="Client or department"
@@ -444,9 +265,9 @@ export default function Home() {
                           {p.name}
                         </span>
                         <div class="flex items-center gap-1.5 shrink-0">
-                          <Show when={p.clientName}>
-                            <span class="bg-[#efeded] text-neutral-500 text-[11px] py-0.5 px-1.5 rounded">
-                              {p.clientName}
+                          <Show when={p.entityName}>
+                            <span class="bg-[#efeded] text-neutral-500 text-xs py-0.5 px-1.5 rounded">
+                              {p.entityName}
                             </span>
                           </Show>
                           <button
@@ -488,14 +309,14 @@ export default function Home() {
                           width="14"
                           class="text-neutral-300"
                         />
-                        <div class="flex-1 min-w-0">
-                          <p class="text-xs font-medium text-neutral-600 truncate">
+                        <div class="flex-1 min-w-0 flex items-center gap-1.5">
+                          <p class="flex-1 min-w-0 text-xs font-medium text-neutral-600 truncate">
                             {p.name}
                           </p>
-                          <Show when={p.clientName}>
-                            <p class="text-[10px] text-neutral-400 truncate">
-                              {p.clientName}
-                            </p>
+                          <Show when={p.entityName}>
+                            <span class="shrink-0 bg-[#efeded] text-neutral-500 text-[10px] py-0.5 px-1.5 rounded">
+                              {p.entityName}
+                            </span>
                           </Show>
                         </div>
                         <button
@@ -513,61 +334,7 @@ export default function Home() {
           </div>
         </main>
 
-        <footer class="relative min-h-7 px-3 py-1 flex gap-3 items-center justify-between bg-[#f8f7f7] border-t border-[#f0eeee] text-[11px] text-neutral-400">
-          <div class="w-full flex items-center justify-start">
-            <Show when={user()}>
-              {(u) => (
-                <div class="relative" onClick={(e) => e.stopPropagation()}>
-                  <button
-                    class="flex items-center gap-1.5 cursor-pointer px-1 py-1 rounded-lg hover:bg-neutral-200/80"
-                    onClick={() => {
-                      closeMenus();
-                      setUserMenuOpen((o) => !o);
-                    }}
-                  >
-                    <Avatar name={u().name} size={21} />
-                  </button>
-                  <Show when={userMenuOpen()}>
-                    <div class="absolute bottom-full left-0 mt-1 w-48 bg-white border border-neutral-200 rounded-lg shadow-xl py-1 z-30">
-                      <div class="px-3 py-2 border-b border-neutral-100">
-                        <p class="text-xs font-medium text-neutral-800 truncate">
-                          {u().name}
-                        </p>
-                        <p class="text-[10px] text-neutral-400 truncate">
-                          {u().email}
-                        </p>
-                        <Show when={myRole()}>
-                          <p class="mt-0.5 text-[10px] text-neutral-400">
-                            {myRole()} · {activeOrg()?.name}
-                          </p>
-                        </Show>
-                      </div>
-                      <button
-                        class="w-full flex items-center gap-2 px-3 py-2 text-left text-xs text-neutral-600 hover:bg-neutral-50 cursor-pointer"
-                        onClick={() => void signOut()}
-                      >
-                        <Icon icon="iconoir:log-out" width="13" /> Sign out
-                      </button>
-                    </div>
-                  </Show>
-                </div>
-              )}
-            </Show>
-          </div>
-          <div class="w-full flex items-center justify-center">
-            <a
-              href="./"
-              class="opacity-20 hover:opacity-100 transition-opacity ease-in-out duration-150"
-            >
-              <img style="height: 16px;" src="/CRIO_Logo-2026.svg" />
-            </a>
-          </div>
-          <div class="w-full flex items-center justify-end">
-            <div class="opacity-50 p-1 rounded hover:bg-neutral-200/80 cursor-pointer hover:opacity-100 flex items-center">
-              <Icon icon="iconoir:more-horiz" width="18" />
-            </div>
-          </div>
-        </footer>
+        <AppFooter />
       </div>
       <ContextMenu state={ctxMenu()} onClose={() => setCtxMenu(null)} />
     </div>

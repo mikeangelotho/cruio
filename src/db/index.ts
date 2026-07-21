@@ -93,7 +93,7 @@ CREATE TABLE IF NOT EXISTS invitation (
 );
 CREATE INDEX IF NOT EXISTS invitation_organizationId_idx ON invitation(organization_id);
 CREATE INDEX IF NOT EXISTS invitation_email_idx ON invitation(email);
-CREATE TABLE IF NOT EXISTS clients (
+CREATE TABLE IF NOT EXISTS entities (
   id TEXT PRIMARY KEY,
   organization_id TEXT NOT NULL REFERENCES organization(id),
   name TEXT NOT NULL,
@@ -103,7 +103,7 @@ CREATE TABLE IF NOT EXISTS projects (
   id TEXT PRIMARY KEY,
   organization_id TEXT NOT NULL REFERENCES organization(id),
   name TEXT NOT NULL,
-  client_id TEXT REFERENCES clients(id),
+  entity_id TEXT REFERENCES entities(id),
   phase TEXT NOT NULL DEFAULT 'pre_production',
   created_by TEXT NOT NULL REFERENCES user(id),
   created_at INTEGER NOT NULL,
@@ -187,60 +187,222 @@ CREATE TABLE IF NOT EXISTS invitation_grants (
   project_id TEXT NOT NULL REFERENCES projects(id)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS uidx_invitation_grants ON invitation_grants(invitation_id, project_id);
+CREATE TABLE IF NOT EXISTS tasks (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL REFERENCES organization(id),
+  title TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'todo',
+  priority TEXT NOT NULL DEFAULT 'none',
+  assignee_id TEXT REFERENCES user(id),
+  due_date INTEGER,
+  project_id TEXT REFERENCES projects(id),
+  deliverable_id TEXT REFERENCES deliverables(id),
+  created_by TEXT NOT NULL REFERENCES user(id),
+  created_at INTEGER NOT NULL,
+  completed_at INTEGER,
+  deleted_at INTEGER,
+  deleted_by TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_tasks_org_status ON tasks(organization_id, status);
+CREATE INDEX IF NOT EXISTS idx_tasks_assignee ON tasks(assignee_id);
+CREATE TABLE IF NOT EXISTS library_folders (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL REFERENCES organization(id),
+  project_id TEXT REFERENCES projects(id),
+  name TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uidx_library_folders_project ON library_folders(project_id);
+CREATE TABLE IF NOT EXISTS library_files (
+  id TEXT PRIMARY KEY,
+  folder_id TEXT NOT NULL REFERENCES library_folders(id),
+  organization_id TEXT NOT NULL REFERENCES organization(id),
+  name TEXT NOT NULL,
+  file_name TEXT NOT NULL,
+  mime TEXT NOT NULL,
+  size INTEGER NOT NULL,
+  width INTEGER,
+  height INTEGER,
+  version_id TEXT REFERENCES versions(id),
+  uploaded_by TEXT NOT NULL REFERENCES user(id),
+  created_at INTEGER NOT NULL,
+  deleted_at INTEGER,
+  deleted_by TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_library_files_file_name ON library_files(file_name);
+CREATE INDEX IF NOT EXISTS idx_library_files_folder ON library_files(folder_id);
+CREATE UNIQUE INDEX IF NOT EXISTS uidx_library_files_version ON library_files(version_id);
 `;
 
+async function tableExists(name: string) {
+  const r = await client.execute({
+    sql: "SELECT name FROM sqlite_master WHERE type = 'table' AND name = ?",
+    args: [name],
+  });
+  return r.rows.length > 0;
+}
+
+async function columnsOf(table: string) {
+  const t = await client.execute(`PRAGMA table_info(${table})`);
+  return t.rows.map(r => r.name as string);
+}
+
 /**
- * One-off dev migration: older DBs have projects.client_name (free text) and
- * no client_id. Add the column and backfill org-level client rows from the
- * distinct legacy names. New DBs skip both branches.
+ * Dev migrations for older DBs. Runs BEFORE the DDL so renames happen before
+ * CREATE TABLE IF NOT EXISTS can create empty shadow tables under the new
+ * names. Every step is guarded by table/column existence, so a fresh DB
+ * no-ops straight through and is built entirely by the DDL.
  */
 async function migrate() {
+  // clients → entities rename (2026-07). If a previous boot's DDL already
+  // created an empty `entities` shadow table alongside `clients`, drop it
+  // so the rename can proceed.
+  if (await tableExists("clients")) {
+    if (await tableExists("entities")) {
+      const count = await client.execute("SELECT COUNT(*) AS n FROM entities");
+      if (Number(count.rows[0].n) === 0) {
+        await client.execute("DROP TABLE entities");
+        await client.execute("ALTER TABLE clients RENAME TO entities");
+      }
+    } else {
+      await client.execute("ALTER TABLE clients RENAME TO entities");
+    }
+  }
+
   // soft-delete columns on older dev DBs
   for (const table of ["deliverables", "versions"]) {
-    const t = await client.execute(`PRAGMA table_info(${table})`);
-    const tCols = t.rows.map(r => r.name as string);
+    if (!(await tableExists(table))) continue;
+    const tCols = await columnsOf(table);
     if (!tCols.includes("deleted_at")) {
       await client.execute(`ALTER TABLE ${table} ADD COLUMN deleted_at INTEGER`);
       await client.execute(`ALTER TABLE ${table} ADD COLUMN deleted_by TEXT`);
     }
   }
-  const info = await client.execute("PRAGMA table_info(projects)");
-  const cols = info.rows.map(r => r.name as string);
-  if (!cols.includes("archived_at")) {
-    await client.execute("ALTER TABLE projects ADD COLUMN archived_at INTEGER");
-    await client.execute("ALTER TABLE projects ADD COLUMN archived_by TEXT");
+
+  if (await tableExists("tasks")) {
+    const cols = await columnsOf("tasks");
+    if (!cols.includes("priority")) {
+      await client.execute("ALTER TABLE tasks ADD COLUMN priority TEXT NOT NULL DEFAULT 'none'");
+    }
   }
-  if (!cols.includes("client_id")) {
-    await client.execute("ALTER TABLE projects ADD COLUMN client_id TEXT REFERENCES clients(id)");
-  }
-  if (cols.includes("client_name")) {
-    const legacy = await client.execute(
-      "SELECT DISTINCT organization_id, client_name FROM projects WHERE client_name != '' AND client_id IS NULL",
-    );
-    for (const row of legacy.rows) {
-      const orgId = row.organization_id as string;
-      const name = row.client_name as string;
-      const existing = await client.execute({
-        sql: "SELECT id FROM clients WHERE organization_id = ? AND name = ?",
-        args: [orgId, name],
-      });
-      let clientId = existing.rows[0]?.id as string | undefined;
-      if (!clientId) {
-        clientId = randomUUID();
+
+  if (await tableExists("projects")) {
+    const cols = await columnsOf("projects");
+    if (!cols.includes("archived_at")) {
+      await client.execute("ALTER TABLE projects ADD COLUMN archived_at INTEGER");
+      await client.execute("ALTER TABLE projects ADD COLUMN archived_by TEXT");
+    }
+    if (cols.includes("client_id") && !cols.includes("entity_id")) {
+      await client.execute("ALTER TABLE projects RENAME COLUMN client_id TO entity_id");
+    }
+    if (!cols.includes("client_id") && !cols.includes("entity_id")) {
+      await client.execute("ALTER TABLE projects ADD COLUMN entity_id TEXT REFERENCES entities(id)");
+    }
+    // legacy free-text projects.client_name → entities rows
+    if (cols.includes("client_name")) {
+      const legacy = await client.execute(
+        "SELECT DISTINCT organization_id, client_name FROM projects WHERE client_name != '' AND entity_id IS NULL",
+      );
+      for (const row of legacy.rows) {
+        const orgId = row.organization_id as string;
+        const name = row.client_name as string;
+        const existing = await client.execute({
+          sql: "SELECT id FROM entities WHERE organization_id = ? AND name = ?",
+          args: [orgId, name],
+        });
+        let entityId = existing.rows[0]?.id as string | undefined;
+        if (!entityId) {
+          entityId = randomUUID();
+          await client.execute({
+            sql: "INSERT INTO entities (id, organization_id, name, created_at) VALUES (?, ?, ?, ?)",
+            args: [entityId, orgId, name, Date.now()],
+          });
+        }
         await client.execute({
-          sql: "INSERT INTO clients (id, organization_id, name, created_at) VALUES (?, ?, ?, ?)",
-          args: [clientId, orgId, name, Date.now()],
+          sql: "UPDATE projects SET entity_id = ? WHERE organization_id = ? AND client_name = ? AND entity_id IS NULL",
+          args: [entityId, orgId, name],
         });
       }
-      await client.execute({
-        sql: "UPDATE projects SET client_id = ? WHERE organization_id = ? AND client_name = ? AND client_id IS NULL",
-        args: [clientId, orgId, name],
-      });
     }
   }
 }
 
-const ready = client.executeMultiple(DDL).then(migrate);
+/**
+ * Post-DDL reconciler, runs every boot (cheap at this scale). Guarantees:
+ * every project has its library folder (named after the project), and every
+ * non-deleted version has a mirror row in the project's folder — so any call
+ * site missed by the mirroring helpers self-heals on the next boot.
+ */
+async function backfillLibrary() {
+  const { statSync } = await import("node:fs");
+  const { extname } = await import("node:path");
+  const { FILE_TYPES } = await import("../lib/filetypes");
+
+  const missingFolders = await client.execute(`
+    SELECT p.id, p.organization_id, p.name FROM projects p
+    LEFT JOIN library_folders f ON f.project_id = p.id
+    WHERE f.id IS NULL`);
+  for (const r of missingFolders.rows) {
+    await client.execute({
+      sql: "INSERT INTO library_folders (id, organization_id, project_id, name, created_at) VALUES (?, ?, ?, ?, ?)",
+      args: [randomUUID(), r.organization_id as string, r.id as string, r.name as string, Date.now()],
+    });
+  }
+  // keep project-folder names in sync with project names
+  await client.execute(`
+    UPDATE library_folders
+    SET name = (SELECT name FROM projects WHERE projects.id = library_folders.project_id)
+    WHERE project_id IS NOT NULL`);
+
+  const missingMirrors = await client.execute(`
+    SELECT v.id, v.file_name, v.width, v.height, v.number, v.created_at,
+           d.name AS deliverable_name, d.project_id, p.organization_id, p.created_by
+    FROM versions v
+    JOIN deliverables d ON d.id = v.deliverable_id
+    JOIN projects p ON p.id = d.project_id
+    LEFT JOIN library_files lf ON lf.version_id = v.id
+    WHERE lf.id IS NULL AND v.deleted_at IS NULL AND d.deleted_at IS NULL`);
+  for (const r of missingMirrors.rows) {
+    const [folder] = (
+      await client.execute({
+        sql: "SELECT id FROM library_folders WHERE project_id = ?",
+        args: [r.project_id as string],
+      })
+    ).rows;
+    if (!folder) continue;
+    const ext = extname(r.file_name as string).toLowerCase();
+    let size = 0;
+    try {
+      size = statSync(join(UPLOADS_DIR, r.file_name as string)).size;
+    } catch {
+      continue; // file missing on disk — don't mirror a dead reference
+    }
+    await client.execute({
+      sql: `INSERT INTO library_files
+        (id, folder_id, organization_id, name, file_name, mime, size, width, height, version_id, uploaded_by, created_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+      args: [
+        randomUUID(),
+        folder.id as string,
+        r.organization_id as string,
+        `${r.deliverable_name} v${r.number}${ext}`,
+        r.file_name as string,
+        FILE_TYPES[ext]?.mime ?? "application/octet-stream",
+        size,
+        (r.width as number) ?? null,
+        (r.height as number) ?? null,
+        r.id as string,
+        r.created_by as string,
+        r.created_at as number,
+      ],
+    });
+  }
+}
+
+const ready = migrate()
+  .then(() => client.executeMultiple(DDL))
+  .then(backfillLibrary);
 
 export async function getDb() {
   await ready;

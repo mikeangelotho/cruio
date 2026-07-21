@@ -6,6 +6,7 @@ import { and, eq, ne, max } from "drizzle-orm";
 import { getDb, UPLOADS_DIR } from "../../db";
 import { deliverables, projects, versions } from "../../db/schema";
 import { getSession, recordHistory, requireProjectAccess } from "../../lib/guard";
+import { mirrorVersion } from "../../lib/library";
 
 const ALLOWED = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg", ".avif"]);
 
@@ -70,6 +71,13 @@ export async function POST(event: { request: Request }) {
 
   const row = { id, deliverableId, number, fileName, width, height, createdAt: Date.now() };
   await db.insert(versions).values(row);
+  await mirrorVersion(
+    db,
+    { id, fileName, width, height, number, size: buffer.length },
+    { id: deliverable.projectId, organizationId: access.project.organizationId },
+    deliverable.name,
+    access.session.userId,
+  );
 
   // A new version puts the deliverable (back) into review.
   await db.update(deliverables).set({ status: "in_review" }).where(eq(deliverables.id, deliverableId));

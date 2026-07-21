@@ -10,8 +10,9 @@ import { user, organization, invitation } from "./auth-schema";
 
 export * from "./auth-schema";
 
-// Org-level client (or internal department) that projects are grouped under.
-export const clients = sqliteTable("clients", {
+// Org-level entity — a client (agency workspace) or a department (internal
+// workspace) — that projects are grouped under.
+export const entities = sqliteTable("entities", {
   id: text("id").primaryKey(),
   organizationId: text("organization_id")
     .notNull()
@@ -26,7 +27,7 @@ export const projects = sqliteTable("projects", {
     .notNull()
     .references(() => organization.id),
   name: text("name").notNull(),
-  clientId: text("client_id").references(() => clients.id),
+  entityId: text("entity_id").references(() => entities.id),
   phase: text("phase").notNull().default("pre_production"),
   createdBy: text("created_by")
     .notNull()
@@ -160,6 +161,88 @@ export const history = sqliteTable(
     createdAt: integer("created_at").notNull(),
   },
   (table) => [index("idx_history_project").on(table.projectId, table.createdAt)],
+);
+
+// Library folders: workspace-level (projectId null, user-managed) or the
+// auto-created per-project folder (projectId set; created with the project,
+// deleted only when the project is deleted — survives archive).
+export const libraryFolders = sqliteTable(
+  "library_folders",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id),
+    projectId: text("project_id").references(() => projects.id),
+    name: text("name").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [uniqueIndex("uidx_library_folders_project").on(table.projectId)],
+);
+
+// Library files. Rows with versionId set are mirrors of deliverable versions —
+// they share the version's fileName on disk (no copy) and follow its
+// soft-delete state via src/lib/library.ts helpers.
+export const libraryFiles = sqliteTable(
+  "library_files",
+  {
+    id: text("id").primaryKey(),
+    folderId: text("folder_id")
+      .notNull()
+      .references(() => libraryFolders.id),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id),
+    name: text("name").notNull(),
+    fileName: text("file_name").notNull(),
+    mime: text("mime").notNull(),
+    size: integer("size").notNull(),
+    width: integer("width"),
+    height: integer("height"),
+    versionId: text("version_id").references(() => versions.id),
+    uploadedBy: text("uploaded_by")
+      .notNull()
+      .references(() => user.id),
+    createdAt: integer("created_at").notNull(),
+    deletedAt: integer("deleted_at"),
+    deletedBy: text("deleted_by"),
+  },
+  (table) => [
+    index("idx_library_files_file_name").on(table.fileName),
+    index("idx_library_files_folder").on(table.folderId),
+    uniqueIndex("uidx_library_files_version").on(table.versionId),
+  ],
+);
+
+// Assignable work items. Entity scoping is derived (task → project →
+// entity_id); tasks without a project only appear under "All Entities".
+export const tasks = sqliteTable(
+  "tasks",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id),
+    title: text("title").notNull(),
+    description: text("description").notNull().default(""),
+    status: text("status").notNull().default("todo"),
+    priority: text("priority").notNull().default("none"),
+    assigneeId: text("assignee_id").references(() => user.id),
+    dueDate: integer("due_date"),
+    projectId: text("project_id").references(() => projects.id),
+    deliverableId: text("deliverable_id").references(() => deliverables.id),
+    createdBy: text("created_by")
+      .notNull()
+      .references(() => user.id),
+    createdAt: integer("created_at").notNull(),
+    completedAt: integer("completed_at"),
+    deletedAt: integer("deleted_at"),
+    deletedBy: text("deleted_by"),
+  },
+  (table) => [
+    index("idx_tasks_org_status").on(table.organizationId, table.status),
+    index("idx_tasks_assignee").on(table.assigneeId),
+  ],
 );
 
 // Project scope attached to a pending guest invitation; copied into

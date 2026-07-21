@@ -1,4 +1,5 @@
 import { For, Show, createEffect, createMemo, createSignal } from "solid-js";
+import { useNavigate } from "@solidjs/router";
 import { Icon } from "@iconify-icon/solid";
 import type { ProjectStore } from "../lib/store";
 import type { Deliverable } from "../lib/types";
@@ -26,10 +27,13 @@ export function CommandPalette(props: {
     fit: () => void;
     compare: () => void;
     history: () => void;
+    info: () => void;
     deleteVersion: () => void;
     deleteDeliverable: () => void;
+    search: () => void;
   };
 }) {
+  const navigate = useNavigate();
   const [query, setQuery] = createSignal("");
   const [active, setActive] = createSignal(0);
   let inputRef: HTMLInputElement | undefined;
@@ -66,6 +70,7 @@ export function CommandPalette(props: {
           ...(can("deliverable", "delete")
             ? [{ id: "delete-deliverable", label: "Delete deliverable", icon: "iconoir:trash", run: a.deleteDeliverable }]
             : []),
+          { id: "info", label: "Project info", hint: "I", icon: "iconoir:info-circle", run: a.info },
           { id: "history", label: "Project history", hint: "H", icon: "iconoir:clock", run: a.history },
           { id: "fit", label: "Fit to screen", hint: "F", icon: "iconoir:frame", run: a.fit },
           { id: "back", label: "Back to workspace", hint: "Esc", icon: "iconoir:arrow-left", run: a.exitReview },
@@ -74,6 +79,7 @@ export function CommandPalette(props: {
           ...(can("deliverable", "create")
             ? [{ id: "new", label: "New deliverable", hint: "N", icon: "iconoir:plus", run: a.newDeliverable }]
             : []),
+          { id: "info", label: "Project info", hint: "I", icon: "iconoir:info-circle", run: a.info },
           { id: "history", label: "Project history", hint: "H", icon: "iconoir:clock", run: a.history },
           { id: "fit", label: "Fit to screen", hint: "F", icon: "iconoir:frame", run: a.fit },
         ];
@@ -84,8 +90,17 @@ export function CommandPalette(props: {
       icon: "iconoir:media-image",
       run: () => a.openDeliverable(d),
     }));
+    const isGuest = props.store.state.graph?.viewer.role === "guest";
+    const nav: Item[] = [
+      { id: "search", label: "Search", hint: "/", icon: "iconoir:search", run: a.search },
+      { id: "go-projects", label: "Go to Projects", icon: "iconoir:folder", run: () => navigate("/") },
+      { id: "go-library", label: "Go to Library", icon: "iconoir:media-image-folder", run: () => navigate("/library") },
+      ...(!isGuest
+        ? [{ id: "go-tasks", label: "Go to Tasks", icon: "iconoir:task-list", run: () => navigate("/tasks") }]
+        : []),
+    ];
     const q = query().toLowerCase().trim();
-    const all = [...base, ...jumps];
+    const all = [...base, ...jumps, ...nav];
     if (!q) return all;
     return all.filter(i => i.label.toLowerCase().includes(q));
   });

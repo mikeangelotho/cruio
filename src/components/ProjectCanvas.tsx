@@ -11,10 +11,12 @@ import type { Annotation, Decision, Deliverable, Version } from "../lib/types";
 import { ContextMenu, type MenuEntry, type MenuState } from "./ContextMenu";
 import { DeliverableCard, STATUS_META } from "./DeliverableCard";
 import { HistoryPanel } from "./HistoryPanel";
+import { ProjectInfoModal } from "./ProjectInfoModal";
 import { ReviewPlane } from "./ReviewPlane";
 import { ThreadSidebar } from "./ThreadSidebar";
 import { StatusRail } from "./StatusRail";
 import { CommandPalette } from "./CommandPalette";
+import { GlobalSearch } from "./GlobalSearch";
 
 export function ProjectCanvas() {
   const store = useProject();
@@ -29,8 +31,10 @@ export function ProjectCanvas() {
   const [versionOverride, setVersionOverride] = createSignal<string | null>(null);
   const [compare, setCompare] = createSignal(false);
   const [historyOpen, setHistoryOpen] = createSignal(false);
+  const [infoOpen, setInfoOpen] = createSignal(false);
   const [sidebarOpen, setSidebarOpen] = createSignal(true);
   const [paletteOpen, setPaletteOpen] = createSignal(false);
+  const [searchOpen, setSearchOpen] = createSignal(false);
   const [panning, setPanning] = createSignal(false);
   const [statusMsg, setStatusMsg] = createSignal("");
   const [pendingDecision, setPendingDecision] = createSignal<Decision | null>(null);
@@ -56,6 +60,20 @@ export function ProjectCanvas() {
   const canUpload = () => store.can("version", "upload");
   const canDeleteVersion = () => store.can("version", "delete");
   const canDeleteDeliverable = () => store.can("deliverable", "delete");
+  const canTask = () => store.can("task", "create");
+
+  function createTaskFromDeliverable(d: Deliverable) {
+    const title = window.prompt("Task title", `Revise ${d.name}`)?.trim();
+    if (!title) return;
+    const graph = store.state.graph;
+    if (!graph) return;
+    void import("../lib/task-api").then(({ createTask }) =>
+      createTask(crypto.randomUUID(), title, {
+        projectId: graph.project.id,
+        deliverableId: d.id,
+      }).catch(err => window.alert(String(err instanceof Error ? err.message : err))),
+    );
+  }
 
   const currentVersion = createMemo<Version | undefined>(() => {
     const d = current();
@@ -409,6 +427,7 @@ export function ProjectCanvas() {
             },
           ]
         : []),
+      { label: "Project info", icon: "iconoir:info-circle", hint: "I", run: () => setInfoOpen(true) },
       { label: "Project history", icon: "iconoir:clock", hint: "H", run: () => setHistoryOpen(o => !o) },
       ...(!locked()
         ? [{ label: "Fit to screen", icon: "iconoir:frame", hint: "F", run: () => fitWorkspace(true) }]
@@ -432,6 +451,10 @@ export function ProjectCanvas() {
             },
           ]
         : []),
+      ...(canTask()
+        ? [{ label: "Create task", icon: "iconoir:task-list", run: () => createTaskFromDeliverable(d) }]
+        : []),
+      { label: "Project info", icon: "iconoir:info-circle", hint: "I", run: () => setInfoOpen(true) },
       { label: "Project history", icon: "iconoir:clock", hint: "H", run: () => setHistoryOpen(o => !o) },
       { label: "Fit to screen", icon: "iconoir:frame", hint: "F", run: () => fitPlane(true, 250) },
       ...(canDeleteVersion() && v
@@ -467,6 +490,9 @@ export function ProjectCanvas() {
         : []),
       ...(canUpload()
         ? [{ label: "Upload version", icon: "iconoir:upload", run: () => openFilePicker(d) }]
+        : []),
+      ...(canTask()
+        ? [{ label: "Create task", icon: "iconoir:task-list", run: () => createTaskFromDeliverable(d) }]
         : []),
       ...(canDeleteDeliverable()
         ? [
@@ -554,10 +580,19 @@ export function ProjectCanvas() {
       setPaletteOpen(o => !o);
       return;
     }
-    if (paletteOpen() || isTyping(e)) return;
+    if (paletteOpen() || searchOpen() || isTyping(e)) return;
 
+    if (e.key === "/") {
+      e.preventDefault();
+      setSearchOpen(true);
+      return;
+    }
     if (e.key === "h" || e.key === "H") {
       setHistoryOpen(o => !o);
+      return;
+    }
+    if (e.key === "i" || e.key === "I") {
+      setInfoOpen(o => !o);
       return;
     }
 
@@ -566,7 +601,8 @@ export function ProjectCanvas() {
       // review mode
       switch (e.key) {
         case "Escape":
-          if (historyOpen()) setHistoryOpen(false);
+          if (infoOpen()) setInfoOpen(false);
+          else if (historyOpen()) setHistoryOpen(false);
           else if (pendingDecision()) setPendingDecision(null);
           else if (selectedAnnId()) selectAnnotation(null);
           else exitReview();
@@ -603,7 +639,8 @@ export function ProjectCanvas() {
       // workspace mode
       switch (e.key) {
         case "Escape":
-          if (historyOpen()) setHistoryOpen(false);
+          if (infoOpen()) setInfoOpen(false);
+          else if (historyOpen()) setHistoryOpen(false);
           return;
         case "n":
         case "N":
@@ -629,8 +666,63 @@ export function ProjectCanvas() {
     return {
       total: list.length,
       inReview: list.filter(d => d.status === "in_review").length,
+      revisions: list.filter(d => d.status === "revisions_requested").length,
       approved: list.filter(d => d.status === "approved").length,
     };
+  });
+
+  type Hint = { key?: string; label: string };
+
+  /** Status-bar shortcut hints, structured (not a joined string) so they can
+   * render as distinct key/label pills instead of blending into plain text. */
+  const hints = createMemo<Hint[]>(() => {
+    const d = current();
+    if (d) {
+      return [
+        { label: "click to pin" },
+        { label: "right-click for actions" },
+        ...(canUpload() ? [{ key: "U", label: "upload" }] : []),
+        { label: "1–9 versions" },
+        ...(d.versions.length > 1
+          ? [{ key: "C", label: compare() ? "exit compare" : "compare" }]
+          : []),
+        { key: "←→", label: "next" },
+        { key: "F", label: "fit" },
+        { key: "H", label: "history" },
+        { key: "I", label: "info" },
+        { key: "Esc", label: "back" },
+        { key: "⌘K", label: "search" },
+      ];
+    }
+    if (locked()) {
+      return canCreate()
+        ? [
+            { key: "N", label: "new" },
+            { label: "double-click to add" },
+            { label: "drop images anywhere" },
+            { key: "⌘K", label: "search" },
+          ]
+        : [{ label: "nothing shared for review yet" }];
+    }
+    return canCreate()
+      ? [
+          { key: "N", label: "new" },
+          { label: "double-click to add" },
+          { label: "drop images" },
+          { label: "right-click for actions" },
+          { key: "F", label: "fit" },
+          { key: "H", label: "history" },
+          { key: "I", label: "info" },
+          { key: "⌘K", label: "search" },
+        ]
+      : [
+          { label: "click a card to review" },
+          { label: "right-click for actions" },
+          { key: "F", label: "fit" },
+          { key: "H", label: "history" },
+          { key: "I", label: "info" },
+          { key: "⌘K", label: "search" },
+        ];
   });
 
   return (
@@ -649,9 +741,9 @@ export function ProjectCanvas() {
             <span class="font-medium text-neutral-800 truncate">
               {store.state.graph?.project.name ?? "…"}
             </span>
-            <Show when={store.state.graph?.project.clientName}>
+            <Show when={store.state.graph?.project.entityName}>
               <span class="bg-[#efeded] text-neutral-500 text-xs py-0.5 px-1.5 rounded">
-                {store.state.graph!.project.clientName}
+                {store.state.graph!.project.entityName}
               </span>
             </Show>
             <Show when={current()}>
@@ -676,6 +768,13 @@ export function ProjectCanvas() {
           </div>
 
           <div class="flex items-center gap-2 relative">
+            <button
+              class="flex items-center p-1.5 rounded cursor-pointer text-neutral-500 hover:text-neutral-800"
+              title="Search (/)"
+              onClick={() => setSearchOpen(true)}
+            >
+              <Icon icon="iconoir:search" width="15" />
+            </button>
             <button
               class="flex items-center p-1.5 rounded cursor-pointer"
               classList={{
@@ -1033,59 +1132,101 @@ export function ProjectCanvas() {
         </div>
 
         {/* ---- status bar ---- */}
-        <footer class="min-h-7 px-3 flex items-center justify-between bg-[#f8f7f7] border-t border-[#f0eeee] text-[11px] text-neutral-400">
-          <div class="flex items-center gap-3">
+        <footer class="min-h-8 px-2 flex items-center justify-between gap-3 bg-[#f8f7f7] border-t border-[#f0eeee] text-[11px]">
+          <div class="flex items-center gap-2 min-w-0">
+            <button
+              class="flex items-center gap-1 shrink-0 text-neutral-500 hover:text-neutral-800 hover:bg-neutral-200/60 rounded px-1.5 py-1 cursor-pointer"
+              title="Project info (I)"
+              onClick={() => setInfoOpen(true)}
+            >
+              <Icon icon="iconoir:info-circle" width="13" />
+            </button>
+            <span class="w-px h-3.5 bg-neutral-200 shrink-0" />
+
             <Show
               when={current()}
               fallback={
-                <span>
-                  {counts().total} deliverable{counts().total === 1 ? "" : "s"} ·{" "}
-                  {counts().inReview} in review · {counts().approved} approved
-                </span>
+                <div class="flex items-center gap-1.5 min-w-0 overflow-hidden">
+                  <span class="shrink-0 font-medium text-neutral-600">
+                    {counts().total} deliverable{counts().total === 1 ? "" : "s"}
+                  </span>
+                  <Show when={counts().inReview > 0}>
+                    <span class="shrink-0 flex items-center gap-1 text-[10px] font-medium rounded-full px-1.5 py-px bg-sky-50 text-sky-700">
+                      <span class="size-1.5 rounded-full bg-sky-500" />
+                      {counts().inReview} in review
+                    </span>
+                  </Show>
+                  <Show when={counts().revisions > 0}>
+                    <span class="shrink-0 flex items-center gap-1 text-[10px] font-medium rounded-full px-1.5 py-px bg-amber-50 text-amber-700">
+                      <span class="size-1.5 rounded-full bg-amber-500" />
+                      {counts().revisions} need revisions
+                    </span>
+                  </Show>
+                  <Show when={counts().approved > 0}>
+                    <span class="shrink-0 flex items-center gap-1 text-[10px] font-medium rounded-full px-1.5 py-px bg-emerald-50 text-emerald-700">
+                      <span class="size-1.5 rounded-full bg-emerald-500" />
+                      {counts().approved} approved
+                    </span>
+                  </Show>
+                </div>
               }
             >
               {d => (
-                <span>
-                  {d().name}
+                <div class="flex items-center gap-1.5 min-w-0 overflow-hidden">
+                  <span class="shrink-0 font-medium text-neutral-700 truncate max-w-40">
+                    {d().name}
+                  </span>
+                  <span
+                    class={`shrink-0 text-[10px] font-medium rounded-full px-1.5 py-px ${STATUS_META[d().status].chip}`}
+                  >
+                    {STATUS_META[d().status].label}
+                  </span>
                   <Show when={currentVersion()}>
                     {v => (
-                      <>
-                        {" "}· v{v().number} · {v().width}×{v().height}
-                      </>
+                      <span class="shrink-0 flex items-center gap-1.5">
+                        <span class="text-[10px] font-medium text-neutral-600 bg-neutral-200/70 rounded px-1 py-px">
+                          v{v().number}
+                        </span>
+                        <span class="text-neutral-400">
+                          {v().width}×{v().height}
+                        </span>
+                      </span>
                     )}
                   </Show>
-                  {" "}· {openThreadCount()} open thread{openThreadCount() === 1 ? "" : "s"}
-                </span>
+                  <span
+                    class="shrink-0 flex items-center gap-1 text-[10px] font-medium rounded-full px-1.5 py-px"
+                    classList={{
+                      "bg-amber-50 text-amber-700": openThreadCount() > 0,
+                      "bg-neutral-200/60 text-neutral-500": openThreadCount() === 0,
+                    }}
+                  >
+                    {openThreadCount()} open thread{openThreadCount() === 1 ? "" : "s"}
+                  </span>
+                </div>
               )}
             </Show>
+
             <Show when={statusMsg()}>
-              <span class="text-neutral-600 font-medium">{statusMsg()}</span>
+              <span class="shrink-0 text-[10px] font-medium text-sky-700 bg-sky-50 rounded-full px-2 py-0.5 truncate">
+                {statusMsg()}
+              </span>
             </Show>
           </div>
-          <span class="hidden sm:block">
-            {current()
-              ? [
-                  "click image to pin",
-                  "right-click for actions",
-                  canUpload() && "U upload",
-                  "1–9 versions",
-                  current()!.versions.length > 1 && (compare() ? "C exit compare" : "C compare"),
-                  "← → next",
-                  "F fit",
-                  "H history",
-                  "Esc back",
-                  "⌘K",
-                ]
-                  .filter(Boolean)
-                  .join(" · ")
-              : locked()
-                ? canCreate()
-                  ? "N new · double-click to add · drop images anywhere · ⌘K"
-                  : "Nothing shared for review yet"
-                : canCreate()
-                  ? "N new · double-click to add · drop images · right-click for actions · F fit · H history · ⌘K"
-                  : "click a card to review · right-click for actions · F fit · H history · ⌘K"}
-          </span>
+
+          <div class="hidden sm:flex items-center gap-2.5 text-neutral-400 shrink-0">
+            <For each={hints()}>
+              {h => (
+                <span class="flex items-center gap-1 whitespace-nowrap">
+                  <Show when={h.key}>
+                    <kbd class="text-[9px] font-semibold text-neutral-500 bg-white border border-neutral-200 rounded px-1 py-px">
+                      {h.key}
+                    </kbd>
+                  </Show>
+                  {h.label}
+                </span>
+              )}
+            </For>
+          </div>
         </footer>
       </div>
 
@@ -1105,6 +1246,21 @@ export function ProjectCanvas() {
 
       <ContextMenu state={ctxMenu()} onClose={() => setCtxMenu(null)} />
 
+      <Show when={store.state.graph}>
+        {graph => (
+          <ProjectInfoModal
+            open={infoOpen()}
+            onClose={() => setInfoOpen(false)}
+            project={graph().project}
+            deliverables={store.deliverables()}
+            current={current()}
+            currentVersion={currentVersion()}
+            openThreadCount={openThreadCount()}
+            onOpenHistory={() => setHistoryOpen(true)}
+          />
+        )}
+      </Show>
+
       <CommandPalette
         open={paletteOpen()}
         onClose={() => setPaletteOpen(false)}
@@ -1123,12 +1279,24 @@ export function ProjectCanvas() {
           fit: () => (current() ? fitPlane(true, 250) : fitWorkspace(true)),
           compare: toggleCompare,
           history: () => setHistoryOpen(o => !o),
+          info: () => setInfoOpen(o => !o),
           deleteVersion: confirmDeleteVersion,
           deleteDeliverable: () => {
             const d = current();
             if (d) confirmDeleteDeliverable(d);
           },
+          search: () => setSearchOpen(true),
         }}
+      />
+
+      <GlobalSearch
+        variant="modal"
+        modalOpen={searchOpen()}
+        onModalClose={() => setSearchOpen(false)}
+        orgId={() => store.state.graph?.project.organizationId ?? null}
+        projectContext={() =>
+          store.state.graph ? { id: store.projectId, name: store.state.graph.project.name } : null
+        }
       />
     </div>
   );

@@ -4,10 +4,21 @@ import { organization } from "better-auth/plugins/organization";
 import { db } from "~/db";
 import { ac, roles } from "./permissions";
 
+// The secret must always come from the environment in production; the dev
+// fallback exists only so a fresh clone boots, and it never ships.
+const secret = process.env.BETTER_AUTH_SECRET;
+if (!secret && process.env.NODE_ENV === "production") {
+  throw new Error("BETTER_AUTH_SECRET must be set in production");
+}
+if (!secret) {
+  console.warn("[auth] BETTER_AUTH_SECRET is not set — using an insecure dev-only secret");
+}
+
 // Server-only. Client code must import auth-client.ts instead.
 export const auth = betterAuth({
   database: drizzleAdapter(db, { provider: "sqlite" }),
-  secret: process.env.BETTER_AUTH_SECRET ?? "cruio-dev-secret-change-me",
+  secret: secret ?? "cruio-dev-secret-change-me",
+  rateLimit: { enabled: true, window: 60, max: 30 },
   // baseURL is inferred from the request when BETTER_AUTH_URL is unset
   baseURL: process.env.BETTER_AUTH_URL,
   trustedOrigins: [
