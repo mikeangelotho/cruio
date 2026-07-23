@@ -45,7 +45,7 @@ export function AppNav(props: { onOrgSwitch?: () => void }) {
 
   return (
     <nav class="min-h-12 px-4 flex items-center justify-start gap-6 bg-[#f8f7f7] border-b border-[#f0eeee]">
-      <div class="flex items-center gap-3 min-w-60">
+      <div class="flex items-center gap-3">
         <Show when={activeOrg()}>
           {o => (
             <NavMenu
@@ -56,8 +56,8 @@ export function AppNav(props: { onOrgSwitch?: () => void }) {
                   onClick={toggle}
                 >
                   <SquareAvatar name={o().name} size={21} />
-                  <span class="text-xs">{o().name}</span>
-                  <Icon icon="iconoir:nav-arrow-down" width="10" class="text-neutral-400" />
+                  <span class="text-xs truncate max-w-32">{o().name}</span>
+                  <Icon icon="iconoir:nav-arrow-down" width="10" class="shrink-0 text-neutral-400" />
                 </button>
               )}
             >
@@ -134,11 +134,11 @@ export function AppNav(props: { onOrgSwitch?: () => void }) {
                   onClick={toggle}
                 >
                   <EntityAvatar name={scope.entity()?.name || "•"} size={21} />
-                  <span class="text-xs">{scope.entity()?.name || "All"}</span>
+                  <span class="text-xs truncate max-w-32">{scope.entity()?.name || "All"}</span>
                   <Icon
                     icon="iconoir:arrow-separate-vertical"
                     width="10"
-                    class="text-neutral-400"
+                    class="shrink-0 text-neutral-400"
                   />
                 </button>
               )}
@@ -153,7 +153,7 @@ export function AppNav(props: { onOrgSwitch?: () => void }) {
                     }}
                   >
                     <EntityAvatar name="•" size={18} />
-                    All Entities
+                    <span class="flex-1 truncate">All Entities</span>
                   </button>
                   <For each={l()}>
                     {c => (
@@ -165,7 +165,7 @@ export function AppNav(props: { onOrgSwitch?: () => void }) {
                         }}
                       >
                         <EntityAvatar name={c.name} size={18} />
-                        {c.name}
+                        <span class="flex-1 truncate">{c.name}</span>
                       </button>
                     )}
                   </For>
@@ -176,11 +176,7 @@ export function AppNav(props: { onOrgSwitch?: () => void }) {
         </Show>
       </div>
 
-      <div class="flex-1 flex justify-center min-w-0 px-4">
-        <GlobalSearch orgId={() => user()?.activeOrganizationId ?? null} />
-      </div>
-
-      <div class="flex items-center gap-6">
+      <div class="flex items-center gap-6 shrink-0">
         <Show when={!isGuest()}>
           <A href="/tasks" class={linkClass("/tasks")}>
             <Icon icon="iconoir:task-list" width="14" />
@@ -195,6 +191,10 @@ export function AppNav(props: { onOrgSwitch?: () => void }) {
           <Icon icon="iconoir:media-image-folder" width="14" />
           Library
         </A>
+      </div>
+
+      <div class="flex-1 flex justify-end min-w-0 px-4">
+        <GlobalSearch orgId={() => user()?.activeOrganizationId ?? null} />
       </div>
     </nav>
   );

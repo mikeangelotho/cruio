@@ -2,6 +2,7 @@ import { Show } from "solid-js";
 import { Icon } from "@iconify-icon/solid";
 import { kindOfMime } from "../lib/filetypes";
 import { fileUrl, type LibraryFile } from "../lib/types";
+import { EntityAvatar } from "./Avatar";
 
 const KIND_ICON: Record<string, string> = {
   image: "iconoir:media-image",
@@ -26,6 +27,8 @@ export function formatSize(bytes: number): string {
  */
 export function FileCard(props: {
   file: LibraryFile;
+  /** owning folder's entity — shown as an avatar under "All Entities" scope */
+  entityName?: string | null;
   onClick?: (e: MouseEvent) => void;
   onContextMenu?: (e: MouseEvent) => void;
   /** briefly flagged when arriving here from a search result */
@@ -46,12 +49,12 @@ export function FileCard(props: {
         props.onContextMenu?.(e);
       }}
     >
-      <div class="h-28 bg-[#f6f5f5] flex items-center justify-center overflow-clip">
+      <div class="h-24 bg-[#f6f5f5] flex items-center justify-center overflow-clip p-2">
         <Show
           when={kind() === "image"}
           fallback={
             <div class="flex flex-col items-center gap-1 text-neutral-300">
-              <Icon icon={KIND_ICON[kind()] ?? "iconoir:page"} width="28" />
+              <Icon icon={KIND_ICON[kind()] ?? "iconoir:page"} width="24" />
               <span class="text-[10px] font-medium tracking-wide">{ext()}</span>
             </div>
           }
@@ -59,13 +62,16 @@ export function FileCard(props: {
           <img
             src={fileUrl(props.file.fileName)}
             alt={props.file.name}
-            class="max-w-none w-full h-full object-cover"
+            class="max-w-full max-h-full w-auto h-auto object-contain"
             loading="lazy"
           />
         </Show>
       </div>
       <div class="px-3 py-2">
         <div class="flex items-center gap-1.5">
+          <Show when={props.entityName}>
+            <EntityAvatar name={props.entityName!} size={13} />
+          </Show>
           <p class="flex-1 text-xs font-medium text-neutral-800 truncate" title={props.file.name}>
             {props.file.name}
           </p>

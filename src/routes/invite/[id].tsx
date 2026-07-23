@@ -146,7 +146,7 @@ export default function InvitePage() {
                       </Show>
                       <button
                         disabled={busy()}
-                        class="flex items-center justify-center gap-1 text-xs bg-neutral-900 text-white rounded px-3 py-2 hover:bg-neutral-700 cursor-pointer disabled:opacity-50"
+                        class="flex items-center justify-center gap-1 text-xs bg-neutral-900 text-white rounded px-3 py-2 hover:bg-neutral-700 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                         onClick={() => void accept()}
                       >
                         <Show when={busy()} fallback={<>Accept invitation</>}>
@@ -212,7 +212,7 @@ export default function InvitePage() {
                         <button
                           type="submit"
                           disabled={busy()}
-                          class="flex items-center justify-center gap-1 text-xs bg-neutral-900 text-white rounded px-3 py-2 hover:bg-neutral-700 cursor-pointer disabled:opacity-50"
+                          class="flex items-center justify-center gap-1 text-xs bg-neutral-900 text-white rounded px-3 py-2 hover:bg-neutral-700 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                         >
                           <Show when={busy()} fallback={<>{mode() === "sign-up" ? "Create account & join" : "Sign in & join"}</>}>
                             <Icon icon="iconoir:refresh" width="12" class="animate-spin" /> Joining…

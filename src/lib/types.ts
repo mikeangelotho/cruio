@@ -91,16 +91,59 @@ export interface Deliverable {
   status: DeliverableStatus;
   posX: number;
   posY: number;
+  /** set when this is a size/format variant grouped with sibling deliverables */
+  groupId: string | null;
+  /** joined for display */
+  groupLabel?: string | null;
   createdAt: number;
   versions: Version[];
   annotations: Annotation[];
   approvals: Approval[];
 }
 
+/** A named cluster of deliverables (size/format variants); groups can nest. */
+export interface DeliverableGroup {
+  id: string;
+  label: string;
+  parentGroupId: string | null;
+}
+
+export type CanvasObjectKind = "note";
+
+export type NoteColor = "yellow" | "pink" | "blue" | "green";
+
+/** Freestanding board object (v1: sticky notes). Never mirrored to the library. */
+export interface CanvasObject {
+  id: string;
+  projectId: string;
+  kind: CanvasObjectKind;
+  content: string;
+  color: NoteColor;
+  tags: string[];
+  posX: number;
+  posY: number;
+  createdBy: string;
+  /** joined for display */
+  createdByName: string | null;
+  createdAt: number;
+}
+
+/** A viewer's personal override of a deliverable's or note's canvas
+ * position — "personal mode"; the shared posX/posY column is "sync mode". */
+export interface PersonalPosition {
+  kind: "deliverable" | "note";
+  subjectId: string;
+  posX: number;
+  posY: number;
+}
+
 export interface ProjectGraph {
   project: Project;
   viewer: Viewer;
   deliverables: Deliverable[];
+  groups: DeliverableGroup[];
+  canvasObjects: CanvasObject[];
+  personalPositions: PersonalPosition[];
 }
 
 export type HistoryType =
@@ -170,6 +213,8 @@ export interface LibraryFolder {
   createdAt: number;
   /** project folders only: the owning project's entity (drives scoping) */
   entityId: string | null;
+  /** joined for display (entity attribution under "All Entities" scope) */
+  entityName: string | null;
 }
 
 export interface LibraryFile {

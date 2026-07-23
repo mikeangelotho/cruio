@@ -80,6 +80,7 @@ export function TaskPanel(props: {
               </div>
               <button
                 class="p-1 rounded text-neutral-400 hover:text-neutral-700 hover:bg-neutral-100 cursor-pointer"
+                title="Close"
                 onClick={props.onClose}
               >
                 <Icon icon="iconoir:xmark" width="16" />

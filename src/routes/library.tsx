@@ -1,4 +1,4 @@
-import { For, Show, createEffect, createMemo, createResource, createSignal, on, onCleanup } from "solid-js";
+import { For, Show, createEffect, createMemo, createResource, createSignal, on, onCleanup, onMount } from "solid-js";
 import { createAsync, useNavigate, useSearchParams } from "@solidjs/router";
 import { Icon } from "@iconify-icon/solid";
 import { useViewerRole } from "../lib/viewer";
@@ -139,6 +139,25 @@ export default function LibraryPage() {
     input.click();
   }
 
+  // u = upload (unless typing somewhere) — same convention as N for "new"
+  // elsewhere; pickAndUpload() itself handles the no-folder-selected case.
+  onMount(() => {
+    function onKey(e: KeyboardEvent) {
+      const target = e.target as HTMLElement;
+      const typing =
+        target.tagName === "INPUT" ||
+        target.tagName === "TEXTAREA" ||
+        target.isContentEditable;
+      if (typing) return;
+      if (e.key === "u" && !e.metaKey && !e.ctrlKey && !e.altKey && canUpload()) {
+        e.preventDefault();
+        pickAndUpload();
+      }
+    }
+    window.addEventListener("keydown", onKey);
+    onCleanup(() => window.removeEventListener("keydown", onKey));
+  });
+
   function openFolderMenu(f: LibraryFolder, x: number, y: number) {
     if (!isAdmin() || f.projectId) return;
     setCtxMenu({
@@ -257,11 +276,18 @@ export default function LibraryPage() {
     >
       <Icon icon={icon} width="13" class="text-neutral-400 shrink-0" />
       <span class="flex-1 truncate">{f.name}</span>
+      <Show when={!scope.entity() && f.entityName}>
+        <EntityAvatar name={f.entityName!} size={13} />
+      </Show>
       <span class="text-[10px] text-neutral-400">
         {(listing()?.files ?? []).filter(x => x.folderId === f.id).length}
       </span>
     </button>
   );
+
+  /** entity name of the folder a file lives in — attribution under "All" scope */
+  const fileEntityName = (file: LibraryFile) =>
+    (listing()?.folders ?? []).find(f => f.id === file.folderId)?.entityName ?? null;
 
   return (
     <div class="p-1 h-screen bg-[#fffefe]">
@@ -349,7 +375,8 @@ export default function LibraryPage() {
             }}
           >
             <div class="flex items-center justify-between mb-4">
-              <div class="flex items-center gap-2">
+              <div class="flex items-center gap-3">
+                <EntityAvatar name={scope.entity()?.name || "•"} size={32} />
                 <h1 class="text-lg font-semibold text-neutral-800">
                   {currentFolder()?.name ?? "Library"}
                 </h1>
@@ -361,12 +388,13 @@ export default function LibraryPage() {
               </div>
               <Show when={canUpload()}>
                 <button
-                  class="flex items-center gap-1 text-xs bg-neutral-900 text-white rounded-md px-3 py-1.5 hover:bg-neutral-700 cursor-pointer disabled:opacity-40 disabled:cursor-default"
+                  class="flex items-center gap-1 text-xs bg-neutral-900 text-white rounded-md px-3 py-1.5 hover:bg-neutral-700 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                   disabled={!uploadTargetId()}
-                  title={uploadTargetId() ? "Upload files" : "Select a folder to upload into"}
+                  title={uploadTargetId() ? "Upload files (U)" : "Select a folder to upload into"}
                   onClick={pickAndUpload}
                 >
                   <Icon icon="iconoir:upload" width="14" /> Upload
+                  <span class="text-[10px] text-neutral-400 bg-neutral-800 rounded px-1 ml-1">U</span>
                 </button>
               </Show>
             </div>
@@ -397,11 +425,12 @@ export default function LibraryPage() {
                 </Show>
               }
             >
-              <div class="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-3">
+              <div class="grid gap-3 grid-cols-[repeat(auto-fill,minmax(110px,140px))]">
                 <For each={visibleFiles()}>
                   {file => (
                     <FileCard
                       file={file}
+                      entityName={scope.entity() ? null : fileEntityName(file)}
                       onClick={() => onFileClick(file)}
                       onContextMenu={e => openFileMenu(file, e.clientX, e.clientY)}
                       highlighted={highlightFileId() === file.id}

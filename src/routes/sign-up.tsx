@@ -90,7 +90,7 @@ export default function SignUp() {
             <button
               type="submit"
               disabled={busy()}
-              class="mt-1 flex items-center justify-center gap-1 text-xs bg-neutral-900 text-white rounded px-3 py-2 hover:bg-neutral-700 cursor-pointer disabled:opacity-50"
+              class="mt-1 flex items-center justify-center gap-1 text-xs bg-neutral-900 text-white rounded px-3 py-2 hover:bg-neutral-700 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
             >
               <Show when={busy()} fallback={<>Create account</>}>
                 <Icon icon="iconoir:refresh" width="12" class="animate-spin" /> Creating…

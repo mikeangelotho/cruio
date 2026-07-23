@@ -1,12 +1,15 @@
-import { createContext, useContext } from "solid-js";
+import { batch, createContext, useContext } from "solid-js";
 import { createStore, produce, reconcile } from "solid-js/store";
 import * as api from "./api";
 import { can as roleCan, type Resource } from "./permissions";
+import { newId } from "./id";
 import type {
   Annotation,
   AnnotationStatus,
+  CanvasObject,
   Decision,
   Deliverable,
+  NoteColor,
   ProjectGraph,
   Version,
   Viewer,
@@ -44,6 +47,35 @@ export function createProjectStore(projectId: string) {
 
   const deliverables = () => state.graph?.deliverables ?? [];
   const byId = (id: string) => deliverables().find(d => d.id === id);
+  const groups = () => state.graph?.groups ?? [];
+  const groupById = (id: string) => groups().find(g => g.id === id);
+
+  /** Walk parentGroupId links up to the top-level group containing `groupId`. */
+  function rootGroupOf(groupId: string): string {
+    let cur = groupId;
+    for (let i = 0; i < 32; i++) {
+      const parent = groupById(cur)?.parentGroupId;
+      if (!parent || !groupById(parent)) return cur;
+      cur = parent;
+    }
+    return cur;
+  }
+
+  /** Deliverable ids in `groupId` and every descendant group. */
+  function membersOfGroup(groupId: string): string[] {
+    const groupIds = new Set([groupId]);
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const g of groups()) {
+        if (g.parentGroupId && groupIds.has(g.parentGroupId) && !groupIds.has(g.id)) {
+          groupIds.add(g.id);
+          grew = true;
+        }
+      }
+    }
+    return deliverables().filter(d => d.groupId && groupIds.has(d.groupId)).map(d => d.id);
+  }
 
   const viewer = (): Viewer | undefined => state.graph?.viewer;
 
@@ -62,13 +94,14 @@ export function createProjectStore(projectId: string) {
 
   function addDeliverable(name: string, posX: number, posY: number): Deliverable {
     const d: Deliverable = {
-      id: crypto.randomUUID(),
+      id: newId(),
       projectId,
       name,
       spec: "",
       status: "draft",
       posX,
       posY,
+      groupId: null,
       createdAt: Date.now(),
       versions: [],
       annotations: [],
@@ -87,11 +120,187 @@ export function createProjectStore(projectId: string) {
     if (sync) void api.moveDeliverable(id, posX, posY);
   }
 
+  /** Move every deliverable sharing a groupId by the same delta (drag-together). */
+  function moveGroup(ids: string[], dx: number, dy: number, sync = true) {
+    batch(() => {
+      for (const id of ids) {
+        const d = byId(id);
+        if (d) moveDeliverable(id, d.posX + dx, d.posY + dy, sync);
+      }
+    });
+  }
+
   function renameDeliverable(id: string, name: string) {
     mutateDeliverable(id, d => {
       d.name = name;
     });
     void api.renameDeliverable(id, name);
+  }
+
+  /** Group deliverables as size/format variants under one label. */
+  async function groupSelected(ids: string[], label: string) {
+    const groupId = await api.groupDeliverables(ids, label);
+    batch(() => {
+      setState("graph", "groups", produce(list => list.push({ id: groupId, label, parentGroupId: null })));
+      for (const id of ids) {
+        mutateDeliverable(id, d => {
+          d.groupId = groupId;
+          d.groupLabel = label;
+        });
+      }
+    });
+  }
+
+  /** Nest whole groups under a new labeled parent group. */
+  async function nestGroups(childGroupIds: string[], label: string) {
+    const parentId = await api.groupGroups(childGroupIds, label);
+    batch(() => {
+      setState("graph", "groups", produce(list => list.push({ id: parentId, label, parentGroupId: null })));
+      setState(
+        "graph",
+        "groups",
+        g => childGroupIds.includes(g.id),
+        produce(g => { g.parentGroupId = parentId; }),
+      );
+    });
+  }
+
+  /** Dissolve one group level (leaf releases cards, parent releases child groups). */
+  function dissolveGroup(groupId: string) {
+    batch(() => {
+      setState(
+        "graph",
+        "deliverables",
+        d => d.groupId === groupId,
+        produce(d => {
+          d.groupId = null;
+          d.groupLabel = null;
+        }),
+      );
+      setState(
+        "graph",
+        "groups",
+        g => g.parentGroupId === groupId,
+        produce(g => { g.parentGroupId = null; }),
+      );
+      setState("graph", "groups", produce(list => {
+        const i = list.findIndex(g => g.id === groupId);
+        if (i >= 0) list.splice(i, 1);
+      }));
+    });
+    void api.dissolveGroup(groupId);
+  }
+
+  function renameGroup(groupId: string, label: string) {
+    batch(() => {
+      setState(
+        "graph",
+        "groups",
+        g => g.id === groupId,
+        produce(g => { g.label = label; }),
+      );
+      // denormalized on direct members only — a parent group's rename has no
+      // direct members (deliverables only ever point at a leaf group)
+      setState(
+        "graph",
+        "deliverables",
+        d => d.groupId === groupId,
+        produce(d => { d.groupLabel = label; }),
+      );
+    });
+    void api.renameGroup(groupId, label);
+  }
+
+  function ungroup(id: string) {
+    mutateDeliverable(id, d => {
+      d.groupId = null;
+      d.groupLabel = null;
+    });
+    void api.ungroupDeliverable(id);
+  }
+
+  /** Add one ungrouped deliverable directly to an existing group. */
+  function addToGroup(deliverableId: string, groupId: string) {
+    const label = groupById(groupId)?.label ?? null;
+    mutateDeliverable(deliverableId, d => {
+      d.groupId = groupId;
+      d.groupLabel = label;
+    });
+    void api.addDeliverableToGroup(deliverableId, groupId);
+  }
+
+  // ---- canvas objects (sticky notes) --------------------------------------
+
+  const canvasObjects = () => state.graph?.canvasObjects ?? [];
+
+  function mutateCanvasObject(id: string, fn: (o: CanvasObject) => void) {
+    setState("graph", "canvasObjects", o => o.id === id, produce(fn));
+  }
+
+  function addNote(posX: number, posY: number): CanvasObject {
+    const o: CanvasObject = {
+      id: newId(),
+      projectId,
+      kind: "note",
+      content: "",
+      color: "yellow",
+      tags: [],
+      posX,
+      posY,
+      createdBy: viewer()?.userId ?? "",
+      createdByName: viewer()?.name ?? null,
+      createdAt: Date.now(),
+    };
+    setState("graph", "canvasObjects", produce(list => list.push(o)));
+    void api.createCanvasObject(o.id, projectId, posX, posY);
+    return o;
+  }
+
+  function updateNote(id: string, patch: { content?: string; color?: NoteColor; tags?: string[] }) {
+    mutateCanvasObject(id, o => {
+      if (patch.content !== undefined) o.content = patch.content;
+      if (patch.color !== undefined) o.color = patch.color;
+      if (patch.tags !== undefined) o.tags = patch.tags;
+    });
+    void api.updateCanvasObject(id, patch);
+  }
+
+  function moveNote(id: string, posX: number, posY: number, sync = true) {
+    mutateCanvasObject(id, o => {
+      o.posX = posX;
+      o.posY = posY;
+    });
+    if (sync) void api.moveCanvasObject(id, posX, posY);
+  }
+
+  function removeNote(id: string) {
+    setState("graph", "canvasObjects", produce(list => {
+      const i = list.findIndex(o => o.id === id);
+      if (i >= 0) list.splice(i, 1);
+    }));
+    void api.deleteCanvasObject(id);
+  }
+
+  // ---- personal (per-viewer) canvas layout --------------------------------
+  // "Sync" positions are the deliverable/note posX/posY above — shared, last
+  // writer wins. This is the parallel per-user override layer.
+
+  const personalPositions = () => state.graph?.personalPositions ?? [];
+  function personalPosOf(kind: "deliverable" | "note", subjectId: string): { x: number; y: number } | null {
+    const p = personalPositions().find(p => p.kind === kind && p.subjectId === subjectId);
+    return p ? { x: p.posX, y: p.posY } : null;
+  }
+  function setPersonalPosition(kind: "deliverable" | "note", subjectId: string, posX: number, posY: number, sync = true) {
+    setState("graph", "personalPositions", produce(list => {
+      const existing = list.find(p => p.kind === kind && p.subjectId === subjectId);
+      if (existing) {
+        existing.posX = posX;
+        existing.posY = posY;
+      } else {
+        list.push({ kind, subjectId, posX, posY });
+      }
+    }));
+    if (sync) void api.setPersonalPosition(kind, subjectId, posX, posY);
   }
 
   /** Soft-delete a deliverable (restorable from the History panel). */
@@ -142,7 +351,7 @@ export function createProjectStore(projectId: string) {
 
   function addAnnotation(deliverableId: string, versionId: string, x: number, y: number): Annotation {
     const a: Annotation = {
-      id: crypto.randomUUID(),
+      id: newId(),
       deliverableId,
       versionId,
       x,
@@ -167,7 +376,7 @@ export function createProjectStore(projectId: string) {
   function addComment(deliverableId: string, annotationId: string, body: string) {
     const v = viewer();
     const c = {
-      id: crypto.randomUUID(),
+      id: newId(),
       annotationId,
       userId: v?.userId ?? "",
       authorName: v?.name ?? "",
@@ -195,7 +404,7 @@ export function createProjectStore(projectId: string) {
     decision: Decision,
     note = ""
   ): Promise<{ ok: boolean; error?: string }> {
-    const id = crypto.randomUUID();
+    const id = newId();
     // decision is validated server-side (open threads block approval), so this
     // one is pessimistic — but it's a rare, deliberate action.
     const res = await api.decideVersion(id, deliverableId, versionId, decision, note);
@@ -228,7 +437,26 @@ export function createProjectStore(projectId: string) {
     reload: load,
     addDeliverable,
     moveDeliverable,
+    moveGroup,
     renameDeliverable,
+    groups,
+    groupById,
+    rootGroupOf,
+    membersOfGroup,
+    groupSelected,
+    nestGroups,
+    dissolveGroup,
+    renameGroup,
+    ungroup,
+    addToGroup,
+    canvasObjects,
+    addNote,
+    updateNote,
+    moveNote,
+    removeNote,
+    personalPositions,
+    personalPosOf,
+    setPersonalPosition,
     removeDeliverable,
     removeVersion,
     addVersion,

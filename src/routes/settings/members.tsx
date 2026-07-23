@@ -209,7 +209,7 @@ export default function MembersPage() {
                     <button
                       type="submit"
                       disabled={busy()}
-                      class="text-xs bg-neutral-900 text-white rounded px-3 py-2 hover:bg-neutral-700 cursor-pointer disabled:opacity-50"
+                      class="text-xs bg-neutral-900 text-white rounded px-3 py-2 hover:bg-neutral-700 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                     >
                       Create invite link
                     </button>

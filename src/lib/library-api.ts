@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 import { getDb } from "../db";
 import {
+  entities,
   libraryFiles,
   libraryFolders,
   projects,
@@ -42,19 +43,28 @@ export async function listLibrary(entityId: string | null): Promise<LibraryListi
   const db = await getDb();
 
   const rows = await db
-    .select({ f: libraryFolders, entityId: projects.entityId })
+    .select({
+      f: libraryFolders,
+      entityId: projects.entityId,
+      entityName: entities.name,
+      archivedAt: projects.archivedAt,
+    })
     .from(libraryFolders)
     .leftJoin(projects, eq(projects.id, libraryFolders.projectId))
+    .leftJoin(entities, eq(entities.id, projects.entityId))
     .where(eq(libraryFolders.organizationId, orgId))
     .orderBy(asc(libraryFolders.name));
 
-  let folders = rows.map(r => ({
-    id: r.f.id,
-    projectId: r.f.projectId,
-    name: r.f.name,
-    createdAt: r.f.createdAt,
-    entityId: r.entityId ?? null,
-  }));
+  let folders = rows
+    .filter(r => !r.f.projectId || r.archivedAt == null)
+    .map(r => ({
+      id: r.f.id,
+      projectId: r.f.projectId,
+      name: r.f.name,
+      createdAt: r.f.createdAt,
+      entityId: r.entityId ?? null,
+      entityName: r.entityName ?? null,
+    }));
 
   if (role === "guest") {
     const shares = await db
@@ -120,7 +130,14 @@ export async function createFolder(name: string): Promise<LibraryFolder> {
     createdAt: Date.now(),
   };
   await db.insert(libraryFolders).values(row);
-  return { id: row.id, projectId: null, name: row.name, createdAt: row.createdAt, entityId: null };
+  return {
+    id: row.id,
+    projectId: null,
+    name: row.name,
+    createdAt: row.createdAt,
+    entityId: null,
+    entityName: null,
+  };
 }
 
 /** Rename a workspace folder (project folders follow their project's name). */

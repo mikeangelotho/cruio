@@ -75,7 +75,7 @@ export function HistoryPanel(props: {
                   <p class="text-[10px] text-neutral-400 mt-0.5">{timeAgo(e.createdAt)}</p>
                   <Show when={e.restorable && props.canRestore}>
                     <button
-                      class="mt-1 text-[11px] text-sky-700 border border-sky-200 bg-sky-50 rounded px-2 py-0.5 hover:bg-sky-100 cursor-pointer disabled:opacity-50"
+                      class="mt-1 text-[11px] text-sky-700 border border-sky-200 bg-sky-50 rounded px-2 py-0.5 hover:bg-sky-100 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                       disabled={busyId() === e.id}
                       onClick={() => void restore(e)}
                     >

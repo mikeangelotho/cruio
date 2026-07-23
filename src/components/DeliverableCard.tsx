@@ -16,6 +16,9 @@ export const STATUS_META: Record<
 
 export function DeliverableCard(props: {
   d: Deliverable;
+  /** effective on-screen position — sync or personal layer, resolved by the caller */
+  x: number;
+  y: number;
   onOpen: (d: Deliverable) => void;
   onMove: (d: Deliverable, x: number, y: number, done: boolean) => void;
   onRename: (d: Deliverable, name: string) => void;
@@ -25,6 +28,9 @@ export function DeliverableCard(props: {
   onMenu?: (d: Deliverable, x: number, y: number) => void;
   /** lets the canvas menu trigger this card's inline rename */
   registerActions?: (id: string, actions: { startRename: () => void }) => void;
+  /** multi-select state, shown as a hover-revealed checkbox */
+  selected?: boolean;
+  onToggleSelect?: (d: Deliverable) => void;
   /** convert a screen delta to a world delta (depends on zoom) */
   screenToWorldDelta: (dx: number, dy: number) => { x: number; y: number };
   hidden?: boolean;
@@ -44,8 +50,8 @@ export function DeliverableCard(props: {
 
     const startX = e.clientX;
     const startY = e.clientY;
-    const origX = props.d.posX;
-    const origY = props.d.posY;
+    const origX = props.x;
+    const origY = props.y;
     let dragged = false;
 
     const onMove = (ev: PointerEvent) => {
@@ -65,7 +71,9 @@ export function DeliverableCard(props: {
         const wd = props.screenToWorldDelta(ev.clientX - startX, ev.clientY - startY);
         props.onMove(props.d, origX + wd.x, origY + wd.y, true);
       } else {
-        props.onOpen(props.d);
+        // a clean click selects; double-click (native dblclick, fired after
+        // this) opens — see onDblClick below
+        props.onToggleSelect?.(props.d);
       }
     };
     el.addEventListener("pointermove", onMove);
@@ -75,15 +83,23 @@ export function DeliverableCard(props: {
   return (
     <div
       data-card={props.d.id}
-      class="group absolute select-none rounded-lg bg-white border border-neutral-200 shadow-[0_1px_4px_rgba(0,0,0,0.06)] hover:shadow-[0_2px_10px_rgba(0,0,0,0.10)] hover:border-neutral-300 transition-shadow cursor-default outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+      class="group absolute select-none rounded-lg bg-white border-2 shadow-[0_1px_4px_rgba(0,0,0,0.06)] hover:shadow-[0_2px_10px_rgba(0,0,0,0.10)] transition-shadow cursor-default outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+      classList={{
+        "border-sky-500": !!props.selected,
+        "border-neutral-200 hover:border-neutral-300": !props.selected,
+      }}
       style={{
-        left: `${props.d.posX}px`,
-        top: `${props.d.posY}px`,
+        left: `${props.x}px`,
+        top: `${props.y}px`,
         width: `${CARD_W}px`,
         display: props.hidden ? "none" : undefined,
       }}
       tabindex="0"
       onPointerDown={onPointerDown}
+      onDblClick={e => {
+        e.stopPropagation();
+        props.onOpen(props.d);
+      }}
       onContextMenu={e => {
         e.preventDefault();
         e.stopPropagation();
@@ -100,6 +116,25 @@ export function DeliverableCard(props: {
         }
       }}
     >
+      <Show when={props.onToggleSelect && !props.readOnly}>
+        <button
+          class="absolute top-1.5 left-1.5 z-10 w-4 h-4 rounded border bg-white flex items-center justify-center cursor-pointer"
+          classList={{
+            "border-neutral-300 opacity-0 group-hover:opacity-100": !props.selected,
+            "border-sky-500 bg-sky-500 text-white opacity-100": !!props.selected,
+          }}
+          title="Select"
+          onPointerDown={e => e.stopPropagation()}
+          onClick={e => {
+            e.stopPropagation();
+            props.onToggleSelect!(props.d);
+          }}
+        >
+          <Show when={props.selected}>
+            <Icon icon="iconoir:check" width="10" />
+          </Show>
+        </button>
+      </Show>
       <div
         class="overflow-hidden rounded-t-lg bg-neutral-50 flex items-center justify-center"
         style={{ height: `${thumbHeight(props.d)}px` }}
@@ -117,7 +152,7 @@ export function DeliverableCard(props: {
             <img
               src={fileUrl(v().fileName)}
               alt={props.d.name}
-              class="w-full h-full object-cover pointer-events-none"
+              class="w-full h-full object-contain pointer-events-none"
               draggable={false}
             />
           )}
@@ -152,6 +187,7 @@ export function DeliverableCard(props: {
           <span
             class="text-xs font-medium text-neutral-800 truncate"
             title={props.readOnly ? props.d.name : `${props.d.name} — double-click to rename`}
+            onPointerDown={e => e.stopPropagation()}
             onDblClick={e => {
               e.stopPropagation();
               if (!props.readOnly) setEditing(true);

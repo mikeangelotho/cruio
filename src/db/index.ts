@@ -110,6 +110,13 @@ CREATE TABLE IF NOT EXISTS projects (
   archived_at INTEGER,
   archived_by TEXT
 );
+CREATE TABLE IF NOT EXISTS deliverable_groups (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  label TEXT NOT NULL DEFAULT '',
+  parent_group_id TEXT,
+  created_at INTEGER NOT NULL
+);
 CREATE TABLE IF NOT EXISTS deliverables (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL REFERENCES projects(id),
@@ -118,10 +125,36 @@ CREATE TABLE IF NOT EXISTS deliverables (
   status TEXT NOT NULL DEFAULT 'draft',
   pos_x REAL NOT NULL DEFAULT 0,
   pos_y REAL NOT NULL DEFAULT 0,
+  group_id TEXT REFERENCES deliverable_groups(id),
   created_at INTEGER NOT NULL,
   deleted_at INTEGER,
   deleted_by TEXT
 );
+CREATE TABLE IF NOT EXISTS canvas_objects (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  kind TEXT NOT NULL DEFAULT 'note',
+  content TEXT NOT NULL DEFAULT '',
+  color TEXT NOT NULL DEFAULT 'yellow',
+  tags TEXT NOT NULL DEFAULT '[]',
+  pos_x REAL NOT NULL DEFAULT 0,
+  pos_y REAL NOT NULL DEFAULT 0,
+  created_by TEXT NOT NULL REFERENCES user(id),
+  created_by_name TEXT NOT NULL DEFAULT '',
+  created_at INTEGER NOT NULL,
+  deleted_at INTEGER,
+  deleted_by TEXT
+);
+CREATE TABLE IF NOT EXISTS personal_positions (
+  id TEXT PRIMARY KEY,
+  user_id TEXT NOT NULL REFERENCES user(id),
+  kind TEXT NOT NULL,
+  subject_id TEXT NOT NULL,
+  pos_x REAL NOT NULL,
+  pos_y REAL NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uidx_personal_positions ON personal_positions(user_id, kind, subject_id);
 CREATE TABLE IF NOT EXISTS versions (
   id TEXT PRIMARY KEY,
   deliverable_id TEXT NOT NULL REFERENCES deliverables(id),
@@ -277,6 +310,30 @@ async function migrate() {
     if (!tCols.includes("deleted_at")) {
       await client.execute(`ALTER TABLE ${table} ADD COLUMN deleted_at INTEGER`);
       await client.execute(`ALTER TABLE ${table} ADD COLUMN deleted_by TEXT`);
+    }
+  }
+
+  if (await tableExists("deliverables")) {
+    const cols = await columnsOf("deliverables");
+    if (!cols.includes("group_id")) {
+      await client.execute("ALTER TABLE deliverables ADD COLUMN group_id TEXT REFERENCES deliverable_groups(id)");
+    }
+  }
+
+  if (await tableExists("deliverable_groups")) {
+    const cols = await columnsOf("deliverable_groups");
+    if (!cols.includes("parent_group_id")) {
+      await client.execute("ALTER TABLE deliverable_groups ADD COLUMN parent_group_id TEXT");
+    }
+  }
+
+  if (await tableExists("canvas_objects")) {
+    const cols = await columnsOf("canvas_objects");
+    if (!cols.includes("tags")) {
+      await client.execute("ALTER TABLE canvas_objects ADD COLUMN tags TEXT NOT NULL DEFAULT '[]'");
+    }
+    if (!cols.includes("created_by_name")) {
+      await client.execute("ALTER TABLE canvas_objects ADD COLUMN created_by_name TEXT NOT NULL DEFAULT ''");
     }
   }
 

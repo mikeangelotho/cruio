@@ -32,6 +32,16 @@ export const AnnotationStatusSchema = v.picklist([
 
 export const OrgRoleSchema = v.picklist(["owner", "admin", "member", "guest"]);
 
+export const NoteColorSchema = v.picklist(["yellow", "pink", "blue", "green"]);
+
+/** Free-text sticky-note tags: up to 8, each a short trimmed label. */
+export const TagList = v.pipe(
+  v.array(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(30))),
+  v.maxLength(8),
+);
+
+export const PersonalPositionKindSchema = v.picklist(["deliverable", "note"]);
+
 /** Global search box input, including any `key:value` tokens. */
 export const SearchQuery = v.pipe(v.string(), v.trim(), v.maxLength(200));
 

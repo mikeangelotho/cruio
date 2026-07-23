@@ -3,14 +3,28 @@ import { useNavigate, useParams, A } from "@solidjs/router";
 import { Icon } from "@iconify-icon/solid";
 import { createCamera } from "../lib/canvas/camera";
 import { DotGrid } from "../lib/canvas/DotGrid";
-import { CARD_W, boundsOf, cardRect, planeRect } from "../lib/canvas/geometry";
+import {
+  CARD_HEADER_H,
+  CARD_W,
+  boundsOf,
+  findFreeSpot,
+  planeRect,
+  rectsOverlap,
+  snapToGrid,
+  snapToNeighbors,
+  thumbHeight,
+  type SnapGuide,
+} from "../lib/canvas/geometry";
 import { useProject, uploadVersion } from "../lib/store";
 import { fileUrl } from "../lib/types";
+import { newId } from "../lib/id";
 import type { Rect } from "../lib/canvas/camera";
-import type { Annotation, Decision, Deliverable, Version } from "../lib/types";
+import type { Annotation, CanvasObject, Decision, Deliverable, NoteColor, Version } from "../lib/types";
 import { ContextMenu, type MenuEntry, type MenuState } from "./ContextMenu";
 import { DeliverableCard, STATUS_META } from "./DeliverableCard";
+import { NOTE_COLORS, NOTE_W, StickyNote } from "./StickyNote";
 import { HistoryPanel } from "./HistoryPanel";
+import { NotesPanel } from "./NotesPanel";
 import { ProjectInfoModal } from "./ProjectInfoModal";
 import { ReviewPlane } from "./ReviewPlane";
 import { ThreadSidebar } from "./ThreadSidebar";
@@ -31,6 +45,7 @@ export function ProjectCanvas() {
   const [versionOverride, setVersionOverride] = createSignal<string | null>(null);
   const [compare, setCompare] = createSignal(false);
   const [historyOpen, setHistoryOpen] = createSignal(false);
+  const [notesOpen, setNotesOpen] = createSignal(false);
   const [infoOpen, setInfoOpen] = createSignal(false);
   const [sidebarOpen, setSidebarOpen] = createSignal(true);
   const [paletteOpen, setPaletteOpen] = createSignal(false);
@@ -39,6 +54,260 @@ export function ProjectCanvas() {
   const [statusMsg, setStatusMsg] = createSignal("");
   const [pendingDecision, setPendingDecision] = createSignal<Decision | null>(null);
   const [ctxMenu, setCtxMenu] = createSignal<MenuState | null>(null);
+  const [navRenaming, setNavRenaming] = createSignal(false);
+  const [selected, setSelected] = createSignal<Set<string>>(new Set());
+  // held-spacebar pan, Figma-style: overrides marquee-select while down
+  const [spaceHeld, setSpaceHeld] = createSignal(false);
+
+  // sticky-note tool: armed by the toolbar button or `s`; the next canvas
+  // click places a note there and opens it for editing.
+  const [noteTool, setNoteTool] = createSignal(false);
+  const [newNoteId, setNewNoteId] = createSignal<string | null>(null);
+
+  // snap preferences — objects on / grid off by default; persisted per browser.
+  // localStorage only inside onMount: Node 25 exposes a broken server-side
+  // localStorage global, so touching it during SSR crashes.
+  const [snapObjects, setSnapObjects] = createSignal(true);
+  const [snapGrid, setSnapGrid] = createSignal(false);
+  const [snapGuides, setSnapGuides] = createSignal<SnapGuide[]>([]);
+  onMount(() => {
+    try {
+      const o = localStorage.getItem("cruio_snap_objects");
+      const g = localStorage.getItem("cruio_snap_grid");
+      if (o !== null) setSnapObjects(o === "1");
+      if (g !== null) setSnapGrid(g === "1");
+    } catch {}
+  });
+  function toggleSnapObjects() {
+    const v = !snapObjects();
+    setSnapObjects(v);
+    try { localStorage.setItem("cruio_snap_objects", v ? "1" : "0"); } catch {}
+  }
+  function toggleSnapGrid() {
+    const v = !snapGrid();
+    setSnapGrid(v);
+    try { localStorage.setItem("cruio_snap_grid", v ? "1" : "0"); } catch {}
+  }
+
+  // sync vs. personal layout: "sync" is the shared posX/posY every viewer
+  // sees (whoever last moved it wins); "personal" is a per-user override
+  // layer, remembered separately and toggleable without touching sync.
+  const [layoutMode, setLayoutMode] = createSignal<"sync" | "personal">("sync");
+  onMount(() => {
+    try {
+      const saved = localStorage.getItem(`cruio_layout_mode_${store.projectId}`);
+      if (saved === "sync" || saved === "personal") setLayoutMode(saved);
+    } catch {}
+  });
+  function toggleLayoutMode() {
+    const v = layoutMode() === "sync" ? "personal" : "sync";
+    setLayoutMode(v);
+    try { localStorage.setItem(`cruio_layout_mode_${store.projectId}`, v); } catch {}
+  }
+
+  /** Resolves a subject's on-screen position for the active layout mode,
+   * falling back to the shared position when no personal override exists yet. */
+  function posOf(kind: "deliverable" | "note", subjectId: string, sharedX: number, sharedY: number): { x: number; y: number } {
+    if (layoutMode() === "personal") {
+      const p = store.personalPosOf(kind, subjectId);
+      if (p) return p;
+    }
+    return { x: sharedX, y: sharedY };
+  }
+  function effCardRect(d: Deliverable): Rect {
+    const p = posOf("deliverable", d.id, d.posX, d.posY);
+    return { x: p.x, y: p.y, w: CARD_W, h: thumbHeight(d) + CARD_HEADER_H };
+  }
+  function effNoteRect(o: CanvasObject): Rect {
+    const p = posOf("note", o.id, o.posX, o.posY);
+    return { x: p.x, y: p.y, w: NOTE_W, h: 80 };
+  }
+  /** Writes a deliverable's position to whichever layer is active. */
+  function commitDeliverablePosition(id: string, x: number, y: number, sync: boolean) {
+    if (layoutMode() === "personal") store.setPersonalPosition("deliverable", id, x, y, sync);
+    else store.moveDeliverable(id, x, y, sync);
+  }
+  /** Applies the same delta to every id's *current effective* position — the
+   * group-drag equivalent of commitDeliverablePosition. */
+  function commitGroupPositions(ids: string[], dx: number, dy: number, sync: boolean) {
+    for (const id of ids) {
+      const d = store.byId(id);
+      if (!d) continue;
+      const cur = posOf("deliverable", id, d.posX, d.posY);
+      commitDeliverablePosition(id, cur.x + dx, cur.y + dy, sync);
+    }
+  }
+  function commitNotePosition(id: string, x: number, y: number, sync: boolean) {
+    if (layoutMode() === "personal") store.setPersonalPosition("note", id, x, y, sync);
+    else store.moveNote(id, x, y, sync);
+  }
+
+  const [selectedGroups, setSelectedGroups] = createSignal<Set<string>>(new Set());
+  /** Marquee-select rect in screen space, while actively dragging on empty canvas. */
+  const [marquee, setMarquee] = createSignal<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
+
+  function toggleSelect(id: string) {
+    setSelected(s => {
+      const n = new Set(s);
+      if (n.has(id)) n.delete(id);
+      else n.add(id);
+      return n;
+    });
+  }
+  const clearSelection = () => {
+    setSelected(new Set<string>());
+    setSelectedGroups(new Set<string>());
+  };
+
+  /** Clicking a group's label selects/deselects the whole group as a unit. */
+  function toggleGroupSelect(groupId: string) {
+    const members = store.membersOfGroup(groupId);
+    const isSelected = selectedGroups().has(groupId);
+    setSelectedGroups(s => {
+      const n = new Set(s);
+      if (isSelected) n.delete(groupId);
+      else n.add(groupId);
+      return n;
+    });
+    setSelected(s => {
+      const n = new Set(s);
+      for (const id of members) {
+        if (isSelected) n.delete(id);
+        else n.add(id);
+      }
+      return n;
+    });
+  }
+
+  /** Nesting depth of a group (0 = leaf) — deeper groups get more outline padding. */
+  function groupDepth(id: string): number {
+    const kids = store.groups().filter(g => g.parentGroupId === id);
+    return kids.length === 0 ? 0 : 1 + Math.max(...kids.map(k => groupDepth(k.id)));
+  }
+
+  /** World rect of one group's outline, or null while it has no live members.
+   * NOTE: called from inside a per-item `<For each={store.groups()}>` memo —
+   * keying the outer `<For>` on the stable store records (not a freshly
+   * mapped array) is what keeps a label's DOM node alive across a drag; see
+   * onGroupLabelPointerDown. */
+  function groupOutlineRect(groupId: string): Rect | null {
+    const members = store.membersOfGroup(groupId)
+      .map(id => store.byId(id))
+      .filter((d): d is Deliverable => !!d);
+    if (members.length === 0) return null;
+    const pad = 14 + 12 * groupDepth(groupId);
+    const b = boundsOf(members.map(effCardRect));
+    return { x: b.x - pad, y: b.y - pad, w: b.w + pad * 2, h: b.h + pad * 2 };
+  }
+  const [groupPromptOpen, setGroupPromptOpen] = createSignal(false);
+  const [renamingGroupId, setRenamingGroupId] = createSignal<string | null>(null);
+
+  /** Drag the label to move the whole (root) group; a clean click selects it. */
+  function onGroupLabelPointerDown(e: PointerEvent, groupId: string) {
+    if (e.button !== 0 || renamingGroupId() === groupId) return;
+    e.stopPropagation();
+    const el = e.currentTarget as HTMLElement;
+    el.setPointerCapture(e.pointerId);
+
+    const startX = e.clientX;
+    const startY = e.clientY;
+    let lastX = startX;
+    let lastY = startY;
+    let dragged = false;
+    const memberIds = store.membersOfGroup(store.rootGroupOf(groupId));
+
+    const onMove = (ev: PointerEvent) => {
+      if (!dragged && Math.hypot(ev.clientX - startX, ev.clientY - startY) < 4) return;
+      dragged = true;
+      const wd = { x: (ev.clientX - lastX) / camera.cam.zoom, y: (ev.clientY - lastY) / camera.cam.zoom };
+      commitGroupPositions(memberIds, wd.x, wd.y, false);
+      lastX = ev.clientX;
+      lastY = ev.clientY;
+    };
+    const onUp = (ev: PointerEvent) => {
+      el.removeEventListener("pointermove", onMove);
+      el.removeEventListener("pointerup", onUp);
+      el.releasePointerCapture(ev.pointerId);
+      if (dragged) {
+        const wd = { x: (ev.clientX - lastX) / camera.cam.zoom, y: (ev.clientY - lastY) / camera.cam.zoom };
+        commitGroupPositions(memberIds, wd.x, wd.y, true);
+      } else {
+        toggleGroupSelect(groupId);
+      }
+    };
+    el.addEventListener("pointermove", onMove);
+    el.addEventListener("pointerup", onUp);
+  }
+
+  /** True when the current selection is exactly the members of the selected groups. */
+  function selectionIsWholeGroups(): boolean {
+    const gids = [...selectedGroups()];
+    if (gids.length === 0) return false;
+    const memberUnion = new Set(gids.flatMap(g => store.membersOfGroup(g)));
+    const sel = selected();
+    return memberUnion.size === sel.size && [...sel].every(id => memberUnion.has(id));
+  }
+
+  /** "nest" (2+ whole groups picked via their labels) or "create" (2+
+   * ungrouped cards) — either way the toolbar's Group button opens the
+   * label prompt. Null when the raw card selection spans two *different*
+   * existing groups: mixing a grouped asset into a fresh group would
+   * silently orphan it from where it already lives, so that's blocked
+   * rather than guessed at — the fix is "Add to <group>", not "Group". */
+  const groupButtonAction = createMemo<"nest" | "create" | null>(() => {
+    if (selectedGroups().size >= 2 && selectionIsWholeGroups()) return "nest";
+    const ids = [...selected()];
+    const groupIds = new Set(ids.map(id => store.byId(id)?.groupId).filter((g): g is string => !!g));
+    return groupIds.size === 0 && ids.length >= 2 ? "create" : null;
+  });
+
+  /** When the selection mixes ungrouped cards with exactly one existing
+   * group's members, offer to add the ungrouped ones into that group
+   * instead of the (blocked) "create a new group" action. */
+  const addToExistingGroupAction = createMemo<{ groupId: string; label: string; ids: string[] } | null>(() => {
+    if (selectedGroups().size >= 2 && selectionIsWholeGroups()) return null; // nesting takes priority
+    const ids = [...selected()];
+    const groupIds = new Set(ids.map(id => store.byId(id)?.groupId).filter((g): g is string => !!g));
+    if (groupIds.size !== 1) return null;
+    const [groupId] = groupIds;
+    const ungroupedIds = ids.filter(id => !store.byId(id)?.groupId);
+    if (ungroupedIds.length === 0) return null; // already all in this one group — nothing to do
+    return { groupId, label: store.groupById(groupId)?.label ?? "group", ids: ungroupedIds };
+  });
+
+  function addSelectedToGroup(action: { groupId: string; label: string; ids: string[] }) {
+    for (const id of action.ids) store.addToGroup(id, action.groupId);
+    clearSelection();
+    flash(`Added ${action.ids.length} to “${action.label}”`);
+  }
+
+  async function submitGroup(label: string) {
+    // always close, whether this is a real submit or a cancel-by-blur —
+    // otherwise an empty blur leaves the prompt stuck open indefinitely
+    setGroupPromptOpen(false);
+    const name = label.trim();
+    if (!name) return;
+    if (selectedGroups().size >= 2 && selectionIsWholeGroups()) {
+      const gids = [...selectedGroups()];
+      await store.nestGroups(gids, name);
+      clearSelection();
+      flash(`Grouped ${gids.length} groups as “${name}”`);
+    } else {
+      const ids = [...selected()];
+      await store.groupSelected(ids, name);
+      clearSelection();
+      flash(`Grouped ${ids.length} deliverables as “${name}”`);
+    }
+  }
+
+  function ungroupSelected() {
+    const gids = [...selectedGroups()];
+    if (gids.length !== 1) return;
+    const label = store.groupById(gids[0])?.label ?? "group";
+    store.dissolveGroup(gids[0]);
+    clearSelection();
+    flash(`Ungrouped “${label}”`);
+  }
   // per-card action hooks (inline rename) for the shared context menu
   const cardActions = new Map<string, { startRename: () => void }>();
 
@@ -61,6 +330,7 @@ export function ProjectCanvas() {
   const canDeleteVersion = () => store.can("version", "delete");
   const canDeleteDeliverable = () => store.can("deliverable", "delete");
   const canTask = () => store.can("task", "create");
+  const canNote = () => store.can("canvasObject", "create");
 
   function createTaskFromDeliverable(d: Deliverable) {
     const title = window.prompt("Task title", `Revise ${d.name}`)?.trim();
@@ -68,7 +338,7 @@ export function ProjectCanvas() {
     const graph = store.state.graph;
     if (!graph) return;
     void import("../lib/task-api").then(({ createTask }) =>
-      createTask(crypto.randomUUID(), title, {
+      createTask(newId(), title, {
         projectId: graph.project.id,
         deliverableId: d.id,
       }).catch(err => window.alert(String(err instanceof Error ? err.message : err))),
@@ -90,6 +360,31 @@ export function ProjectCanvas() {
   });
 
   const openThreadCount = () => versionAnnotations().filter(a => a.status === "open").length;
+
+  /**
+   * The deliverable the status bar / info modal should describe: the one
+   * being reviewed, or — since a single click now selects rather than opens
+   * — the lone selected card in workspace mode. Falls back to nothing when
+   * 0 or 2+ cards are selected (info about "several" isn't meaningful here).
+   */
+  const focusedDeliverable = createMemo<Deliverable | undefined>(() => {
+    const d = current();
+    if (d) return d;
+    const sel = selected();
+    return sel.size === 1 ? store.byId([...sel][0]) : undefined;
+  });
+  const focusedVersion = createMemo<Version | undefined>(() => {
+    const d = focusedDeliverable();
+    if (!d) return undefined;
+    if (current()) return currentVersion(); // respect the review-mode version override
+    return d.versions[d.versions.length - 1];
+  });
+  const focusedOpenThreadCount = createMemo(() => {
+    const d = focusedDeliverable();
+    const v = focusedVersion();
+    if (!d || !v) return 0;
+    return d.annotations.filter(a => a.versionId === v.id && a.status === "open").length;
+  });
 
   /**
    * Compare mode: every version laid out in one row (ascending), scaled to the
@@ -135,7 +430,7 @@ export function ProjectCanvas() {
   let firstFrame = true;
 
   function fitWorkspace(animate: boolean) {
-    const rects = store.deliverables().map(cardRect);
+    const rects = store.deliverables().map(effCardRect);
     const target = camera.fitRect(boundsOf(rects), viewport().w, viewport().h, 80);
     // never zoom cards past 1:1 when fitting
     if (target.zoom > 1) {
@@ -268,10 +563,201 @@ export function ProjectCanvas() {
     return store.addDeliverable(n, wx - CARD_W / 2, wy - 60);
   }
 
+  /** A committed (non-drag) absolute move, e.g. from auto-arrange — single
+   * indirection point so a later layout-mode change only needs editing here. */
+  function movePlacedDeliverable(id: string, x: number, y: number) {
+    commitDeliverablePosition(id, x, y, true);
+  }
+
+  /** Applies neighbor/grid snapping (per the toggles), then moves the card —
+   * or, if it's part of a group, drags the whole group along by the same
+   * delta. Movement is free unless a snap actually engages (no quantizing
+   * every frame — that's what made dragging feel jittery). Writes land on
+   * whichever layout layer is active (see layoutMode / commitDeliverablePosition). */
+  function handleCardMove(dl: Deliverable, x: number, y: number, done: boolean) {
+    const movingIds = dl.groupId
+      ? new Set(store.membersOfGroup(store.rootGroupOf(dl.groupId)))
+      : new Set([dl.id]);
+    let snapped = { x, y };
+    if (snapObjects()) {
+      // exclude cards moving along with the drag from the snap targets
+      const others = [
+        ...store.deliverables().filter(o => !movingIds.has(o.id)).map(effCardRect),
+        ...store.canvasObjects().map(effNoteRect),
+      ];
+      const rect = { x, y, w: CARD_W, h: thumbHeight(dl) + CARD_HEADER_H };
+      const threshold = 8 / camera.cam.zoom; // constant feel on screen at any zoom
+      const result = snapToNeighbors(rect, others, threshold);
+      if (result.guides.length > 0) {
+        snapped = { x: result.x, y: result.y };
+        setSnapGuides(done ? [] : result.guides);
+      } else {
+        setSnapGuides([]);
+        if (snapGrid()) snapped = snapToGrid(x, y);
+      }
+    } else if (snapGrid()) {
+      snapped = snapToGrid(x, y);
+    }
+    if (done) setSnapGuides([]);
+    if (movingIds.size > 1) {
+      const cur = posOf("deliverable", dl.id, dl.posX, dl.posY);
+      commitGroupPositions([...movingIds], snapped.x - cur.x, snapped.y - cur.y, done);
+    } else {
+      commitDeliverablePosition(dl.id, snapped.x, snapped.y, done);
+    }
+  }
+
+  function handleNoteMove(o: CanvasObject, x: number, y: number, done: boolean) {
+    let snapped = { x, y };
+    if (snapObjects()) {
+      const others = [
+        ...store.deliverables().map(effCardRect),
+        ...store.canvasObjects().filter(n => n.id !== o.id).map(effNoteRect),
+      ];
+      const threshold = 8 / camera.cam.zoom;
+      const result = snapToNeighbors({ x, y, w: NOTE_W, h: 80 }, others, threshold);
+      if (result.guides.length > 0) {
+        snapped = { x: result.x, y: result.y };
+        setSnapGuides(done ? [] : result.guides);
+      } else {
+        setSnapGuides([]);
+        if (snapGrid()) snapped = snapToGrid(x, y);
+      }
+    } else if (snapGrid()) {
+      snapped = snapToGrid(x, y);
+    }
+    if (done) setSnapGuides([]);
+    commitNotePosition(o.id, snapped.x, snapped.y, done);
+  }
+
+  function editNoteTags(o: CanvasObject) {
+    const input = window.prompt("Tags (comma-separated)", o.tags.join(", "));
+    if (input === null) return;
+    const tags = input.split(",").map(t => t.trim()).filter(Boolean).slice(0, 8);
+    store.updateNote(o.id, { tags });
+  }
+
+  function noteMenuEntries(o: CanvasObject): MenuEntry[] {
+    const canEditNote = store.can("canvasObject", "update");
+    return [
+      ...(canEditNote
+        ? [{ label: "Edit tags", icon: "iconoir:tag", run: () => editNoteTags(o) }]
+        : []),
+      ...(canEditNote
+        ? (Object.keys(NOTE_COLORS) as NoteColor[]).map(color => ({
+            label: `Color: ${color}`,
+            icon: "iconoir:fill-color" as string,
+            hint: o.color === color ? "current" : undefined,
+            run: () => store.updateNote(o.id, { color }),
+          }))
+        : []),
+      ...(store.can("canvasObject", "delete")
+        ? [
+            { separator: true } as const,
+            {
+              label: "Delete note",
+              icon: "iconoir:trash",
+              danger: true,
+              run: () => store.removeNote(o.id),
+            },
+          ]
+        : []),
+    ];
+  }
+
+  /** Flies the camera to a note — the sidebar list's primary action, since
+   * notes have no detail view of their own (they live on the board). */
+  function jumpToNote(note: CanvasObject) {
+    const pos = posOf("note", note.id, note.posX, note.posY);
+    const target = camera.fitRect({ x: pos.x, y: pos.y, w: NOTE_W, h: 80 }, viewport().w, viewport().h, 200);
+    camera.flyTo(target);
+  }
+
+  function deleteNoteFromPanel(note: CanvasObject) {
+    if (!window.confirm("Delete this sticky note?")) return;
+    store.removeNote(note.id);
+  }
+
+  const ARRANGE_GAP = 40;
+  const ARRANGE_ROW_WIDTH = 4 * (CARD_W + ARRANGE_GAP); // wrap after ~4 units per row
+
+  /**
+   * Simple shelf-pack layout: each root group becomes one rectangular
+   * cluster (its members arranged in a small internal grid), each ungrouped
+   * deliverable is its own unit, then every unit flows left-to-right,
+   * wrapping to a new row, in creation order. Writes land on whichever
+   * layout layer is currently active (see layoutMode / handleCardMove).
+   */
+  function autoArrange() {
+    if (!canEdit()) return;
+    const rootGroups = store.groups().filter(g => !g.parentGroupId);
+    const groupedIds = new Set(store.deliverables().filter(d => d.groupId).map(d => d.id));
+    const ungrouped = store.deliverables().filter(d => !groupedIds.has(d.id));
+
+    type Unit = { w: number; h: number; place: (x: number, y: number) => void };
+    const units: Unit[] = [];
+
+    for (const g of rootGroups) {
+      const members = store
+        .membersOfGroup(g.id)
+        .map(id => store.byId(id))
+        .filter((d): d is Deliverable => !!d)
+        .sort((a, b) => a.createdAt - b.createdAt);
+      if (members.length === 0) continue;
+      const cols = Math.min(members.length, 4);
+      const rows = Math.ceil(members.length / cols);
+      const cellH = Math.max(...members.map(thumbHeight)) + CARD_HEADER_H;
+      const innerGap = 20;
+      const pad = 24; // clears the group outline border
+      const labelRoom = 20; // clears the label sitting on the top stroke
+      const w = cols * CARD_W + (cols - 1) * innerGap + pad * 2;
+      const h = rows * cellH + (rows - 1) * innerGap + pad * 2 + labelRoom;
+      units.push({
+        w,
+        h,
+        place: (ux, uy) => {
+          members.forEach((m, i) => {
+            const col = i % cols;
+            const row = Math.floor(i / cols);
+            movePlacedDeliverable(
+              m.id,
+              ux + pad + col * (CARD_W + innerGap),
+              uy + pad + labelRoom + row * (cellH + innerGap),
+            );
+          });
+        },
+      });
+    }
+
+    for (const d of [...ungrouped].sort((a, b) => a.createdAt - b.createdAt)) {
+      units.push({
+        w: CARD_W,
+        h: thumbHeight(d) + CARD_HEADER_H,
+        place: (ux, uy) => movePlacedDeliverable(d.id, ux, uy),
+      });
+    }
+
+    let x = 0, y = 0, rowH = 0;
+    for (const u of units) {
+      if (x > 0 && x + u.w > ARRANGE_ROW_WIDTH) {
+        x = 0;
+        y += rowH + ARRANGE_GAP;
+        rowH = 0;
+      }
+      u.place(x, y);
+      x += u.w + ARRANGE_GAP;
+      rowH = Math.max(rowH, u.h);
+    }
+
+    flash(`Arranged ${units.length} item${units.length === 1 ? "" : "s"}`);
+    queueMicrotask(() => fitWorkspace(true));
+  }
+
   function newDeliverableAtCenter() {
     if (!canCreate()) return;
     const c = camera.screenToWorld(viewport().w / 2, viewport().h / 2);
-    const d = createDeliverableAt(c.x, c.y);
+    const free = findFreeSpot(store.deliverables(), c.x - CARD_W / 2, c.y - 60);
+    const d = createDeliverableAt(free.x + CARD_W / 2, free.y + 60);
     flash(`Added ${d.name} — drop an image on it`);
   }
 
@@ -289,20 +775,15 @@ export function ProjectCanvas() {
     return { x: e.clientX - r.left, y: e.clientY - r.top };
   };
 
-  function onPointerDown(e: PointerEvent) {
-    if (e.button !== 0 && e.button !== 1) return;
-    if (e.button === 1) e.preventDefault(); // no autoscroll
+  /** Drag-to-pan, shared by the middle mouse button and held-spacebar+left-click. */
+  function beginPan(e: PointerEvent) {
     const start = localPoint(e);
     let last = start;
-    let dragged = false;
-
     container.setPointerCapture(e.pointerId);
 
     const onMove = (ev: PointerEvent) => {
-      const p = localPoint(ev);
-      if (!dragged && Math.hypot(p.x - start.x, p.y - start.y) < 4) return;
-      dragged = true; // still counts as a drag (won't place a pin on release)
       if (!panEnabled()) return;
+      const p = localPoint(ev);
       setPanning(true);
       camera.panBy(p.x - last.x, p.y - last.y);
       last = p;
@@ -312,9 +793,74 @@ export function ProjectCanvas() {
       container.removeEventListener("pointerup", onUp);
       container.releasePointerCapture(ev.pointerId);
       setPanning(false);
-      if (dragged || ev.button !== 0) return;
+    };
+    container.addEventListener("pointermove", onMove);
+    container.addEventListener("pointerup", onUp);
+  }
 
-      // a clean left click
+  /** World-space rect of the marquee, using whichever corners span the box. */
+  function marqueeWorldRect(start: { x: number; y: number }, end: { x: number; y: number }): Rect {
+    const w0 = camera.screenToWorld(Math.min(start.x, end.x), Math.min(start.y, end.y));
+    const w1 = camera.screenToWorld(Math.max(start.x, end.x), Math.max(start.y, end.y));
+    return { x: w0.x, y: w0.y, w: w1.x - w0.x, h: w1.y - w0.y };
+  }
+
+  /** Left-button drag on empty canvas: in workspace mode, draws a marquee and
+   * live-selects every deliverable it overlaps (replacing the old click-drag
+   * pan — panning now lives on the wheel). In review mode a drag still just
+   * suppresses the click-to-pin below; it doesn't pan or select anything. */
+  function onPointerDown(e: PointerEvent) {
+    if (e.button === 1) {
+      e.preventDefault(); // no middle-click autoscroll
+      return beginPan(e);
+    }
+    if (e.button !== 0) return;
+    if (spaceHeld()) return beginPan(e);
+    const start = localPoint(e);
+    let dragged = false;
+
+    container.setPointerCapture(e.pointerId);
+
+    const onMove = (ev: PointerEvent) => {
+      const p = localPoint(ev);
+      if (!dragged && Math.hypot(p.x - start.x, p.y - start.y) < 4) return;
+      if (!dragged && !reviewId() && !noteTool()) setSelectedGroups(new Set<string>());
+      dragged = true; // still counts as a drag (won't place a pin on release)
+      if (reviewId() || noteTool()) return;
+      setMarquee({ x0: start.x, y0: start.y, x1: p.x, y1: p.y });
+      const world = marqueeWorldRect(start, p);
+      const ids = store.deliverables().filter(d => rectsOverlap(world, effCardRect(d))).map(d => d.id);
+      setSelected(new Set(ids));
+    };
+    const onUp = (ev: PointerEvent) => {
+      container.removeEventListener("pointermove", onMove);
+      container.removeEventListener("pointerup", onUp);
+      container.releasePointerCapture(ev.pointerId);
+      if (dragged) {
+        setMarquee(null);
+        return;
+      }
+
+      // a clean left click — armed note tool places a sticky note here.
+      // batch so the note renders with newNoteId already set (auto-edit).
+      if (noteTool() && !reviewId()) {
+        setNoteTool(false);
+        if (canNote()) {
+          const w = camera.screenToWorld(start.x, start.y);
+          batch(() => {
+            const note = store.addNote(w.x - NOTE_W / 2, w.y - 24);
+            setNewNoteId(note.id);
+          });
+        }
+        return;
+      }
+
+      // a clean click on empty workspace canvas deselects everything
+      if (!reviewId()) {
+        clearSelection();
+        return;
+      }
+
       const d = current();
       const v = currentVersion();
       const p = plane();
@@ -336,19 +882,30 @@ export function ProjectCanvas() {
   }
 
   function onDblClick(e: MouseEvent) {
-    if (reviewId() || !canCreate()) return;
-    if ((e.target as HTMLElement).closest("[data-card]")) return;
+    if (reviewId()) {
+      const d = current();
+      if (d) openFilePicker(d);
+      return;
+    }
+    if (!canCreate()) return;
+    if ((e.target as HTMLElement).closest("[data-card],[data-note]")) return;
     const p = localPoint(e);
     const w = camera.screenToWorld(p.x, p.y);
     createDeliverableAt(w.x, w.y);
   }
 
+  /** Plain wheel/trackpad scroll pans; Ctrl/Cmd+scroll (also how browsers
+   * report trackpad pinch) zooms, anchored on the cursor. */
   function onWheel(e: WheelEvent) {
     e.preventDefault();
     if (locked()) return;
-    const p = localPoint(e);
-    const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
-    camera.zoomAt(p.x, p.y, factor, 0.05, 64);
+    if (e.ctrlKey || e.metaKey) {
+      const p = localPoint(e);
+      const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+      camera.zoomAt(p.x, p.y, factor, 0.05, 64);
+    } else if (panEnabled()) {
+      camera.panBy(-e.deltaX, -e.deltaY);
+    }
   }
 
   function onDrop(e: DragEvent) {
@@ -368,7 +925,7 @@ export function ProjectCanvas() {
     const p = localPoint(e);
     const w = camera.screenToWorld(p.x, p.y);
     const hit = store.deliverables().find(dl => {
-      const r = cardRect(dl);
+      const r = effCardRect(dl);
       return w.x >= r.x && w.x <= r.x + r.w && w.y >= r.y && w.y <= r.y + r.h;
     });
     if (hit) {
@@ -409,6 +966,18 @@ export function ProjectCanvas() {
     if (reviewId() === d.id) exitReview();
     store.removeDeliverable(d.id);
     flash(`${d.name} deleted — restore from History (H)`);
+  }
+
+  function bulkDeleteDeliverables() {
+    if (!canDeleteDeliverable()) return;
+    const ids = selected();
+    if (!window.confirm(`Delete ${ids.size} deliverable${ids.size === 1 ? "" : "s"}? You can restore them from History.`)) return;
+    for (const id of ids) {
+      if (reviewId() === id) exitReview();
+      store.removeDeliverable(id);
+    }
+    clearSelection();
+    flash(`${ids.size} deliverable${ids.size === 1 ? "" : "s"} deleted — restore from History (H)`);
   }
 
   // ---- context menus (one shared component, same entries everywhere) -------
@@ -493,6 +1062,16 @@ export function ProjectCanvas() {
         : []),
       ...(canTask()
         ? [{ label: "Create task", icon: "iconoir:task-list", run: () => createTaskFromDeliverable(d) }]
+        : []),
+      ...(canEdit() && d.groupId
+        ? [{ label: "Remove from group", icon: "iconoir:link-slash", run: () => store.ungroup(d.id) }]
+        : []),
+      ...(canEdit() && !d.groupId
+        ? store.groups().slice(0, 6).map(g => ({
+            label: `Add to “${g.label}”`,
+            icon: "iconoir:link" as string,
+            run: () => store.addToGroup(d.id, g.id),
+          }))
         : []),
       ...(canDeleteDeliverable()
         ? [
@@ -639,12 +1218,20 @@ export function ProjectCanvas() {
       // workspace mode
       switch (e.key) {
         case "Escape":
-          if (infoOpen()) setInfoOpen(false);
+          if (noteTool()) setNoteTool(false);
+          else if (infoOpen()) setInfoOpen(false);
           else if (historyOpen()) setHistoryOpen(false);
           return;
         case "n":
         case "N":
           if (canCreate()) newDeliverableAtCenter();
+          return;
+        case "s":
+        case "S":
+          if (canNote()) {
+            setNoteTool(t => !t);
+            flash(noteTool() ? "Sticky note: click the canvas to place" : "");
+          }
           return;
         case "f":
         case "F":
@@ -657,6 +1244,31 @@ export function ProjectCanvas() {
   onMount(() => {
     window.addEventListener("keydown", onKeyDown);
     onCleanup(() => window.removeEventListener("keydown", onKeyDown));
+  });
+
+  // hold-spacebar-to-pan: separate from onKeyDown so it isn't gated behind
+  // review/workspace mode branches and still works while typing is blocked
+  onMount(() => {
+    function onSpaceDown(e: KeyboardEvent) {
+      if (e.code !== "Space" || e.repeat) return;
+      if ((e.target as HTMLElement).tagName === "INPUT" || (e.target as HTMLElement).tagName === "TEXTAREA" || (e.target as HTMLElement).isContentEditable) return;
+      e.preventDefault(); // no page scroll
+      setSpaceHeld(true);
+    }
+    function onSpaceUp(e: KeyboardEvent) {
+      if (e.code === "Space") setSpaceHeld(false);
+    }
+    function onBlurWindow() {
+      setSpaceHeld(false); // e.g. alt-tab away mid-hold — don't get stuck panning
+    }
+    window.addEventListener("keydown", onSpaceDown);
+    window.addEventListener("keyup", onSpaceUp);
+    window.addEventListener("blur", onBlurWindow);
+    onCleanup(() => {
+      window.removeEventListener("keydown", onSpaceDown);
+      window.removeEventListener("keyup", onSpaceUp);
+      window.removeEventListener("blur", onBlurWindow);
+    });
   });
 
   // ---- render --------------------------------------------------------------
@@ -742,7 +1354,7 @@ export function ProjectCanvas() {
               {store.state.graph?.project.name ?? "…"}
             </span>
             <Show when={store.state.graph?.project.entityName}>
-              <span class="bg-[#efeded] text-neutral-500 text-xs py-0.5 px-1.5 rounded">
+              <span class="bg-[#efeded] text-neutral-500 text-xs py-0.5 px-1.5 rounded truncate max-w-32 shrink-0">
                 {store.state.graph!.project.entityName}
               </span>
             </Show>
@@ -750,7 +1362,38 @@ export function ProjectCanvas() {
               {d => (
                 <>
                   <span class="text-neutral-300">/</span>
-                  <span class="text-neutral-700 truncate">{d().name}</span>
+                  <Show
+                    when={!navRenaming()}
+                    fallback={
+                      <input
+                        class="text-sm text-neutral-700 bg-neutral-50 border border-neutral-200 rounded px-1 py-0.5 outline-none select-text min-w-0"
+                        value={d().name}
+                        ref={el => queueMicrotask(() => { el.focus(); el.select(); })}
+                        onKeyDown={e => {
+                          if (e.key === "Enter") (e.currentTarget as HTMLInputElement).blur();
+                          if (e.key === "Escape") {
+                            (e.currentTarget as HTMLInputElement).value = d().name;
+                            (e.currentTarget as HTMLInputElement).blur();
+                          }
+                        }}
+                        onBlur={e => {
+                          setNavRenaming(false);
+                          const name = e.currentTarget.value.trim();
+                          if (name && name !== d().name) store.renameDeliverable(d().id, name);
+                        }}
+                      />
+                    }
+                  >
+                    <span
+                      class="text-neutral-700 truncate"
+                      title={canEdit() ? `${d().name} — double-click to rename` : d().name}
+                      onDblClick={() => {
+                        if (canEdit()) setNavRenaming(true);
+                      }}
+                    >
+                      {d().name}
+                    </span>
+                  </Show>
                   <span
                     class={`text-[10px] rounded-full px-1.5 py-px ${STATUS_META[d().status].chip}`}
                   >
@@ -769,7 +1412,7 @@ export function ProjectCanvas() {
 
           <div class="flex items-center gap-2 relative">
             <button
-              class="flex items-center p-1.5 rounded cursor-pointer text-neutral-500 hover:text-neutral-800"
+              class="flex items-center p-1.5 rounded cursor-pointer text-neutral-500 hover:text-neutral-800 hover:bg-neutral-200/50"
               title="Search (/)"
               onClick={() => setSearchOpen(true)}
             >
@@ -779,13 +1422,26 @@ export function ProjectCanvas() {
               class="flex items-center p-1.5 rounded cursor-pointer"
               classList={{
                 "bg-neutral-200/70 text-neutral-800": historyOpen(),
-                "text-neutral-500 hover:text-neutral-800": !historyOpen(),
+                "text-neutral-500 hover:text-neutral-800 hover:bg-neutral-200/50": !historyOpen(),
               }}
               title="Project history (H)"
               onClick={() => setHistoryOpen(o => !o)}
             >
               <Icon icon="iconoir:clock" width="15" />
             </button>
+            <Show when={!reviewId()}>
+              <button
+                class="flex items-center p-1.5 rounded cursor-pointer"
+                classList={{
+                  "bg-neutral-200/70 text-neutral-800": notesOpen(),
+                  "text-neutral-500 hover:text-neutral-800 hover:bg-neutral-200/50": !notesOpen(),
+                }}
+                title="Sticky notes"
+                onClick={() => setNotesOpen(o => !o)}
+              >
+                <Icon icon="iconoir:notes" width="15" />
+              </button>
+            </Show>
             <Show
               when={current()}
               fallback={
@@ -796,6 +1452,7 @@ export function ProjectCanvas() {
                     title="New deliverable (N)"
                   >
                     <Icon icon="iconoir:plus" width="14" /> Deliverable
+                    <span class="text-[10px] text-neutral-400 bg-neutral-800 rounded px-1 ml-1">N</span>
                   </button>
                 </Show>
               }
@@ -895,7 +1552,7 @@ export function ProjectCanvas() {
                           Cancel
                         </button>
                         <button
-                          class="text-xs text-white rounded px-2.5 py-1 cursor-pointer disabled:opacity-40"
+                          class="text-xs text-white rounded px-2.5 py-1 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                           classList={{
                             "bg-emerald-600 hover:bg-emerald-500": pendingDecision() === "approved",
                             "bg-amber-600 hover:bg-amber-500": pendingDecision() === "revision_requested",
@@ -935,9 +1592,10 @@ export function ProjectCanvas() {
             ref={container}
             class="relative flex-1 overflow-hidden bg-[#fffefe] select-none"
             classList={{
+              "cursor-copy": noteTool() && !spaceHeld(),
               "cursor-grabbing": panning(),
-              "cursor-grab": !panning() && panEnabled(),
-              "cursor-default": !panning() && !panEnabled(),
+              "cursor-grab": spaceHeld() && !panning(),
+              "cursor-default": !noteTool() && !spaceHeld() && !panning(),
             }}
             onPointerDown={onPointerDown}
             onDblClick={onDblClick}
@@ -959,24 +1617,159 @@ export function ProjectCanvas() {
               <Show
                 when={current()}
                 fallback={
-                  <For each={store.deliverables()}>
-                    {d => (
-                      <DeliverableCard
-                        d={d}
-                        readOnly={!canEdit()}
-                        onOpen={enterReview}
-                        onMove={(dl, x, y, done) => store.moveDeliverable(dl.id, x, y, done)}
-                        onRename={(dl, name) => store.renameDeliverable(dl.id, name)}
-                        onDelete={canDeleteDeliverable() ? confirmDeleteDeliverable : undefined}
-                        onMenu={(dl, x, y) => setCtxMenu({ x, y, entries: deliverableMenuEntries(dl) })}
-                        registerActions={(id, actions) => cardActions.set(id, actions)}
-                        screenToWorldDelta={(dx, dy) => ({
-                          x: dx / camera.cam.zoom,
-                          y: dy / camera.cam.zoom,
-                        })}
-                      />
-                    )}
-                  </For>
+                  <>
+                    {/* group outlines — painted under the cards; label sits on the stroke.
+                        Keyed on the stable store.groups() records (not a freshly-mapped
+                        array) so a drag's position updates re-render only the rect inside
+                        each item, never tear down/recreate the label DOM node mid-drag. */}
+                    <For each={store.groups()}>
+                      {g => {
+                        const rect = createMemo(() => groupOutlineRect(g.id));
+                        return (
+                          <Show when={rect()}>
+                            {r => (
+                              <div
+                                class="absolute rounded-lg pointer-events-none"
+                                classList={{
+                                  "border-violet-400": !selectedGroups().has(g.id),
+                                  "border-violet-600 bg-violet-50/30": selectedGroups().has(g.id),
+                                }}
+                                style={{
+                                  left: `${r().x}px`,
+                                  top: `${r().y}px`,
+                                  width: `${r().w}px`,
+                                  height: `${r().h}px`,
+                                  "border-width": `${1.5 / camera.cam.zoom}px`,
+                                  "border-style": "solid",
+                                }}
+                              >
+                                <Show
+                                  when={renamingGroupId() !== g.id}
+                                  fallback={
+                                    <input
+                                      class="absolute left-2 top-0 text-[11px] font-medium rounded px-1.5 py-0.5 bg-white border border-violet-300 outline-none whitespace-nowrap pointer-events-auto select-text"
+                                      style={{
+                                        transform: `scale(${1 / camera.cam.zoom}) translateY(-50%)`,
+                                        "transform-origin": "0 50%",
+                                        width: `${Math.max(80, g.label.length * 7)}px`,
+                                      }}
+                                      value={g.label}
+                                      ref={el => queueMicrotask(() => { el.focus(); el.select(); })}
+                                      onPointerDown={e => e.stopPropagation()}
+                                      onKeyDown={e => {
+                                        e.stopPropagation();
+                                        if (e.key === "Enter") (e.currentTarget as HTMLInputElement).blur();
+                                        if (e.key === "Escape") {
+                                          (e.currentTarget as HTMLInputElement).value = g.label;
+                                          (e.currentTarget as HTMLInputElement).blur();
+                                        }
+                                      }}
+                                      onBlur={e => {
+                                        setRenamingGroupId(null);
+                                        const name = e.currentTarget.value.trim();
+                                        if (name && name !== g.label) store.renameGroup(g.id, name);
+                                      }}
+                                    />
+                                  }
+                                >
+                                  <button
+                                    class="absolute left-2 top-0 inline-flex items-center gap-1 text-[11px] font-medium rounded px-1.5 py-0.5 cursor-pointer whitespace-nowrap pointer-events-auto"
+                                    classList={{
+                                      "bg-violet-100 text-violet-700 hover:bg-violet-200": !selectedGroups().has(g.id),
+                                      "bg-violet-600 text-white": selectedGroups().has(g.id),
+                                    }}
+                                    style={{
+                                      transform: `scale(${1 / camera.cam.zoom}) translateY(-50%)`,
+                                      "transform-origin": "0 50%",
+                                    }}
+                                    title={`${g.label} — drag to move, double-click to rename`}
+                                    onPointerDown={e => onGroupLabelPointerDown(e, g.id)}
+                                    onDblClick={e => {
+                                      e.stopPropagation();
+                                      if (canEdit()) setRenamingGroupId(g.id);
+                                    }}
+                                  >
+                                    <Icon icon="iconoir:link" width="10" />
+                                    {g.label}
+                                  </button>
+                                </Show>
+                              </div>
+                            )}
+                          </Show>
+                        );
+                      }}
+                    </For>
+                    <For each={store.deliverables()}>
+                      {d => {
+                        const pos = createMemo(() => posOf("deliverable", d.id, d.posX, d.posY));
+                        return (
+                          <DeliverableCard
+                            d={d}
+                            x={pos().x}
+                            y={pos().y}
+                            readOnly={!canEdit()}
+                            selected={selected().has(d.id)}
+                            onToggleSelect={dl => toggleSelect(dl.id)}
+                            onOpen={enterReview}
+                            onMove={handleCardMove}
+                            onRename={(dl, name) => store.renameDeliverable(dl.id, name)}
+                            onDelete={canDeleteDeliverable() ? confirmDeleteDeliverable : undefined}
+                            onMenu={(dl, x, y) => setCtxMenu({ x, y, entries: deliverableMenuEntries(dl) })}
+                            registerActions={(id, actions) => cardActions.set(id, actions)}
+                            screenToWorldDelta={(dx, dy) => ({
+                              x: dx / camera.cam.zoom,
+                              y: dy / camera.cam.zoom,
+                            })}
+                          />
+                        );
+                      }}
+                    </For>
+                    {/* sticky notes — board-only working notes */}
+                    <For each={store.canvasObjects()}>
+                      {o => {
+                        const pos = createMemo(() => posOf("note", o.id, o.posX, o.posY));
+                        return (
+                          <StickyNote
+                            o={o}
+                            x={pos().x}
+                            y={pos().y}
+                            readOnly={!store.can("canvasObject", "update")}
+                            autoEdit={newNoteId() === o.id}
+                            onMove={handleNoteMove}
+                            onEdit={(note, content) => store.updateNote(note.id, { content })}
+                            onMenu={(note, x, y) => setCtxMenu({ x, y, entries: noteMenuEntries(note) })}
+                            screenToWorldDelta={(dx, dy) => ({
+                              x: dx / camera.cam.zoom,
+                              y: dy / camera.cam.zoom,
+                            })}
+                          />
+                        );
+                      }}
+                    </For>
+                    {/* active snap guides — feedback for what a drag is snapping to */}
+                    <For each={snapGuides()}>
+                      {g => (
+                        <div
+                          class="absolute bg-sky-500 pointer-events-none"
+                          style={
+                            g.axis === "x"
+                              ? {
+                                  left: `${g.coord}px`,
+                                  top: `${g.from}px`,
+                                  width: `${1 / camera.cam.zoom}px`,
+                                  height: `${g.to - g.from}px`,
+                                }
+                              : {
+                                  left: `${g.from}px`,
+                                  top: `${g.coord}px`,
+                                  width: `${g.to - g.from}px`,
+                                  height: `${1 / camera.cam.zoom}px`,
+                                }
+                          }
+                        />
+                      )}
+                    </For>
+                  </>
                 }
               >
                 {d => (
@@ -1046,6 +1839,21 @@ export function ProjectCanvas() {
               </Show>
             </div>
 
+            {/* marquee-select box — drawn in screen space, not world space */}
+            <Show when={marquee()}>
+              {m => (
+                <div
+                  class="absolute border border-sky-500 bg-sky-500/10 pointer-events-none z-10"
+                  style={{
+                    left: `${Math.min(m().x0, m().x1)}px`,
+                    top: `${Math.min(m().y0, m().y1)}px`,
+                    width: `${Math.abs(m().x1 - m().x0)}px`,
+                    height: `${Math.abs(m().y1 - m().y0)}px`,
+                  }}
+                />
+              )}
+            </Show>
+
             {/* empty state */}
             <Show when={store.state.loaded && !reviewId() && store.deliverables().length === 0}>
               <div class="absolute inset-0 flex items-center justify-center pointer-events-none">
@@ -1068,6 +1876,43 @@ export function ProjectCanvas() {
             <Show when={store.state.error}>
               <div class="absolute inset-0 flex items-center justify-center">
                 <p class="text-sm text-neutral-500">{store.state.error}</p>
+              </div>
+            </Show>
+
+            {/* board tools — a light toolbar for placeable canvas objects + layout actions */}
+            <Show when={!reviewId() && (canNote() || canEdit())}>
+              <div
+                class="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center rounded-lg border border-neutral-200 bg-white/95 shadow-sm overflow-clip divide-x divide-neutral-100"
+                onPointerDown={e => e.stopPropagation()}
+                onDblClick={e => e.stopPropagation()}
+                onWheel={e => e.stopPropagation()}
+                onContextMenu={e => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                }}
+              >
+                <Show when={canNote()}>
+                  <button
+                    class="p-1.5 cursor-pointer"
+                    classList={{
+                      "text-amber-600 bg-amber-50 hover:bg-amber-100": noteTool(),
+                      "text-neutral-500 hover:text-neutral-800 hover:bg-neutral-50": !noteTool(),
+                    }}
+                    title="Sticky note (S) — click the canvas to place"
+                    onClick={() => setNoteTool(t => !t)}
+                  >
+                    <Icon icon="iconoir:notes" width="14" />
+                  </button>
+                </Show>
+                <Show when={canEdit() && store.deliverables().length > 0}>
+                  <button
+                    class="p-1.5 cursor-pointer text-neutral-500 hover:text-neutral-800 hover:bg-neutral-50"
+                    title="Auto-arrange — grid-pack deliverables, groups stay clustered"
+                    onClick={autoArrange}
+                  >
+                    <Icon icon="iconoir:view-grid" width="14" />
+                  </button>
+                </Show>
               </div>
             </Show>
 
@@ -1104,6 +1949,46 @@ export function ProjectCanvas() {
                 >
                   <Icon icon="iconoir:frame" width="14" />
                 </button>
+                <Show when={!reviewId()}>
+                  <button
+                    class="p-1.5 cursor-pointer border-t border-neutral-100"
+                    classList={{
+                      "text-sky-600 bg-sky-50 hover:bg-sky-100": snapObjects(),
+                      "text-neutral-400 hover:text-neutral-800 hover:bg-neutral-50": !snapObjects(),
+                    }}
+                    title={snapObjects() ? "Snap to deliverables: on" : "Snap to deliverables: off"}
+                    onClick={toggleSnapObjects}
+                  >
+                    <Icon icon="iconoir:magnet" width="14" />
+                  </button>
+                  <button
+                    class="p-1.5 cursor-pointer border-t border-neutral-100"
+                    classList={{
+                      "text-sky-600 bg-sky-50 hover:bg-sky-100": snapGrid(),
+                      "text-neutral-400 hover:text-neutral-800 hover:bg-neutral-50": !snapGrid(),
+                    }}
+                    title={snapGrid() ? "Snap to grid: on" : "Snap to grid: off"}
+                    onClick={toggleSnapGrid}
+                  >
+                    <Icon icon="iconoir:orthogonal-view" width="14" />
+                  </button>
+                  <button
+                    class="flex items-center gap-1 px-2 py-1.5 cursor-pointer border-t border-neutral-100 text-[10px] font-medium"
+                    classList={{
+                      "text-violet-600 bg-violet-50 hover:bg-violet-100": layoutMode() === "personal",
+                      "text-neutral-500 hover:text-neutral-800 hover:bg-neutral-50": layoutMode() === "sync",
+                    }}
+                    title={
+                      layoutMode() === "sync"
+                        ? "Sync layout — shared positions everyone sees. Click to switch to your personal layout."
+                        : "Personal layout — only you see this arrangement. Click to switch back to sync."
+                    }
+                    onClick={toggleLayoutMode}
+                  >
+                    <Icon icon={layoutMode() === "sync" ? "iconoir:group" : "iconoir:user"} width="13" />
+                    {layoutMode() === "sync" ? "Sync" : "Personal"}
+                  </button>
+                </Show>
               </div>
             </Show>
           </div>
@@ -1111,13 +1996,26 @@ export function ProjectCanvas() {
           <Show
             when={historyOpen()}
             fallback={
-              <Show when={current() && sidebarOpen()}>
-                <ThreadSidebar
-                  annotations={versionAnnotations()}
-                  selectedId={selectedAnnId()}
-                  onSelect={selectAnnotation}
-                  onComment={(annId, body) => store.addComment(current()!.id, annId, body)}
-                  onResolve={(annId, status) => store.resolveAnnotation(current()!.id, annId, status)}
+              <Show
+                when={notesOpen()}
+                fallback={
+                  <Show when={current() && sidebarOpen()}>
+                    <ThreadSidebar
+                      annotations={versionAnnotations()}
+                      selectedId={selectedAnnId()}
+                      onSelect={selectAnnotation}
+                      onComment={(annId, body) => store.addComment(current()!.id, annId, body)}
+                      onResolve={(annId, status) => store.resolveAnnotation(current()!.id, annId, status)}
+                    />
+                  </Show>
+                }
+              >
+                <NotesPanel
+                  notes={store.canvasObjects()}
+                  canDelete={store.can("canvasObject", "delete")}
+                  onClose={() => setNotesOpen(false)}
+                  onJumpTo={jumpToNote}
+                  onDelete={deleteNoteFromPanel}
                 />
               </Show>
             }
@@ -1135,7 +2033,7 @@ export function ProjectCanvas() {
         <footer class="min-h-8 px-2 flex items-center justify-between gap-3 bg-[#f8f7f7] border-t border-[#f0eeee] text-[11px]">
           <div class="flex items-center gap-2 min-w-0">
             <button
-              class="flex items-center gap-1 shrink-0 text-neutral-500 hover:text-neutral-800 hover:bg-neutral-200/60 rounded px-1.5 py-1 cursor-pointer"
+              class="flex items-center gap-1 shrink-0 text-neutral-500 hover:text-neutral-800 hover:bg-neutral-200/50 rounded px-1.5 py-1 cursor-pointer"
               title="Project info (I)"
               onClick={() => setInfoOpen(true)}
             >
@@ -1144,7 +2042,7 @@ export function ProjectCanvas() {
             <span class="w-px h-3.5 bg-neutral-200 shrink-0" />
 
             <Show
-              when={current()}
+              when={focusedDeliverable()}
               fallback={
                 <div class="flex items-center gap-1.5 min-w-0 overflow-hidden">
                   <span class="shrink-0 font-medium text-neutral-600">
@@ -1181,7 +2079,7 @@ export function ProjectCanvas() {
                   >
                     {STATUS_META[d().status].label}
                   </span>
-                  <Show when={currentVersion()}>
+                  <Show when={focusedVersion()}>
                     {v => (
                       <span class="shrink-0 flex items-center gap-1.5">
                         <span class="text-[10px] font-medium text-neutral-600 bg-neutral-200/70 rounded px-1 py-px">
@@ -1196,11 +2094,11 @@ export function ProjectCanvas() {
                   <span
                     class="shrink-0 flex items-center gap-1 text-[10px] font-medium rounded-full px-1.5 py-px"
                     classList={{
-                      "bg-amber-50 text-amber-700": openThreadCount() > 0,
-                      "bg-neutral-200/60 text-neutral-500": openThreadCount() === 0,
+                      "bg-orange-50 text-orange-600": focusedOpenThreadCount() > 0,
+                      "bg-neutral-200/60 text-neutral-500": focusedOpenThreadCount() === 0,
                     }}
                   >
-                    {openThreadCount()} open thread{openThreadCount() === 1 ? "" : "s"}
+                    {focusedOpenThreadCount()} open thread{focusedOpenThreadCount() === 1 ? "" : "s"}
                   </span>
                 </div>
               )}
@@ -1246,6 +2144,77 @@ export function ProjectCanvas() {
 
       <ContextMenu state={ctxMenu()} onClose={() => setCtxMenu(null)} />
 
+      <Show when={!current() && selected().size > 0}>
+        <div class="fixed bottom-16 left-1/2 -translate-x-1/2 z-30 flex items-center gap-1.5 bg-neutral-900 text-white rounded-lg shadow-2xl px-3 py-2 text-xs">
+          <Show
+            when={!groupPromptOpen()}
+            fallback={
+              <input
+                class="text-xs text-neutral-900 bg-white rounded px-2 py-1 outline-none w-40"
+                placeholder="Group label…"
+                ref={el => queueMicrotask(() => el.focus())}
+                onKeyDown={e => {
+                  if (e.key === "Enter") (e.currentTarget as HTMLInputElement).blur();
+                  if (e.key === "Escape") {
+                    // clear first so the blur this triggers can't still submit it
+                    (e.currentTarget as HTMLInputElement).value = "";
+                    (e.currentTarget as HTMLInputElement).blur();
+                  }
+                }}
+                onBlur={e => void submitGroup(e.currentTarget.value)}
+              />
+            }
+          >
+            <span class="px-2 font-medium">
+              {selectedGroups().size > 0 && selectionIsWholeGroups()
+                ? `${selectedGroups().size} group${selectedGroups().size === 1 ? "" : "s"} selected`
+                : `${selected().size} selected`}
+            </span>
+            <Show when={canEdit() && groupButtonAction()}>
+              <button
+                class="flex items-center gap-1 px-2 py-1 rounded hover:bg-white/10 cursor-pointer"
+                onClick={() => setGroupPromptOpen(true)}
+              >
+                <Icon icon="iconoir:link" width="13" /> Group
+              </button>
+            </Show>
+            <Show when={canEdit() && addToExistingGroupAction()}>
+              {action => (
+                <button
+                  class="flex items-center gap-1 px-2 py-1 rounded hover:bg-white/10 cursor-pointer"
+                  onClick={() => addSelectedToGroup(action())}
+                >
+                  <Icon icon="iconoir:link" width="13" /> Add to “{action().label}”
+                </button>
+              )}
+            </Show>
+            <Show when={canEdit() && selectedGroups().size === 1 && selectionIsWholeGroups()}>
+              <button
+                class="flex items-center gap-1 px-2 py-1 rounded hover:bg-white/10 cursor-pointer"
+                onClick={ungroupSelected}
+              >
+                <Icon icon="iconoir:link-slash" width="13" /> Ungroup
+              </button>
+            </Show>
+            <Show when={canDeleteDeliverable()}>
+              <button
+                class="flex items-center gap-1 px-2 py-1 rounded text-rose-300 hover:bg-white/10 cursor-pointer"
+                onClick={bulkDeleteDeliverables}
+              >
+                <Icon icon="iconoir:trash" width="13" /> Delete
+              </button>
+            </Show>
+            <button
+              class="p-1 rounded hover:bg-white/10 cursor-pointer"
+              title="Clear selection"
+              onClick={clearSelection}
+            >
+              <Icon icon="iconoir:xmark" width="13" />
+            </button>
+          </Show>
+        </div>
+      </Show>
+
       <Show when={store.state.graph}>
         {graph => (
           <ProjectInfoModal
@@ -1253,9 +2222,10 @@ export function ProjectCanvas() {
             onClose={() => setInfoOpen(false)}
             project={graph().project}
             deliverables={store.deliverables()}
-            current={current()}
-            currentVersion={currentVersion()}
-            openThreadCount={openThreadCount()}
+            current={focusedDeliverable()}
+            currentVersion={focusedVersion()}
+            openThreadCount={focusedOpenThreadCount()}
+            reviewing={!!current()}
             onOpenHistory={() => setHistoryOpen(true)}
           />
         )}

@@ -18,6 +18,7 @@ const statement = {
   entity: ["manage"],
   library: ["read", "upload", "manage"],
   task: ["create", "update", "assign", "delete"],
+  canvasObject: ["create", "update", "move", "delete"],
 } as const;
 
 export const ac = createAccessControl(statement);
@@ -38,6 +39,7 @@ export const member = ac.newRole({
   approval: ["decide"],
   library: ["read", "upload"],
   task: ["create", "update", "assign", "delete"],
+  canvasObject: ["create", "update", "move", "delete"],
 });
 
 export const admin = ac.newRole({
@@ -50,6 +52,7 @@ export const admin = ac.newRole({
   entity: ["manage"],
   library: ["read", "upload", "manage"],
   task: ["create", "update", "assign", "delete"],
+  canvasObject: ["create", "update", "move", "delete"],
 });
 
 export const owner = ac.newRole({
@@ -62,6 +65,7 @@ export const owner = ac.newRole({
   entity: ["manage"],
   library: ["read", "upload", "manage"],
   task: ["create", "update", "assign", "delete"],
+  canvasObject: ["create", "update", "move", "delete"],
 });
 
 export const roles = { owner, admin, member, guest };

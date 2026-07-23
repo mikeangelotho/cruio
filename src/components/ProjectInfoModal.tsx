@@ -24,6 +24,8 @@ export function ProjectInfoModal(props: {
   current?: Deliverable;
   currentVersion?: Version;
   openThreadCount: number;
+  /** true when `current` is open in review; false when it's merely selected on the board */
+  reviewing?: boolean;
   onOpenHistory: () => void;
 }) {
   const counts = () => {
@@ -60,6 +62,7 @@ export function ProjectInfoModal(props: {
             </div>
             <button
               class="shrink-0 p-1 rounded text-neutral-400 hover:text-neutral-700 hover:bg-neutral-100 cursor-pointer"
+              title="Close"
               onClick={props.onClose}
             >
               <Icon icon="iconoir:xmark" width="16" />
@@ -103,7 +106,7 @@ export function ProjectInfoModal(props: {
             {d => (
               <div class="mx-4 mb-4 rounded-lg border border-neutral-200 bg-neutral-50/60 p-3">
                 <p class="text-[10px] uppercase tracking-wide text-neutral-400 font-medium mb-1.5">
-                  Currently viewing
+                  {props.reviewing ? "Currently viewing" : "Selected"}
                 </p>
                 <div class="flex items-center gap-2 flex-wrap">
                   <span class="text-sm font-medium text-neutral-800 truncate">{d().name}</span>
@@ -123,7 +126,7 @@ export function ProjectInfoModal(props: {
                   <span
                     class="flex items-center gap-1"
                     classList={{
-                      "text-amber-600": props.openThreadCount > 0,
+                      "text-orange-600": props.openThreadCount > 0,
                     }}
                   >
                     <Icon icon="iconoir:chat-bubble" width="12" />
@@ -134,6 +137,20 @@ export function ProjectInfoModal(props: {
                     {d().versions.length} version{d().versions.length === 1 ? "" : "s"}
                   </span>
                 </div>
+                <Show when={d().groupId}>
+                  <div class="mt-2 pt-2 border-t border-neutral-200/70">
+                    <p class="flex items-center gap-1 text-[11px] text-violet-700">
+                      <Icon icon="iconoir:link" width="12" />
+                      Grouped as “{d().groupLabel}”
+                    </p>
+                    <p class="mt-1 text-[11px] text-neutral-500 truncate">
+                      With: {props.deliverables
+                        .filter(o => o.groupId === d().groupId && o.id !== d().id)
+                        .map(o => o.name)
+                        .join(", ") || "no other members"}
+                    </p>
+                  </div>
+                </Show>
               </div>
             )}
           </Show>

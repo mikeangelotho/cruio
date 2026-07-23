@@ -14,7 +14,7 @@ import { Icon } from "@iconify-icon/solid";
 import { AppNav } from "../components/AppNav";
 import { AppFooter } from "../components/AppFooter";
 import { useScope } from "../components/ScopeProvider";
-import { Avatar } from "../components/Avatar";
+import { Avatar, EntityAvatar } from "../components/Avatar";
 import { ContextMenu, type MenuState } from "../components/ContextMenu";
 import { NavMenu } from "../components/NavMenu";
 import { TaskPanel } from "../components/TaskPanel";
@@ -28,6 +28,7 @@ import {
 } from "../lib/task-api";
 import { listProjects } from "../lib/api";
 import { myOrgsQuery, requireUserQuery } from "../lib/org-api";
+import { newId } from "../lib/id";
 import { PRIORITIES, priorityMeta } from "../lib/priority";
 import { useViewerRole } from "../lib/viewer";
 import type { Task, TaskPriority, TaskStatus } from "../lib/types";
@@ -79,8 +80,8 @@ export default function TasksPage() {
     () => listAssignees(),
   );
   const [projectsList] = createResource(
-    () => user()?.activeOrganizationId,
-    () => listProjects(),
+    () => ({ org: user()?.activeOrganizationId, entity: scope.entity()?.id ?? null }),
+    ({ entity }) => listProjects(entity),
   );
 
   // Optimistic local copy: mutations apply here immediately, then hit the
@@ -162,7 +163,7 @@ export default function TasksPage() {
     const trimmed = title.trim();
     if (!trimmed) return;
     setError("");
-    const id = crypto.randomUUID();
+    const id = newId();
     const optimistic: Task = {
       id,
       organizationId: user()?.activeOrganizationId ?? "",
@@ -430,7 +431,9 @@ export default function TasksPage() {
           toggleSelect(t.id);
         }}
       >
-        <Icon icon="iconoir:check" width="9" />
+        <Show when={selected().has(t.id)}>
+          <Icon icon="iconoir:check" width="9" />
+        </Show>
       </button>
 
       <button
@@ -551,9 +554,7 @@ export default function TasksPage() {
       </Show>
 
       <Show when={t.assigneeName}>
-        <span title={t.assigneeName!}>
-          <Avatar name={t.assigneeName!} size={18} />
-        </span>
+        <Avatar name={t.assigneeName!} size={18} />
       </Show>
       <button
         class="shrink-0 p-0.5 rounded text-neutral-300 opacity-0 group-hover:opacity-100 hover:text-neutral-600 hover:bg-neutral-100 cursor-pointer"
@@ -580,10 +581,32 @@ export default function TasksPage() {
         e.preventDefault();
         openTaskMenu(t, e.clientX, e.clientY);
       }}
-      class="bg-white border border-neutral-200 rounded-lg p-2.5 cursor-pointer hover:border-neutral-300 hover:shadow-sm"
-      classList={{ "bg-amber-50": highlightId() === t.id, "opacity-40": dragId() === t.id }}
+      class="group bg-white border border-neutral-200 border-l-4 rounded-lg p-2.5 cursor-pointer hover:border-neutral-300 hover:shadow-sm"
+      classList={{
+        "bg-amber-50": highlightId() === t.id,
+        [priorityMeta(t.priority).bg]: highlightId() !== t.id && !!priorityMeta(t.priority).bg,
+        [priorityMeta(t.priority).border]: true,
+        "opacity-40": dragId() === t.id,
+        "border-sky-300": selected().has(t.id),
+      }}
     >
       <div class="flex items-start gap-1.5 mb-1.5">
+        <button
+          class="shrink-0 mt-0.5 w-3.5 h-3.5 rounded border flex items-center justify-center cursor-pointer"
+          classList={{
+            "border-neutral-300 opacity-0 group-hover:opacity-100": !selected().has(t.id),
+            "border-sky-500 bg-sky-500 text-white opacity-100": selected().has(t.id),
+          }}
+          title="Select"
+          onClick={e => {
+            e.stopPropagation();
+            toggleSelect(t.id);
+          }}
+        >
+          <Show when={selected().has(t.id)}>
+            <Icon icon="iconoir:check" width="9" />
+          </Show>
+        </button>
         <Icon
           icon={priorityMeta(t.priority).icon}
           width="12"
@@ -605,9 +628,7 @@ export default function TasksPage() {
         <Show when={t.dueDate}>{dueBadge(t)}</Show>
         <span class="flex-1" />
         <Show when={t.assigneeName}>
-          <span title={t.assigneeName!}>
-            <Avatar name={t.assigneeName!} size={16} />
-          </span>
+          <Avatar name={t.assigneeName!} size={16} />
         </Show>
       </div>
     </div>
@@ -622,7 +643,10 @@ export default function TasksPage() {
           <div class="max-w-4xl mx-auto">
             <div class="flex items-center justify-between mb-3">
               <div>
-                <h1 class="text-lg font-semibold text-neutral-800">Tasks</h1>
+                <div class="flex items-center gap-3">
+                  <EntityAvatar name={scope.entity()?.name || "•"} size={32} />
+                  <h1 class="text-lg font-semibold text-neutral-800">Tasks</h1>
+                </div>
                 <Show when={stats().total > 0}>
                   <div class="flex items-center gap-2 mt-1.5">
                     <div class="w-28 h-1 rounded-full bg-neutral-100 overflow-hidden">

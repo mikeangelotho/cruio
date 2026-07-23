@@ -3,10 +3,13 @@ import { getDb } from "../db";
 import {
   annotations,
   approvals,
+  canvasObjects,
   entities,
   comments,
   deliverables,
+  deliverableGroups,
   history,
+  personalPositions,
   projects,
   projectShares,
   versions,
@@ -14,10 +17,13 @@ import {
 import type {
   Annotation,
   AnnotationStatus,
+  CanvasObject,
   Decision,
   Deliverable,
   DeliverableStatus,
   HistoryEntry,
+  NoteColor,
+  PersonalPosition,
   Phase,
   Project,
   ProjectGraph,
@@ -45,11 +51,14 @@ import {
   Id,
   LongText,
   Norm01,
+  NoteColorSchema,
+  PersonalPositionKindSchema,
   ShortText,
+  TagList,
   parseOrThrow,
 } from "./validate";
 
-export async function listProjects(): Promise<Project[]> {
+export async function listProjects(entityId?: string | null): Promise<Project[]> {
   "use server";
   const session = await requireSession();
   const orgId = session.activeOrganizationId;
@@ -57,7 +66,7 @@ export async function listProjects(): Promise<Project[]> {
   const { role } = await requireMember(orgId);
   const db = await getDb();
 
-  const rows =
+  let rows =
     role === "guest"
       ? await db
           .select({ p: projects, entityName: entities.name })
@@ -78,6 +87,11 @@ export async function listProjects(): Promise<Project[]> {
           .leftJoin(entities, eq(entities.id, projects.entityId))
           .where(and(eq(projects.organizationId, orgId), isNull(projects.archivedAt)))
           .orderBy(desc(projects.createdAt));
+
+  if (entityId) {
+    const checked = parseOrThrow(Id, entityId);
+    rows = rows.filter((r) => r.p.entityId === checked);
+  }
 
   const ids = rows.map((r) => r.p.id);
   const counts = ids.length
@@ -180,12 +194,48 @@ export async function getProjectGraph(
     ? await db.select().from(approvals).where(inArray(approvals.deliverableId, dIds)).orderBy(asc(approvals.createdAt))
     : [];
 
+  const groupRows = await db
+    .select()
+    .from(deliverableGroups)
+    .where(eq(deliverableGroups.projectId, projectId));
+  const groupLabels = new Map(groupRows.map(g => [g.id, g.label]));
+
+  const coRows = await db
+    .select()
+    .from(canvasObjects)
+    .where(and(eq(canvasObjects.projectId, projectId), isNull(canvasObjects.deletedAt)))
+    .orderBy(asc(canvasObjects.createdAt));
+
+  const positionSubjectIds = [...dIds, ...coRows.map(o => o.id)];
+  const ppRows = positionSubjectIds.length
+    ? await db
+        .select()
+        .from(personalPositions)
+        .where(and(eq(personalPositions.userId, session.userId), inArray(personalPositions.subjectId, positionSubjectIds)))
+    : [];
+
   const graph: ProjectGraph = {
     project: { ...(project as unknown as Project), entityName, phase: project.phase as Phase },
     viewer: { userId: session.userId, name: session.name, role },
+    groups: groupRows.map(g => ({
+      id: g.id,
+      label: g.label,
+      parentGroupId: g.parentGroupId ?? null,
+    })),
+    canvasObjects: coRows.map(o => ({
+      ...(o as unknown as CanvasObject),
+      tags: parseTags(o.tags),
+    })),
+    personalPositions: ppRows.map(p => ({
+      kind: p.kind as PersonalPosition["kind"],
+      subjectId: p.subjectId,
+      posX: p.posX,
+      posY: p.posY,
+    })),
     deliverables: dRows.map(d => ({
       ...(d as unknown as Deliverable),
       status: d.status as DeliverableStatus,
+      groupLabel: d.groupId ? (groupLabels.get(d.groupId) ?? null) : null,
       versions: vRows.filter(v => v.deliverableId === d.id),
       annotations: aRows
         .filter(a => a.deliverableId === d.id)
@@ -261,6 +311,294 @@ export async function renameDeliverable(id: string, name: string): Promise<void>
       actorName: session.name,
       type: "deliverable_renamed",
       detail: `renamed “${prev.name}” to “${name}”`,
+    });
+  }
+}
+
+/**
+ * Group deliverables as size/format variants under one label. Always creates
+ * a fresh group for the selection, overwriting any prior groupId on the
+ * given deliverables (simplest v1 semantics — no merge-with-existing-group).
+ */
+export async function groupDeliverables(deliverableIds: string[], label: string): Promise<string> {
+  "use server";
+  if (deliverableIds.length < 2) throw new Error("Select at least two deliverables to group");
+  const ids = deliverableIds.map(id => parseOrThrow(Id, id));
+  label = parseOrThrow(ShortText, label);
+  const projectId = await resolveDeliverableProject(ids[0]);
+  const { session } = await requireProjectAccess(projectId, { resource: "deliverable", action: "update" });
+  const db = await getDb();
+  const groupId = crypto.randomUUID();
+  await db.insert(deliverableGroups).values({ id: groupId, projectId, label, createdAt: Date.now() });
+  await db.update(deliverables).set({ groupId }).where(inArray(deliverables.id, ids));
+  await recordHistory(db, {
+    projectId,
+    userId: session.userId,
+    actorName: session.name,
+    type: "deliverable_renamed",
+    detail: `grouped ${ids.length} deliverables as “${label}”`,
+  });
+  return groupId;
+}
+
+export async function ungroupDeliverable(id: string): Promise<void> {
+  "use server";
+  id = parseOrThrow(Id, id);
+  const projectId = await resolveDeliverableProject(id);
+  await requireProjectAccess(projectId, { resource: "deliverable", action: "update" });
+  const db = await getDb();
+  const [d] = await db.select({ groupId: deliverables.groupId }).from(deliverables).where(eq(deliverables.id, id));
+  if (!d?.groupId) return;
+  const groupId = d.groupId;
+  await db.update(deliverables).set({ groupId: null }).where(eq(deliverables.id, id));
+  const remaining = await db.select({ id: deliverables.id }).from(deliverables).where(eq(deliverables.groupId, groupId));
+  if (remaining.length === 0) {
+    await db.delete(deliverableGroups).where(eq(deliverableGroups.id, groupId));
+  }
+}
+
+/** Add one ungrouped deliverable directly to an existing group. */
+export async function addDeliverableToGroup(deliverableId: string, groupId: string): Promise<void> {
+  "use server";
+  deliverableId = parseOrThrow(Id, deliverableId);
+  groupId = parseOrThrow(Id, groupId);
+  const projectId = await resolveDeliverableProject(deliverableId);
+  const { session } = await requireProjectAccess(projectId, { resource: "deliverable", action: "update" });
+  const db = await getDb();
+  const [g] = await db
+    .select({ projectId: deliverableGroups.projectId, label: deliverableGroups.label })
+    .from(deliverableGroups)
+    .where(eq(deliverableGroups.id, groupId));
+  if (!g || g.projectId !== projectId) throw new Error("Unknown group");
+  await db.update(deliverables).set({ groupId }).where(eq(deliverables.id, deliverableId));
+  await recordHistory(db, {
+    projectId,
+    deliverableId,
+    subjectId: deliverableId,
+    userId: session.userId,
+    actorName: session.name,
+    type: "deliverable_renamed",
+    detail: `added to group “${g.label}”`,
+  });
+}
+
+export async function renameGroup(groupId: string, label: string): Promise<void> {
+  "use server";
+  groupId = parseOrThrow(Id, groupId);
+  label = parseOrThrow(ShortText, label);
+  const [g] = await (await getDb()).select({ projectId: deliverableGroups.projectId }).from(deliverableGroups).where(eq(deliverableGroups.id, groupId));
+  if (!g) throw new Error("Not found");
+  await requireProjectAccess(g.projectId, { resource: "deliverable", action: "update" });
+  const db = await getDb();
+  await db.update(deliverableGroups).set({ label }).where(eq(deliverableGroups.id, groupId));
+}
+
+/** Nest existing groups under a new labeled parent group. */
+export async function groupGroups(childGroupIds: string[], label: string): Promise<string> {
+  "use server";
+  if (childGroupIds.length < 2) throw new Error("Select at least two groups to group");
+  const ids = childGroupIds.map(id => parseOrThrow(Id, id));
+  label = parseOrThrow(ShortText, label);
+  const db = await getDb();
+  const children = await db
+    .select({ id: deliverableGroups.id, projectId: deliverableGroups.projectId })
+    .from(deliverableGroups)
+    .where(inArray(deliverableGroups.id, ids));
+  if (children.length !== ids.length) throw new Error("Unknown group");
+  const projectId = children[0].projectId;
+  if (children.some(c => c.projectId !== projectId)) throw new Error("Groups must belong to one project");
+  const { session } = await requireProjectAccess(projectId, { resource: "deliverable", action: "update" });
+  const parentId = crypto.randomUUID();
+  await db.insert(deliverableGroups).values({ id: parentId, projectId, label, createdAt: Date.now() });
+  await db.update(deliverableGroups).set({ parentGroupId: parentId }).where(inArray(deliverableGroups.id, ids));
+  await recordHistory(db, {
+    projectId,
+    userId: session.userId,
+    actorName: session.name,
+    type: "deliverable_renamed",
+    detail: `grouped ${ids.length} groups as “${label}”`,
+  });
+  return parentId;
+}
+
+/**
+ * Dissolve one group level: a leaf group releases its member deliverables,
+ * a parent group releases its child groups. The row itself is deleted.
+ */
+export async function dissolveGroup(groupId: string): Promise<void> {
+  "use server";
+  groupId = parseOrThrow(Id, groupId);
+  const db = await getDb();
+  const [g] = await db
+    .select({ projectId: deliverableGroups.projectId })
+    .from(deliverableGroups)
+    .where(eq(deliverableGroups.id, groupId));
+  if (!g) return;
+  const { session } = await requireProjectAccess(g.projectId, { resource: "deliverable", action: "update" });
+  await db.update(deliverables).set({ groupId: null }).where(eq(deliverables.groupId, groupId));
+  await db
+    .update(deliverableGroups)
+    .set({ parentGroupId: null })
+    .where(eq(deliverableGroups.parentGroupId, groupId));
+  await db.delete(deliverableGroups).where(eq(deliverableGroups.id, groupId));
+  await recordHistory(db, {
+    projectId: g.projectId,
+    userId: session.userId,
+    actorName: session.name,
+    type: "deliverable_renamed",
+    detail: "ungrouped a deliverable group",
+  });
+}
+
+// ---- canvas objects (sticky notes) ----------------------------------------
+// Board-only working notes: never mirrored into the library.
+
+/** `canvas_objects.tags` is a JSON array in a text column — corrupt or
+ * missing data degrades to no tags rather than failing the whole graph load. */
+function parseTags(raw: string): string[] {
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed.filter((t): t is string => typeof t === "string") : [];
+  } catch {
+    return [];
+  }
+}
+
+export async function createCanvasObject(
+  id: string,
+  projectId: string,
+  posX: number,
+  posY: number,
+  content = "",
+  color = "yellow",
+): Promise<void> {
+  "use server";
+  id = parseOrThrow(Id, id);
+  projectId = parseOrThrow(Id, projectId);
+  posX = parseOrThrow(FiniteNumber, posX);
+  posY = parseOrThrow(FiniteNumber, posY);
+  content = parseOrThrow(LongText, content);
+  color = parseOrThrow(NoteColorSchema, color);
+  const { session } = await requireProjectAccess(projectId, {
+    resource: "canvasObject",
+    action: "create",
+  });
+  const db = await getDb();
+  await db.insert(canvasObjects).values({
+    id,
+    projectId,
+    kind: "note",
+    content,
+    color,
+    posX,
+    posY,
+    createdBy: session.userId,
+    createdByName: session.name,
+    createdAt: Date.now(),
+  });
+}
+
+async function resolveCanvasObjectProject(id: string): Promise<string> {
+  const db = await getDb();
+  const [o] = await db
+    .select({ projectId: canvasObjects.projectId })
+    .from(canvasObjects)
+    .where(eq(canvasObjects.id, id));
+  if (!o) throw new Error("Not found");
+  return o.projectId;
+}
+
+export async function updateCanvasObject(
+  id: string,
+  patch: { content?: string; color?: string; tags?: string[] },
+): Promise<void> {
+  "use server";
+  id = parseOrThrow(Id, id);
+  const set: { content?: string; color?: string; tags?: string } = {};
+  if (patch.content !== undefined) set.content = parseOrThrow(LongText, patch.content);
+  if (patch.color !== undefined) set.color = parseOrThrow(NoteColorSchema, patch.color);
+  if (patch.tags !== undefined) set.tags = JSON.stringify(parseOrThrow(TagList, patch.tags));
+  if (Object.keys(set).length === 0) return;
+  const projectId = await resolveCanvasObjectProject(id);
+  await requireProjectAccess(projectId, { resource: "canvasObject", action: "update" });
+  const db = await getDb();
+  await db.update(canvasObjects).set(set).where(eq(canvasObjects.id, id));
+}
+
+export async function moveCanvasObject(id: string, posX: number, posY: number): Promise<void> {
+  "use server";
+  id = parseOrThrow(Id, id);
+  posX = parseOrThrow(FiniteNumber, posX);
+  posY = parseOrThrow(FiniteNumber, posY);
+  const projectId = await resolveCanvasObjectProject(id);
+  await requireProjectAccess(projectId, { resource: "canvasObject", action: "move" });
+  const db = await getDb();
+  await db.update(canvasObjects).set({ posX, posY }).where(eq(canvasObjects.id, id));
+}
+
+export async function deleteCanvasObject(id: string): Promise<void> {
+  "use server";
+  id = parseOrThrow(Id, id);
+  const projectId = await resolveCanvasObjectProject(id);
+  const { session } = await requireProjectAccess(projectId, {
+    resource: "canvasObject",
+    action: "delete",
+  });
+  const db = await getDb();
+  await db
+    .update(canvasObjects)
+    .set({ deletedAt: Date.now(), deletedBy: session.userId })
+    .where(eq(canvasObjects.id, id));
+}
+
+// ---- personal (per-viewer) canvas layout -----------------------------------
+// The "sync" position lives on deliverables.pos_x/y or canvas_objects.pos_x/y
+// directly. This is the parallel "personal mode" layer: one row per
+// (viewer, subject), upserted, never touching the shared columns.
+
+/** Upsert the caller's personal-layout position for one deliverable or note. */
+export async function setPersonalPosition(
+  kind: "deliverable" | "note",
+  subjectId: string,
+  posX: number,
+  posY: number,
+): Promise<void> {
+  "use server";
+  kind = parseOrThrow(PersonalPositionKindSchema, kind);
+  subjectId = parseOrThrow(Id, subjectId);
+  posX = parseOrThrow(FiniteNumber, posX);
+  posY = parseOrThrow(FiniteNumber, posY);
+  const session = await requireSession();
+  const projectId = kind === "deliverable"
+    ? await resolveDeliverableProject(subjectId)
+    : await resolveCanvasObjectProject(subjectId);
+  await requireProjectAccess(projectId, {
+    resource: kind === "deliverable" ? "deliverable" : "canvasObject",
+    action: "move",
+  });
+  const db = await getDb();
+  const [existing] = await db
+    .select({ id: personalPositions.id })
+    .from(personalPositions)
+    .where(and(
+      eq(personalPositions.userId, session.userId),
+      eq(personalPositions.kind, kind),
+      eq(personalPositions.subjectId, subjectId),
+    ));
+  if (existing) {
+    await db
+      .update(personalPositions)
+      .set({ posX, posY, updatedAt: Date.now() })
+      .where(eq(personalPositions.id, existing.id));
+  } else {
+    await db.insert(personalPositions).values({
+      id: crypto.randomUUID(),
+      userId: session.userId,
+      kind,
+      subjectId,
+      posX,
+      posY,
+      updatedAt: Date.now(),
     });
   }
 }
@@ -663,8 +1001,11 @@ export async function restoreProject(id: string): Promise<void> {
   });
 }
 
-/** Archived projects of the active org. Empty for non-admins (no error). */
-export async function listArchivedProjects(): Promise<Project[]> {
+/**
+ * Archived projects of the active org, optionally narrowed to one entity.
+ * Empty for non-admins (no error).
+ */
+export async function listArchivedProjects(entityId?: string | null): Promise<Project[]> {
   "use server";
   const session = await requireSession();
   const orgId = session.activeOrganizationId;
@@ -678,8 +1019,10 @@ export async function listArchivedProjects(): Promise<Project[]> {
     .leftJoin(entities, eq(entities.id, projects.entityId))
     .where(eq(projects.organizationId, orgId))
     .orderBy(desc(projects.createdAt));
+  const checked = entityId ? parseOrThrow(Id, entityId) : null;
   return rows
     .filter(r => r.p.archivedAt != null)
+    .filter(r => !checked || r.p.entityId === checked)
     .map(r => ({
       ...(r.p as unknown as Project),
       entityName: r.entityName ?? null,

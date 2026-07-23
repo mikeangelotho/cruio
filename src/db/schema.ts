@@ -38,6 +38,19 @@ export const projects = sqliteTable("projects", {
   archivedBy: text("archived_by"),
 });
 
+// Groups multiple deliverables that are size/format variants of the same
+// piece of work (e.g. a 1:1, 4:5, and 9:16 cut of one social post) under one
+// visible label. Groups nest: parentGroupId links a group into a larger one.
+export const deliverableGroups = sqliteTable("deliverable_groups", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id")
+    .notNull()
+    .references(() => projects.id),
+  label: text("label").notNull().default(""),
+  parentGroupId: text("parent_group_id"),
+  createdAt: integer("created_at").notNull(),
+});
+
 export const deliverables = sqliteTable("deliverables", {
   id: text("id").primaryKey(),
   projectId: text("project_id")
@@ -48,11 +61,59 @@ export const deliverables = sqliteTable("deliverables", {
   status: text("status").notNull().default("draft"),
   posX: real("pos_x").notNull().default(0),
   posY: real("pos_y").notNull().default(0),
+  groupId: text("group_id").references(() => deliverableGroups.id),
   createdAt: integer("created_at").notNull(),
   // soft delete: hidden from the app but restorable from the history panel
   deletedAt: integer("deleted_at"),
   deletedBy: text("deleted_by"),
 });
+
+// Freestanding canvas objects (v1: sticky notes) placed on a project's board.
+// Deliberately NOT mirrored into the library — they're working notes, not
+// assets. `kind` leaves room for titles / reference images later.
+export const canvasObjects = sqliteTable("canvas_objects", {
+  id: text("id").primaryKey(),
+  projectId: text("project_id")
+    .notNull()
+    .references(() => projects.id),
+  kind: text("kind").notNull().default("note"),
+  content: text("content").notNull().default(""),
+  color: text("color").notNull().default("yellow"),
+  // JSON array of free-text tag strings, e.g. '["urgent","client-feedback"]'
+  tags: text("tags").notNull().default("[]"),
+  posX: real("pos_x").notNull().default(0),
+  posY: real("pos_y").notNull().default(0),
+  createdBy: text("created_by")
+    .notNull()
+    .references(() => user.id),
+  // denormalized snapshot, same rationale as comments.author_name
+  createdByName: text("created_by_name").notNull().default(""),
+  createdAt: integer("created_at").notNull(),
+  deletedAt: integer("deleted_at"),
+  deletedBy: text("deleted_by"),
+});
+
+// Per-user override of a deliverable's or note's canvas position ("personal
+// mode"). The shared posX/posY on deliverables/canvas_objects is "sync
+// mode" — whoever last moved it. Both layers persist independently; the
+// active mode is a client-only preference (see ProjectCanvas layoutMode).
+export const personalPositions = sqliteTable(
+  "personal_positions",
+  {
+    id: text("id").primaryKey(),
+    userId: text("user_id")
+      .notNull()
+      .references(() => user.id),
+    kind: text("kind").notNull(), // "deliverable" | "note"
+    subjectId: text("subject_id").notNull(),
+    posX: real("pos_x").notNull(),
+    posY: real("pos_y").notNull(),
+    updatedAt: integer("updated_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("uidx_personal_positions").on(table.userId, table.kind, table.subjectId),
+  ],
+);
 
 export const versions = sqliteTable(
   "versions",
