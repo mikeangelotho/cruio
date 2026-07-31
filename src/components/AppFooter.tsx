@@ -8,13 +8,15 @@ import { Avatar } from "./Avatar";
 import { NavMenu } from "./NavMenu";
 
 /**
- * Shared app footer — every page with AppNav pairs it with this (the
- * canvas's own contextual status bar is a different thing and stays
- * bespoke). Left third is the user menu (sign out), center is the brand
- * mark; the right third is a slot for page-specific content (e.g. a flash
- * message) so the logo stays centered whether or not a page uses it.
+ * The single app status bar, used on every screen (main pages and the
+ * canvas alike). It always renders the user menu (sign out) on the left and
+ * the brand mark centered; each screen fills the slots around them:
+ *   - `start`: page-specific info shown left, next to the user menu
+ *     (e.g. project counts, or the canvas's deliverable/status readout).
+ *   - `children`: right-aligned slot (e.g. a flash message or keyboard hints).
+ * The logo is absolutely centered so it stays put regardless of slot widths.
  */
-export function AppFooter(props: { children?: JSX.Element }) {
+export function AppFooter(props: { start?: JSX.Element; children?: JSX.Element }) {
   const navigate = useNavigate();
   const user = createAsync(() => requireUserQuery());
   const orgs = createAsync(() => myOrgsQuery());
@@ -29,8 +31,8 @@ export function AppFooter(props: { children?: JSX.Element }) {
   }
 
   return (
-    <footer class="relative min-h-7 px-3 py-1 flex gap-3 items-center justify-between bg-[#f8f7f7] border-t border-[#f0eeee] text-[11px] text-neutral-400">
-      <div class="w-full flex items-center justify-start">
+    <footer class="relative min-h-8 px-3 py-1 flex gap-3 items-center justify-between bg-[#f8f7f7] border-t border-[#f0eeee] text-[11px] text-neutral-400">
+      <div class="flex items-center gap-2 min-w-0">
         <Show when={user()}>
           {u => (
             <NavMenu
@@ -75,16 +77,15 @@ export function AppFooter(props: { children?: JSX.Element }) {
             </NavMenu>
           )}
         </Show>
+        {props.start}
       </div>
-      <div class="w-full flex items-center justify-center">
-        <a
-          href="./"
-          class="opacity-20 hover:opacity-100 transition-opacity ease-in-out duration-150"
-        >
-          <img style="height: 16px;" src="/CRIO_Logo-2026.svg" />
-        </a>
-      </div>
-      <div class="w-full flex items-center justify-end">{props.children}</div>
+      <a
+        href="/"
+        class="absolute left-1/2 -translate-x-1/2 opacity-20 hover:opacity-100 transition-opacity ease-in-out duration-150"
+      >
+        <img style="height: 16px;" src="/CRIO_Logo-2026.svg" />
+      </a>
+      <div class="flex items-center gap-2.5 shrink-0 justify-end">{props.children}</div>
     </footer>
   );
 }

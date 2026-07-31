@@ -62,12 +62,22 @@ export function DeliverableTasksPanel(props: {
             <span class="ml-1.5 text-[10px] font-normal text-neutral-400">{openCount()} open</span>
           </Show>
         </span>
-        <button
-          class="text-[10px] text-neutral-400 hover:text-neutral-700 cursor-pointer"
-          onClick={props.onClose}
-        >
-          Close
-        </button>
+        <div class="flex items-center gap-2.5">
+          <A
+            href="/tasks"
+            class="flex items-center gap-0.5 text-[10px] text-sky-700 hover:text-sky-900 cursor-pointer"
+            title="Open the full Tasks page"
+          >
+            Open in Tasks
+            <Icon icon="iconoir:arrow-up-right" width="11" />
+          </A>
+          <button
+            class="text-[10px] text-neutral-400 hover:text-neutral-700 cursor-pointer"
+            onClick={props.onClose}
+          >
+            Close
+          </button>
+        </div>
       </div>
 
       <Show when={props.canManage}>

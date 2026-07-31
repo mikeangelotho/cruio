@@ -112,6 +112,69 @@ export async function listLibrary(entityId: string | null): Promise<LibraryListi
   };
 }
 
+/**
+ * Files in a single project's library folder — its uploads and the version
+ * mirrors from its deliverables. Powers the canvas Library side panel. Guests
+ * only see it when the project is shared with them.
+ */
+export async function listProjectFiles(projectId: string): Promise<LibraryFile[]> {
+  "use server";
+  const checkedProject = parseOrThrow(Id, projectId);
+  const session = await requireSession();
+  const orgId = session.activeOrganizationId;
+  if (!orgId) return [];
+  const { role } = await requireMember(orgId);
+  authorize(role, "library", "read");
+  const db = await getDb();
+
+  if (role === "guest") {
+    const shares = await db
+      .select({ projectId: projectShares.projectId })
+      .from(projectShares)
+      .where(
+        and(
+          eq(projectShares.userId, session.userId),
+          eq(projectShares.projectId, checkedProject),
+        ),
+      );
+    if (shares.length === 0) return [];
+  }
+
+  const folders = await db
+    .select({ id: libraryFolders.id })
+    .from(libraryFolders)
+    .where(
+      and(
+        eq(libraryFolders.organizationId, orgId),
+        eq(libraryFolders.projectId, checkedProject),
+      ),
+    );
+  const folderIds = folders.map(f => f.id);
+  if (!folderIds.length) return [];
+
+  const fileRows = await db
+    .select({ file: libraryFiles, deliverableId: versions.deliverableId })
+    .from(libraryFiles)
+    .leftJoin(versions, eq(versions.id, libraryFiles.versionId))
+    .where(and(inArray(libraryFiles.folderId, folderIds), isNull(libraryFiles.deletedAt)))
+    .orderBy(asc(libraryFiles.createdAt));
+
+  return fileRows.map(r => ({
+    id: r.file.id,
+    folderId: r.file.folderId,
+    name: r.file.name,
+    fileName: r.file.fileName,
+    mime: r.file.mime,
+    size: r.file.size,
+    width: r.file.width,
+    height: r.file.height,
+    versionId: r.file.versionId,
+    deliverableId: r.deliverableId ?? null,
+    uploadedBy: r.file.uploadedBy,
+    createdAt: r.file.createdAt,
+  }));
+}
+
 /** Create a workspace-level folder. */
 export async function createFolder(name: string): Promise<LibraryFolder> {
   "use server";

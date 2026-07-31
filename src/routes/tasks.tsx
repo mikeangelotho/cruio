@@ -19,6 +19,7 @@ import { ContextMenu, type MenuState } from "../components/ContextMenu";
 import { NavMenu } from "../components/NavMenu";
 import { TaskPanel } from "../components/TaskPanel";
 import { Callout } from "../components/Callout";
+import { FilterBar } from "../components/FilterBar";
 import {
   addTaskLink,
   createTask,
@@ -876,135 +877,47 @@ export default function TasksPage() {
               </button>
             </div>
 
-            <div class="flex items-center gap-2 mb-5 flex-wrap">
-              <div class="flex items-center bg-neutral-100 rounded-md p-0.5">
-                <button
-                  class="flex items-center gap-1 text-[11px] rounded px-2 py-1 cursor-pointer"
-                  classList={{
-                    "bg-white shadow-sm text-neutral-800": view() === "list",
-                    "text-neutral-500": view() !== "list",
-                  }}
-                  onClick={() => setView("list")}
-                >
-                  <Icon icon="iconoir:list" width="13" /> List
-                </button>
-                <button
-                  class="flex items-center gap-1 text-[11px] rounded px-2 py-1 cursor-pointer"
-                  classList={{
-                    "bg-white shadow-sm text-neutral-800": view() === "board",
-                    "text-neutral-500": view() !== "board",
-                  }}
-                  onClick={() => setView("board")}
-                >
-                  <Icon icon="iconoir:view-columns-3" width="13" /> Board
-                </button>
-              </div>
-
-              <Show when={view() === "list"}>
-                <NavMenu
-                  panelClass="w-36"
-                  trigger={({ toggle }) => (
-                    <button
-                      class="flex items-center gap-1 text-[11px] text-neutral-500 hover:bg-neutral-100 rounded-md px-2 py-1.5 cursor-pointer"
-                      onClick={toggle}
-                    >
-                      <Icon icon="iconoir:view-grid" width="13" />
-                      Group: {GROUP_BY_OPTIONS.find(o => o.value === groupBy())?.label}
-                    </button>
-                  )}
-                >
-                  {({ close }) => (
-                    <div class="p-1">
-                      <For each={GROUP_BY_OPTIONS}>
-                        {o => (
-                          <button
-                            class="w-full flex items-center justify-between px-2 py-1.5 rounded text-left text-xs text-neutral-700 hover:bg-neutral-50 cursor-pointer"
-                            onClick={() => {
-                              close();
-                              setGroupBy(o.value);
-                            }}
-                          >
-                            {o.label}
-                            <Show when={groupBy() === o.value}>
-                              <Icon icon="iconoir:check" width="12" class="text-neutral-400" />
-                            </Show>
-                          </button>
-                        )}
-                      </For>
-                    </div>
-                  )}
-                </NavMenu>
-              </Show>
-
-              <NavMenu
-                panelClass="w-36"
-                trigger={({ toggle }) => (
-                  <button
-                    class="flex items-center gap-1 text-[11px] text-neutral-500 hover:bg-neutral-100 rounded-md px-2 py-1.5 cursor-pointer"
-                    onClick={toggle}
-                  >
-                    <Icon icon="iconoir:sort" width="13" />
-                    Sort: {SORT_BY_OPTIONS.find(o => o.value === sortBy())?.label}
-                  </button>
-                )}
-              >
-                {({ close }) => (
-                  <div class="p-1">
-                    <For each={SORT_BY_OPTIONS}>
-                      {o => (
-                        <button
-                          class="w-full flex items-center justify-between px-2 py-1.5 rounded text-left text-xs text-neutral-700 hover:bg-neutral-50 cursor-pointer"
-                          onClick={() => {
-                            close();
-                            setSortBy(o.value);
-                          }}
-                        >
-                          {o.label}
-                          <Show when={sortBy() === o.value}>
-                            <Icon icon="iconoir:check" width="12" class="text-neutral-400" />
-                          </Show>
-                        </button>
-                      )}
-                    </For>
-                  </div>
-                )}
-              </NavMenu>
-
-              <button
-                class="text-[11px] rounded-md px-2 py-1.5 cursor-pointer"
-                classList={{
-                  "bg-sky-100 text-sky-700": onlyMine(),
-                  "text-neutral-500 hover:bg-neutral-100": !onlyMine(),
-                }}
-                onClick={() => setOnlyMine(v => !v)}
-              >
-                My tasks
-              </button>
-              <button
-                class="text-[11px] rounded-md px-2 py-1.5 cursor-pointer"
-                classList={{
-                  "bg-rose-100 text-rose-700": onlyOverdue(),
-                  "text-neutral-500 hover:bg-neutral-100": !onlyOverdue(),
-                }}
-                onClick={() => setOnlyOverdue(v => !v)}
-              >
-                Overdue
-              </button>
-
-              <div class="flex-1 min-w-24 max-w-64 ml-auto relative">
-                <Icon
-                  icon="iconoir:search"
-                  width="13"
-                  class="absolute left-2 top-1/2 -translate-y-1/2 text-neutral-300"
-                />
-                <input
-                  class="w-full text-[11px] bg-neutral-50 border border-neutral-200 rounded-md pl-6 pr-2 py-1.5 outline-none focus:border-sky-300 placeholder:text-neutral-400"
-                  placeholder="Filter tasks…"
-                  value={search()}
-                  onInput={e => setSearch(e.currentTarget.value)}
-                />
-              </div>
-            </div>
+            <FilterBar
+              segmented={{
+                value: view(),
+                options: [
+                  { value: "list", label: "List", icon: "iconoir:list" },
+                  { value: "board", label: "Board", icon: "iconoir:view-columns-3" },
+                ],
+                onChange: v => setView(v as ViewMode),
+              }}
+              menus={[
+                {
+                  icon: "iconoir:view-grid",
+                  label: "Group",
+                  value: groupBy(),
+                  options: GROUP_BY_OPTIONS,
+                  onChange: v => setGroupBy(v as GroupBy),
+                  show: view() === "list",
+                },
+                {
+                  icon: "iconoir:sort",
+                  label: "Sort",
+                  value: sortBy(),
+                  options: SORT_BY_OPTIONS,
+                  onChange: v => setSortBy(v as SortBy),
+                },
+              ]}
+              toggles={[
+                { label: "My tasks", active: onlyMine(), onToggle: () => setOnlyMine(v => !v) },
+                {
+                  label: "Overdue",
+                  active: onlyOverdue(),
+                  onToggle: () => setOnlyOverdue(v => !v),
+                  activeClass: "bg-rose-100 text-rose-700",
+                },
+              ]}
+              search={{
+                value: search(),
+                onInput: setSearch,
+                placeholder: "Filter tasks…",
+              }}
+            />
 
             <Show when={error()}>
               <p class="mb-4 text-xs text-rose-600 bg-rose-50 border border-rose-200 rounded px-3 py-2">
@@ -1170,7 +1083,21 @@ export default function TasksPage() {
           </div>
         </main>
 
-        <AppFooter />
+        <AppFooter
+          start={
+            <span class="flex items-center gap-1.5 text-neutral-500 truncate">
+              <span class="font-medium">
+                {items().length} task{items().length === 1 ? "" : "s"}
+              </span>
+              <Show when={items().filter(overdue).length > 0}>
+                <span class="flex items-center gap-1 text-rose-600">
+                  <span class="size-1.5 rounded-full bg-rose-500" />
+                  {items().filter(overdue).length} overdue
+                </span>
+              </Show>
+            </span>
+          }
+        />
       </div>
 
       <Show when={selected().size > 0}>

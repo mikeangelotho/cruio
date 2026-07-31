@@ -442,7 +442,19 @@ export default function LibraryPage() {
           </main>
         </div>
 
-        <AppFooter />
+        <AppFooter
+          start={
+            <span class="flex items-center gap-1.5 text-neutral-500 truncate">
+              <span class="font-medium">
+                {listing()?.files.length ?? 0} file{(listing()?.files.length ?? 0) === 1 ? "" : "s"}
+              </span>
+              <span class="text-neutral-400">
+                · {listing()?.folders.length ?? 0} folder
+                {(listing()?.folders.length ?? 0) === 1 ? "" : "s"}
+              </span>
+            </span>
+          }
+        />
       </div>
       <ContextMenu state={ctxMenu()} onClose={() => setCtxMenu(null)} />
     </div>

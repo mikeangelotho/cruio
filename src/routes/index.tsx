@@ -8,7 +8,6 @@ import {
   onCleanup,
   onMount,
 } from "solid-js";
-import { NavMenu } from "../components/NavMenu";
 import { A, createAsync, revalidate, useNavigate } from "@solidjs/router";
 import { Icon } from "@iconify-icon/solid";
 import { archiveProject, createProject, listProjects } from "../lib/api";
@@ -28,8 +27,9 @@ import { AppFooter } from "../components/AppFooter";
 import { useScope } from "../components/ScopeProvider";
 import { ContextMenu, type MenuState } from "../components/ContextMenu";
 import { EntityOptions } from "../components/EntityOptions";
-import { TagChips, TAG_COLORS } from "../components/TagChips";
+import { TagChips } from "../components/TagChips";
 import { TagPicker } from "../components/TagPicker";
+import { FilterBar } from "../components/FilterBar";
 import { createTag, listTags, setProjectTags } from "../lib/tag-api";
 import { fileUrl } from "../lib/types";
 import type { Project, Tag, TagColor } from "../lib/types";
@@ -90,6 +90,14 @@ export default function Home() {
   ];
   const [sortMode, setSortMode] = createSignal<SortMode>("newest");
   const [tagFilter, setTagFilter] = createSignal<Set<string>>(new Set());
+  const [search, setSearch] = createSignal("");
+  type GroupMode = "none" | "entity" | "tag";
+  const GROUP_OPTIONS: { value: GroupMode; label: string }[] = [
+    { value: "none", label: "None" },
+    { value: "entity", label: "Entity" },
+    { value: "tag", label: "Tag" },
+  ];
+  const [groupMode, setGroupMode] = createSignal<GroupMode>("none");
   function toggleTagFilter(id: string) {
     setTagFilter(s => {
       const n = new Set(s);
@@ -106,6 +114,8 @@ export default function Home() {
     if (sel) list = list.filter(p => p.entityId === sel.id);
     const tf = tagFilter();
     if (tf.size > 0) list = list.filter(p => projectTags(p).some(t => tf.has(t.id)));
+    const q = search().trim().toLowerCase();
+    if (q) list = list.filter(p => p.name.toLowerCase().includes(q));
     const mode = sortMode();
     const sorted = [...list];
     sorted.sort((a, b) => {
@@ -118,6 +128,37 @@ export default function Home() {
       return at.localeCompare(bt) || b.createdAt - a.createdAt;
     });
     return sorted;
+  });
+
+  // Optional grouping of the (already filtered + sorted) list. "none" yields a
+  // single unlabeled group so the render path is uniform. Grouping by entity is
+  // most useful under the "All Entities" scope.
+  const projectGroups = createMemo(() => {
+    const list = filteredProjects();
+    const mode = groupMode();
+    // flat list when ungrouped, or when entity-grouping is moot under a scope
+    if (mode === "none" || (mode === "entity" && scope.entity()))
+      return [{ key: "all", label: "", projects: list }];
+    const buckets = new Map<string, { key: string; label: string; projects: Project[] }>();
+    const push = (key: string, label: string, p: Project) => {
+      if (!buckets.has(key)) buckets.set(key, { key, label, projects: [] });
+      buckets.get(key)!.projects.push(p);
+    };
+    for (const p of list) {
+      if (mode === "entity") push(p.entityId ?? "none", p.entityName ?? "No entity", p);
+      else {
+        const first = projectTags(p)[0];
+        if (first) push(`tag:${first.id}`, first.name, p);
+        else push("untagged", "Untagged", p);
+      }
+    }
+    const isCatchAll = (k: string) => k === "none" || k === "untagged";
+    return [...buckets.values()].sort((a, b) => {
+      const ac = isCatchAll(a.key);
+      const bc = isCatchAll(b.key);
+      if (ac !== bc) return ac ? 1 : -1;
+      return a.label.localeCompare(b.label);
+    });
   });
 
   const [creating, setCreating] = createSignal(false);
@@ -299,71 +340,39 @@ export default function Home() {
               </Show>
             </div>
 
-            {/* sort + tag filter toolbar */}
-            <div class="flex items-center gap-2 mb-5 flex-wrap">
-              <NavMenu
-                panelClass="w-36"
-                trigger={({ toggle }) => (
-                  <button
-                    class="flex items-center gap-1 text-[11px] text-neutral-500 hover:bg-neutral-100 rounded-md px-2 py-1.5 cursor-pointer"
-                    onClick={toggle}
-                  >
-                    <Icon icon="iconoir:sort" width="13" />
-                    Sort: {SORT_OPTIONS.find(o => o.value === sortMode())?.label}
-                  </button>
-                )}
-              >
-                {({ close }) => (
-                  <div class="p-1">
-                    <For each={SORT_OPTIONS}>
-                      {o => (
-                        <button
-                          class="w-full flex items-center justify-between px-2 py-1.5 rounded text-left text-xs text-neutral-700 hover:bg-neutral-50 cursor-pointer"
-                          onClick={() => {
-                            close();
-                            setSortMode(o.value);
-                          }}
-                        >
-                          {o.label}
-                          <Show when={sortMode() === o.value}>
-                            <Icon icon="iconoir:check" width="12" class="text-neutral-400" />
-                          </Show>
-                        </button>
-                      )}
-                    </For>
-                  </div>
-                )}
-              </NavMenu>
-
-              <Show when={(tagsList() ?? []).length > 0}>
-                <span class="w-px h-4 bg-neutral-200 shrink-0" />
-                <div class="flex items-center gap-1 flex-wrap">
-                  <For each={tagsList()}>
-                    {t => (
-                      <button
-                        class={`inline-flex items-center gap-1 rounded-full text-[11px] font-medium px-2 py-0.5 cursor-pointer border ${
-                          tagFilter().has(t.id)
-                            ? `${TAG_COLORS[t.color].chip} border-transparent`
-                            : "border-neutral-200 text-neutral-500 hover:bg-neutral-50"
-                        }`}
-                        onClick={() => toggleTagFilter(t.id)}
-                      >
-                        <span class={`size-1.5 rounded-full ${TAG_COLORS[t.color].dot}`} />
-                        {t.name}
-                      </button>
-                    )}
-                  </For>
-                  <Show when={tagFilter().size > 0}>
-                    <button
-                      class="text-[11px] text-neutral-400 hover:text-neutral-700 px-1 cursor-pointer"
-                      onClick={() => setTagFilter(new Set())}
-                    >
-                      Clear
-                    </button>
-                  </Show>
-                </div>
-              </Show>
-            </div>
+            {/* sort + tag filter + search toolbar (shared with the Tasks screen) */}
+            <FilterBar
+              menus={[
+                {
+                  icon: "iconoir:view-grid",
+                  label: "Group",
+                  value: groupMode(),
+                  // "Entity" only makes sense under the "All Entities" scope
+                  options: scope.entity()
+                    ? GROUP_OPTIONS.filter(o => o.value !== "entity")
+                    : GROUP_OPTIONS,
+                  onChange: v => setGroupMode(v as GroupMode),
+                },
+                {
+                  icon: "iconoir:sort",
+                  label: "Sort",
+                  value: sortMode(),
+                  options: SORT_OPTIONS,
+                  onChange: v => setSortMode(v as SortMode),
+                },
+              ]}
+              tags={{
+                all: tagsList() ?? [],
+                selected: tagFilter(),
+                onToggle: toggleTagFilter,
+                onClear: () => setTagFilter(new Set()),
+              }}
+              search={{
+                value: search(),
+                onInput: setSearch,
+                placeholder: "Filter projects…",
+              }}
+            />
 
             <Show when={creating()}>
               <form
@@ -478,9 +487,21 @@ export default function Home() {
                 </Show>
               }
             >
-              <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                <For each={filteredProjects()}>
-                  {(p) => (
+              <div class="space-y-6">
+                <For each={projectGroups()}>
+                  {(g) => (
+                    <div>
+                      <Show when={g.label}>
+                        <div class="flex items-center gap-2 mb-2">
+                          <h2 class="text-xs font-semibold text-neutral-400 uppercase tracking-wide">
+                            {g.label}
+                          </h2>
+                          <span class="text-[10px] text-neutral-400">{g.projects.length}</span>
+                        </div>
+                      </Show>
+                      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+                        <For each={g.projects}>
+                          {(p) => (
                     <div
                       class="group text-left border rounded-lg bg-white overflow-hidden hover:shadow-sm transition-all cursor-pointer"
                       classList={{
@@ -539,7 +560,7 @@ export default function Home() {
                           </span>
                           <div class="flex items-center gap-1.5 shrink-0">
                             {/* entity chip is redundant once scoped into that entity */}
-                            <Show when={!scope.entity() && p.entityName}>
+                            <Show when={!scope.entity() && groupMode() !== "entity" && p.entityName}>
                               <span class="bg-[#efeded] text-neutral-500 text-xs py-0.5 px-1.5 rounded truncate max-w-28">
                                 {p.entityName}
                               </span>
@@ -600,6 +621,10 @@ export default function Home() {
                         </div>
                       </div>
                     </div>
+                          )}
+                        </For>
+                      </div>
+                    </div>
                   )}
                 </For>
               </div>
@@ -607,7 +632,20 @@ export default function Home() {
           </div>
         </main>
 
-        <AppFooter />
+        <AppFooter
+          start={
+            <span class="flex items-center gap-1.5 text-neutral-500 truncate">
+              <span class="font-medium">
+                {filteredProjects().length} project{filteredProjects().length === 1 ? "" : "s"}
+              </span>
+              <Show when={!scope.entity() && (entitiesList()?.length ?? 0) > 0}>
+                <span class="text-neutral-400">
+                  · {entitiesList()!.length} entit{entitiesList()!.length === 1 ? "y" : "ies"}
+                </span>
+              </Show>
+            </span>
+          }
+        />
       </div>
       <ContextMenu state={ctxMenu()} onClose={() => setCtxMenu(null)} />
       <Show when={selected().size > 0}>

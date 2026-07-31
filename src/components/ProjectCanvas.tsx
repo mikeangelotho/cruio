@@ -20,6 +20,7 @@ import { fileUrl } from "../lib/types";
 import type { Tag, TagColor } from "../lib/types";
 import { createTag, listTags } from "../lib/tag-api";
 import { createTask, listProjectTasks, updateTask } from "../lib/task-api";
+import { listProjectFiles } from "../lib/library-api";
 import { deliverableStage } from "../lib/stage";
 import { newId } from "../lib/id";
 import type { Rect } from "../lib/canvas/camera";
@@ -34,7 +35,9 @@ import { ProjectInfoModal } from "./ProjectInfoModal";
 import { ReviewPlane } from "./ReviewPlane";
 import { ThreadSidebar } from "./ThreadSidebar";
 import { DeliverableTasksPanel } from "./DeliverableTasksPanel";
+import { LibraryPanel } from "./LibraryPanel";
 import { Callout } from "./Callout";
+import { AppFooter } from "./AppFooter";
 import { CommandPalette } from "./CommandPalette";
 import { GlobalSearch } from "./GlobalSearch";
 
@@ -130,8 +133,40 @@ export function ProjectCanvas() {
   const [historyOpen, setHistoryOpen] = createSignal(false);
   const [notesOpen, setNotesOpen] = createSignal(false);
   const [tasksOpen, setTasksOpen] = createSignal(false);
+  const [libraryOpen, setLibraryOpen] = createSignal(false);
   const [infoOpen, setInfoOpen] = createSignal(false);
   const [sidebarOpen, setSidebarOpen] = createSignal(true);
+  // The right sidebar hosts one panel at a time (history / notes / tasks /
+  // library / the review thread list). Toggling one closes the rest.
+  type RightPanel = "history" | "notes" | "tasks" | "library";
+  function openPanel(which: RightPanel) {
+    const isOpen = {
+      history: historyOpen(),
+      notes: notesOpen(),
+      tasks: tasksOpen(),
+      library: libraryOpen(),
+    }[which];
+    batch(() => {
+      setHistoryOpen(false);
+      setNotesOpen(false);
+      setTasksOpen(false);
+      setLibraryOpen(false);
+      if (!isOpen) {
+        ({
+          history: setHistoryOpen,
+          notes: setNotesOpen,
+          tasks: setTasksOpen,
+          library: setLibraryOpen,
+        })[which](true);
+      }
+    });
+  }
+  // This project's library assets — fetched lazily, only while the panel is open;
+  // toggling it closed→open re-fetches so freshly uploaded mirrors show up.
+  const [projectFiles] = createResource(
+    () => (libraryOpen() ? store.projectId : null),
+    () => listProjectFiles(store.projectId),
+  );
   const [paletteOpen, setPaletteOpen] = createSignal(false);
   const [searchOpen, setSearchOpen] = createSignal(false);
   const [panning, setPanning] = createSignal(false);
@@ -1125,9 +1160,9 @@ export function ProjectCanvas() {
             },
           ]
         : []),
-      { label: "Sticky notes", icon: "iconoir:notes", run: () => setNotesOpen(o => !o) },
+      { label: "Sticky notes", icon: "iconoir:notes", run: () => openPanel("notes") },
       { label: "Project info", icon: "iconoir:info-circle", hint: "I", run: () => setInfoOpen(true) },
-      { label: "Project history", icon: "iconoir:clock", hint: "H", run: () => setHistoryOpen(o => !o) },
+      { label: "Project history", icon: "iconoir:clock", hint: "H", run: () => openPanel("history") },
       ...(!locked()
         ? [{ label: "Fit to screen", icon: "iconoir:frame", hint: "F", run: () => fitWorkspace(true) }]
         : []),
@@ -1154,7 +1189,7 @@ export function ProjectCanvas() {
         ? [{ label: "Create task", icon: "iconoir:task-list", run: () => createTaskFromDeliverable(d) }]
         : []),
       { label: "Project info", icon: "iconoir:info-circle", hint: "I", run: () => setInfoOpen(true) },
-      { label: "Project history", icon: "iconoir:clock", hint: "H", run: () => setHistoryOpen(o => !o) },
+      { label: "Project history", icon: "iconoir:clock", hint: "H", run: () => openPanel("history") },
       { label: "Fit to screen", icon: "iconoir:frame", hint: "F", run: () => fitPlane(true, 250) },
       { label: sidebarOpen() ? "Hide comments" : "Show comments", icon: "iconoir:message-text", hint: "Tab", run: () => setSidebarOpen(o => !o) },
       ...(store.deliverables().length > 1
@@ -1304,7 +1339,7 @@ export function ProjectCanvas() {
       return;
     }
     if (e.key === "h" || e.key === "H") {
-      setHistoryOpen(o => !o);
+      openPanel("history");
       return;
     }
     if (e.key === "i" || e.key === "I") {
@@ -1541,29 +1576,6 @@ export function ProjectCanvas() {
             </Show>
           </div>
 
-          {/* center: primary navigation — these leave the canvas view entirely.
-              "Tasks, Library" (no Projects link; the back arrow fills that role). */}
-          <div class="hidden md:flex items-center gap-6">
-            <Show when={store.state.graph?.viewer.role !== "guest"}>
-              <A
-                href="/tasks"
-                class="flex items-center gap-1 text-xs text-neutral-500 hover:text-neutral-800"
-                title="Tasks"
-              >
-                <Icon icon="iconoir:task-list" width="14" />
-                Tasks
-              </A>
-            </Show>
-            <A
-              href="/library"
-              class="flex items-center gap-1 text-xs text-neutral-500 hover:text-neutral-800"
-              title="Media Library"
-            >
-              <Icon icon="iconoir:media-image-folder" width="14" />
-              Library
-            </A>
-          </div>
-
           <div class="flex items-center gap-6 relative">
             {/* action group — these open a panel or menu in place */}
             <button
@@ -1573,6 +1585,38 @@ export function ProjectCanvas() {
             >
               <Icon icon="iconoir:search" width="15" />
             </button>
+            {/* Tasks — always available; project tasks by default, the focused
+                deliverable's tasks when one is open. Opens the right sidebar. */}
+            <Show when={store.state.graph?.viewer.role !== "guest"}>
+              <button
+                class="flex items-center gap-1 p-1.5 rounded cursor-pointer relative"
+                classList={{
+                  "bg-neutral-200/70 text-neutral-800": tasksOpen(),
+                  "text-neutral-500 hover:text-neutral-800 hover:bg-neutral-200/50": !tasksOpen(),
+                }}
+                title="Tasks"
+                onClick={() => openPanel("tasks")}
+              >
+                <Icon icon="iconoir:task-list" width="15" />
+                <Show when={panelTasks().some(t => t.status !== "done")}>
+                  <span class="text-[10px]">
+                    {panelTasks().filter(t => t.status !== "done").length}
+                  </span>
+                </Show>
+              </button>
+            </Show>
+            {/* Library — this project's assets. Opens the right sidebar. */}
+            <button
+              class="flex items-center p-1.5 rounded cursor-pointer"
+              classList={{
+                "bg-neutral-200/70 text-neutral-800": libraryOpen(),
+                "text-neutral-500 hover:text-neutral-800 hover:bg-neutral-200/50": !libraryOpen(),
+              }}
+              title="Library"
+              onClick={() => openPanel("library")}
+            >
+              <Icon icon="iconoir:media-image-folder" width="15" />
+            </button>
             <button
               class="flex items-center p-1.5 rounded cursor-pointer"
               classList={{
@@ -1580,7 +1624,7 @@ export function ProjectCanvas() {
                 "text-neutral-500 hover:text-neutral-800 hover:bg-neutral-200/50": !historyOpen(),
               }}
               title="Project history (H)"
-              onClick={() => setHistoryOpen(o => !o)}
+              onClick={() => openPanel("history")}
             >
               <Icon icon="iconoir:clock" width="15" />
             </button>
@@ -1590,32 +1634,6 @@ export function ProjectCanvas() {
             >
               {d => (
                 <>
-                  {/* deliverable tasks — opens in the same right-sidebar slot as
-                      threads/history, where the work is discussed & decided */}
-                  <Show when={store.state.graph?.viewer.role !== "guest"}>
-                    <button
-                      class="flex items-center gap-1 p-1.5 rounded cursor-pointer relative"
-                      classList={{
-                        "bg-neutral-200/70 text-neutral-800": tasksOpen(),
-                        "text-neutral-500 hover:text-neutral-800 hover:bg-neutral-200/50": !tasksOpen(),
-                      }}
-                      title="Deliverable tasks"
-                      onClick={() => {
-                        setTasksOpen(o => !o);
-                        if (!tasksOpen()) return;
-                        setHistoryOpen(false);
-                        setNotesOpen(false);
-                      }}
-                    >
-                      <Icon icon="iconoir:task-list" width="15" />
-                      <Show when={tasksFor(d().id).some(t => t.status !== "done")}>
-                        <span class="text-[10px]">
-                          {tasksFor(d().id).filter(t => t.status !== "done").length}
-                        </span>
-                      </Show>
-                    </button>
-                  </Show>
-
                   {/* version tabs */}
                   <div class="flex items-center gap-0.5 bg-[#efeded] rounded p-0.5">
                     <For each={d().versions}>
@@ -2029,9 +2047,20 @@ export function ProjectCanvas() {
                       double-click the canvas, or drop images anywhere
                     </Show>
                   </p>
-                  {/* lopsided state: tasks exist but there's nothing to review yet */}
+                  {/* lopsided state: tasks exist but there's nothing to review yet.
+                      Stop pointer events from reaching the canvas — otherwise its
+                      onPointerDown captures the pointer and swallows the buttons' clicks. */}
                   <Show when={tasks().length > 0}>
-                    <div class="mt-4 pointer-events-auto text-left">
+                    <div
+                      class="mt-4 pointer-events-auto text-left"
+                      onPointerDown={e => e.stopPropagation()}
+                      onDblClick={e => e.stopPropagation()}
+                      onWheel={e => e.stopPropagation()}
+                      onContextMenu={e => {
+                        e.preventDefault();
+                        e.stopPropagation();
+                      }}
+                    >
                       <Callout
                         tone="warn"
                         icon="iconoir:task-list"
@@ -2047,7 +2076,7 @@ export function ProjectCanvas() {
                             </Show>
                             <button
                               class="text-[11px] text-amber-800 hover:bg-amber-100 rounded px-2 py-1 cursor-pointer"
-                              onClick={() => setTasksOpen(true)}
+                              onClick={() => openPanel("tasks")}
                             >
                               View tasks
                             </button>
@@ -2240,13 +2269,26 @@ export function ProjectCanvas() {
                   <Show
                     when={tasksOpen()}
                     fallback={
-                      <Show when={current() && sidebarOpen()}>
-                        <ThreadSidebar
-                          annotations={versionAnnotations()}
-                          selectedId={selectedAnnId()}
-                          onSelect={selectAnnotation}
-                          onComment={(annId, body) => store.addComment(current()!.id, annId, body)}
-                          onResolve={(annId, status) => store.resolveAnnotation(current()!.id, annId, status)}
+                      <Show
+                        when={libraryOpen()}
+                        fallback={
+                          <Show when={current() && sidebarOpen()}>
+                            <ThreadSidebar
+                              annotations={versionAnnotations()}
+                              selectedId={selectedAnnId()}
+                              onSelect={selectAnnotation}
+                              onComment={(annId, body) => store.addComment(current()!.id, annId, body)}
+                              onResolve={(annId, status) => store.resolveAnnotation(current()!.id, annId, status)}
+                            />
+                          </Show>
+                        }
+                      >
+                        <LibraryPanel
+                          files={projectFiles() ?? []}
+                          loading={projectFiles.loading}
+                          projectId={store.projectId}
+                          onClose={() => setLibraryOpen(false)}
+                          onOpenMirror={(pid, did) => navigate(`/p/${pid}/d/${did}`)}
                         />
                       </Show>
                     }
@@ -2281,9 +2323,10 @@ export function ProjectCanvas() {
           </Show>
         </div>
 
-        {/* ---- status bar ---- */}
-        <footer class="min-h-8 px-2 flex items-center justify-between gap-3 bg-[#f8f7f7] border-t border-[#f0eeee] text-[11px]">
-          <div class="flex items-center gap-2 min-w-0">
+        {/* ---- status bar (shared AppFooter: user menu + logo + slots) ---- */}
+        <AppFooter
+          start={
+            <>
             <button
               class="flex items-center gap-1 shrink-0 text-neutral-500 hover:text-neutral-800 hover:bg-neutral-200/50 rounded px-1.5 py-1 cursor-pointer"
               title="Project info (I)"
@@ -2361,8 +2404,9 @@ export function ProjectCanvas() {
                 {statusMsg()}
               </span>
             </Show>
-          </div>
-
+            </>
+          }
+        >
           <div class="hidden sm:flex items-center gap-2.5 text-neutral-400 shrink-0">
             <For each={hints()}>
               {h => (
@@ -2377,7 +2421,7 @@ export function ProjectCanvas() {
               )}
             </For>
           </div>
-        </footer>
+        </AppFooter>
       </div>
 
       <input
@@ -2505,7 +2549,7 @@ export function ProjectCanvas() {
           exitReview,
           fit: () => (current() ? fitPlane(true, 250) : fitWorkspace(true)),
           compare: toggleCompare,
-          history: () => setHistoryOpen(o => !o),
+          history: () => openPanel("history"),
           info: () => setInfoOpen(o => !o),
           deleteVersion: confirmDeleteVersion,
           deleteDeliverable: () => {
