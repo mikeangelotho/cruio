@@ -220,6 +220,39 @@ CREATE TABLE IF NOT EXISTS invitation_grants (
   project_id TEXT NOT NULL REFERENCES projects(id)
 );
 CREATE UNIQUE INDEX IF NOT EXISTS uidx_invitation_grants ON invitation_grants(invitation_id, project_id);
+CREATE TABLE IF NOT EXISTS tags (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL REFERENCES organization(id),
+  name TEXT NOT NULL,
+  color TEXT NOT NULL DEFAULT 'neutral',
+  created_at INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uidx_tags_org_name ON tags(organization_id, name);
+CREATE TABLE IF NOT EXISTS project_tags (
+  id TEXT PRIMARY KEY,
+  project_id TEXT NOT NULL REFERENCES projects(id),
+  tag_id TEXT NOT NULL REFERENCES tags(id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uidx_project_tags ON project_tags(project_id, tag_id);
+CREATE INDEX IF NOT EXISTS idx_project_tags_tag ON project_tags(tag_id);
+CREATE TABLE IF NOT EXISTS deliverable_tags (
+  id TEXT PRIMARY KEY,
+  deliverable_id TEXT NOT NULL REFERENCES deliverables(id),
+  tag_id TEXT NOT NULL REFERENCES tags(id)
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uidx_deliverable_tags ON deliverable_tags(deliverable_id, tag_id);
+CREATE INDEX IF NOT EXISTS idx_deliverable_tags_tag ON deliverable_tags(tag_id);
+CREATE TABLE IF NOT EXISTS task_links (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL REFERENCES organization(id),
+  from_task_id TEXT NOT NULL REFERENCES tasks(id),
+  to_task_id TEXT NOT NULL REFERENCES tasks(id),
+  type TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uidx_task_links ON task_links(from_task_id, to_task_id, type);
+CREATE INDEX IF NOT EXISTS idx_task_links_from ON task_links(from_task_id);
+CREATE INDEX IF NOT EXISTS idx_task_links_to ON task_links(to_task_id);
 CREATE TABLE IF NOT EXISTS tasks (
   id TEXT PRIMARY KEY,
   organization_id TEXT NOT NULL REFERENCES organization(id),

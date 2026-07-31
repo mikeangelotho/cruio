@@ -1,16 +1,97 @@
-import { For, Show, createEffect, createSignal, onCleanup, onMount } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount } from "solid-js";
 import { Icon } from "@iconify-icon/solid";
 import { Avatar } from "./Avatar";
 import { NavMenu } from "./NavMenu";
 import { PRIORITIES, priorityMeta } from "../lib/priority";
 import type { TaskPatchInput } from "../lib/task-api";
-import type { Task, TaskStatus } from "../lib/types";
+import type { Task, TaskLink, TaskLinkType, TaskStatus } from "../lib/types";
 
 const STATUSES: { value: TaskStatus; label: string }[] = [
   { value: "todo", label: "To do" },
   { value: "in_progress", label: "In progress" },
   { value: "done", label: "Done" },
 ];
+
+/** One dependency/related group in the task panel: existing links + an add picker. */
+function LinkSection(props: {
+  label: string;
+  icon: string;
+  rows: { link: TaskLink; other: Task | undefined }[];
+  candidates: Task[];
+  onRemove: (id: string) => void;
+  onPick: (taskId: string) => void;
+}) {
+  return (
+    <div>
+      <div class="flex items-center gap-1.5 mb-1">
+        <Icon icon={props.icon} width="12" class="text-neutral-400" />
+        <span class="text-[11px] text-neutral-400">{props.label}</span>
+      </div>
+      <div class="space-y-1">
+        <For each={props.rows}>
+          {r => (
+            <div class="flex items-center gap-1.5 text-xs">
+              <span
+                class="size-1.5 rounded-full shrink-0"
+                classList={{
+                  "bg-emerald-500": r.other?.status === "done",
+                  "bg-neutral-300": r.other?.status !== "done",
+                }}
+              />
+              <span
+                class="flex-1 min-w-0 truncate text-neutral-700"
+                classList={{ "line-through text-neutral-400": r.other?.status === "done" }}
+              >
+                {r.other?.title ?? "Unknown task"}
+              </span>
+              <button
+                class="shrink-0 text-neutral-300 hover:text-rose-600 cursor-pointer"
+                title="Remove link"
+                onClick={() => props.onRemove(r.link.id)}
+              >
+                <Icon icon="iconoir:xmark" width="12" />
+              </button>
+            </div>
+          )}
+        </For>
+        <NavMenu
+          panelClass="w-56"
+          trigger={({ toggle }) => (
+            <button
+              class="flex items-center gap-1 text-[11px] text-neutral-400 hover:text-neutral-700 cursor-pointer"
+              onClick={toggle}
+            >
+              <Icon icon="iconoir:plus" width="12" /> Add
+            </button>
+          )}
+        >
+          {({ close }) => (
+            <div class="p-1 max-h-56 overflow-y-auto">
+              <Show
+                when={props.candidates.length > 0}
+                fallback={<p class="px-2 py-2 text-[11px] text-neutral-400">No tasks to link.</p>}
+              >
+                <For each={props.candidates}>
+                  {c => (
+                    <button
+                      class="w-full flex items-center gap-2 px-2 py-1.5 rounded text-left text-xs text-neutral-700 hover:bg-neutral-50 cursor-pointer"
+                      onClick={() => {
+                        close();
+                        props.onPick(c.id);
+                      }}
+                    >
+                      <span class="flex-1 truncate">{c.title}</span>
+                    </button>
+                  )}
+                </For>
+              </Show>
+            </div>
+          )}
+        </NavMenu>
+      </div>
+    </div>
+  );
+}
 
 /**
  * Full-detail editor for a single task — the ClickUp/Asana "open task" pane.
@@ -26,6 +107,11 @@ export function TaskPanel(props: {
   onPatch: (id: string, patch: TaskPatchInput, local: Partial<Task>) => void;
   onDelete: (task: Task) => void;
   onOpenProject: (task: Task) => void;
+  /** all org tasks (for the link picker + resolving linked titles) */
+  allTasks?: Task[];
+  links?: TaskLink[];
+  onAddLink?: (fromId: string, toId: string, type: TaskLinkType) => void;
+  onRemoveLink?: (id: string) => void;
 }) {
   const [title, setTitle] = createSignal("");
   const [description, setDescription] = createSignal("");
@@ -257,6 +343,56 @@ export function TaskPanel(props: {
                   </button>
                 </Show>
               </div>
+
+              <Show when={props.links && props.onAddLink && props.onRemoveLink}>
+                {(() => {
+                  const links = () => props.links ?? [];
+                  const all = () => props.allTasks ?? [];
+                  const lookup = (id: string) => all().find(x => x.id === id);
+                  const blockedBy = createMemo(() =>
+                    links().filter(l => l.type === "blocks" && l.toTaskId === task().id),
+                  );
+                  const blocking = createMemo(() =>
+                    links().filter(l => l.type === "blocks" && l.fromTaskId === task().id),
+                  );
+                  const related = createMemo(() =>
+                    links().filter(
+                      l => l.type === "related" && (l.fromTaskId === task().id || l.toTaskId === task().id),
+                    ),
+                  );
+                  const otherOf = (l: TaskLink) => (l.fromTaskId === task().id ? l.toTaskId : l.fromTaskId);
+                  const candidates = (excluded: Set<string>) =>
+                    all().filter(x => x.id !== task().id && !excluded.has(x.id));
+                  return (
+                    <div class="mt-5 grid grid-cols-3 gap-3">
+                      <LinkSection
+                        label="Blocked by"
+                        icon="iconoir:lock"
+                        rows={blockedBy().map(l => ({ link: l, other: lookup(l.fromTaskId) }))}
+                        candidates={candidates(new Set(blockedBy().map(l => l.fromTaskId)))}
+                        onRemove={id => props.onRemoveLink!(id)}
+                        onPick={id => props.onAddLink!(id, task().id, "blocks")}
+                      />
+                      <LinkSection
+                        label="Blocking"
+                        icon="iconoir:git-fork"
+                        rows={blocking().map(l => ({ link: l, other: lookup(l.toTaskId) }))}
+                        candidates={candidates(new Set(blocking().map(l => l.toTaskId)))}
+                        onRemove={id => props.onRemoveLink!(id)}
+                        onPick={id => props.onAddLink!(task().id, id, "blocks")}
+                      />
+                      <LinkSection
+                        label="Related"
+                        icon="iconoir:link"
+                        rows={related().map(l => ({ link: l, other: lookup(otherOf(l)) }))}
+                        candidates={candidates(new Set(related().map(otherOf)))}
+                        onRemove={id => props.onRemoveLink!(id)}
+                        onPick={id => props.onAddLink!(task().id, id, "related")}
+                      />
+                    </div>
+                  );
+                })()}
+              </Show>
 
               <div class="mt-5">
                 <p class="text-[11px] text-neutral-400 mb-1.5">Description</p>

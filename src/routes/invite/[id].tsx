@@ -1,11 +1,14 @@
 import { Match, Show, Switch, createResource, createSignal } from "solid-js";
-import { useNavigate, useParams } from "@solidjs/router";
+import { revalidate, useNavigate, useParams } from "@solidjs/router";
 import { Icon } from "@iconify-icon/solid";
 import { authClient } from "../../lib/auth-client";
 import {
   claimInvitationGrants,
   getInvitationPublic,
   getSessionUser,
+  myOrgsQuery,
+  requireUserQuery,
+  sessionQuery,
 } from "../../lib/org-api";
 
 /**
@@ -50,6 +53,9 @@ export default function InvitePage() {
       // grants are guest-only scope; a failed claim shouldn't strand the accept
     }
     await authClient.organization.setActive({ organizationId: i.organizationId });
+    // the new membership won't show on "/" until the auth caches refresh —
+    // without this the invitee lands on onboarding instead of the workspace
+    await revalidate([sessionQuery.key, requireUserQuery.key, myOrgsQuery.key]);
     setBusy(false);
     navigate("/", { replace: true });
   }

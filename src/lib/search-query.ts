@@ -30,6 +30,7 @@ export interface ParsedSearchQuery {
   type?: SearchKind;
   status?: string;
   assignee?: string;
+  tag?: string;
   mine?: boolean;
 }
 
@@ -63,6 +64,10 @@ export function parseSearchQuery(raw: string): ParsedSearchQuery {
         break;
       case "assignee":
         parsed.assignee = value;
+        break;
+      case "tag":
+      case "label":
+        parsed.tag = value;
         break;
       case "is":
         if (value.toLowerCase() === "mine") parsed.mine = true;

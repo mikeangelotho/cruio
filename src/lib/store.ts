@@ -1,6 +1,7 @@
 import { batch, createContext, useContext } from "solid-js";
 import { createStore, produce, reconcile } from "solid-js/store";
 import * as api from "./api";
+import * as tagApi from "./tag-api";
 import { can as roleCan, type Resource } from "./permissions";
 import { newId } from "./id";
 import type {
@@ -11,6 +12,7 @@ import type {
   Deliverable,
   NoteColor,
   ProjectGraph,
+  Tag,
   Version,
   Viewer,
 } from "./types";
@@ -103,6 +105,7 @@ export function createProjectStore(projectId: string) {
       posY,
       groupId: null,
       createdAt: Date.now(),
+      tags: [],
       versions: [],
       annotations: [],
       approvals: [],
@@ -110,6 +113,14 @@ export function createProjectStore(projectId: string) {
     setState("graph", "deliverables", produce(list => list.push(d)));
     void api.createDeliverable(d.id, projectId, name, posX, posY);
     return d;
+  }
+
+  /** Replace a deliverable's tag set (optimistic; server reconciles on reload). */
+  function setDeliverableTags(id: string, tagList: Tag[]) {
+    mutateDeliverable(id, d => {
+      d.tags = tagList;
+    });
+    void tagApi.setDeliverableTags(id, tagList.map(t => t.id));
   }
 
   function moveDeliverable(id: string, posX: number, posY: number, sync = true) {
@@ -439,6 +450,7 @@ export function createProjectStore(projectId: string) {
     moveDeliverable,
     moveGroup,
     renameDeliverable,
+    setDeliverableTags,
     groups,
     groupById,
     rootGroupOf,

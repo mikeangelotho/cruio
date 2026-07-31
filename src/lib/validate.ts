@@ -34,6 +34,18 @@ export const OrgRoleSchema = v.picklist(["owner", "admin", "member", "guest"]);
 
 export const NoteColorSchema = v.picklist(["yellow", "pink", "blue", "green"]);
 
+export const TagColorSchema = v.picklist([
+  "neutral",
+  "sky",
+  "emerald",
+  "amber",
+  "rose",
+  "violet",
+]);
+
+/** Tag display name: trimmed, 1–30 chars. */
+export const TagName = v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(30));
+
 /** Free-text sticky-note tags: up to 8, each a short trimmed label. */
 export const TagList = v.pipe(
   v.array(v.pipe(v.string(), v.trim(), v.minLength(1), v.maxLength(30))),
@@ -41,6 +53,8 @@ export const TagList = v.pipe(
 );
 
 export const PersonalPositionKindSchema = v.picklist(["deliverable", "note"]);
+
+export const TaskLinkTypeSchema = v.picklist(["blocks", "related"]);
 
 /** Global search box input, including any `key:value` tokens. */
 export const SearchQuery = v.pipe(v.string(), v.trim(), v.maxLength(200));

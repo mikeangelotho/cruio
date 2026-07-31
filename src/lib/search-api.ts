@@ -2,11 +2,14 @@ import { and, desc, eq, inArray, isNull, like, or } from "drizzle-orm";
 import { getDb } from "../db";
 import {
   deliverables,
+  deliverableTags,
   entities,
   libraryFiles,
   libraryFolders,
   projects,
   projectShares,
+  projectTags,
+  tags,
   tasks,
   user,
   versions,
@@ -72,11 +75,33 @@ export async function globalSearch(rawQuery: string): Promise<SearchResultItem[]
   const db = await getDb();
 
   const text = parsed.text;
-  const hasFilter = !!(text || parsed.entity || parsed.project || parsed.status || parsed.assignee || parsed.mine);
+  const hasFilter = !!(text || parsed.entity || parsed.project || parsed.status || parsed.assignee || parsed.tag || parsed.mine);
   if (!hasFilter) return [];
 
   const wantKind = (k: SearchKind) => !parsed.type || parsed.type === k;
   const results: SearchResultItem[] = [];
+
+  // ---- resolve tag: filter to tagged project/deliverable id sets --------
+  let taggedProjectIds: string[] | null = null;
+  let taggedDeliverableIds: string[] | null = null;
+  if (parsed.tag) {
+    const tagRows = await db
+      .select({ id: tags.id })
+      .from(tags)
+      .where(and(eq(tags.organizationId, orgId), like(tags.name, `%${parsed.tag}%`)));
+    const tagIds = tagRows.map(r => r.id);
+    if (tagIds.length === 0) return results; // named tag doesn't exist
+    const pt = await db
+      .select({ projectId: projectTags.projectId })
+      .from(projectTags)
+      .where(inArray(projectTags.tagId, tagIds));
+    const dt = await db
+      .select({ deliverableId: deliverableTags.deliverableId })
+      .from(deliverableTags)
+      .where(inArray(deliverableTags.tagId, tagIds));
+    taggedProjectIds = [...new Set(pt.map(r => r.projectId))];
+    taggedDeliverableIds = [...new Set(dt.map(r => r.deliverableId))];
+  }
 
   // ---- entities -------------------------------------------------------
   if (wantKind("entity")) {
@@ -133,13 +158,19 @@ export async function globalSearch(rawQuery: string): Promise<SearchResultItem[]
   }
 
   // ---- projects ----------------------------------------------------------
-  if (wantKind("project")) {
-    const term = text || parsed.project;
-    if (term) {
-      const conds = [eq(projects.organizationId, orgId), isNull(projects.archivedAt), like(projects.name, `%${term}%`)];
+  if (
+    wantKind("project") &&
+    (text || parsed.project || parsed.tag) &&
+    (!parsed.tag || (taggedProjectIds !== null && taggedProjectIds.length > 0))
+  ) {
+    const term = text || parsed.project || "";
+    {
+      const conds = [eq(projects.organizationId, orgId), isNull(projects.archivedAt)];
+      if (term) conds.push(like(projects.name, `%${term}%`));
       if (accessible) conds.push(inArray(projects.id, accessible));
       if (entityIds) conds.push(inArray(projects.entityId, entityIds));
       if (projectIds) conds.push(inArray(projects.id, projectIds));
+      if (taggedProjectIds) conds.push(inArray(projects.id, taggedProjectIds));
       const rows = await db
         .select({ p: projects, entityName: entities.name })
         .from(projects)
@@ -162,12 +193,18 @@ export async function globalSearch(rawQuery: string): Promise<SearchResultItem[]
   }
 
   // ---- deliverables --------------------------------------------------------
-  if (wantKind("deliverable") && text) {
+  if (
+    wantKind("deliverable") &&
+    (text || parsed.tag) &&
+    (!parsed.tag || (taggedDeliverableIds !== null && taggedDeliverableIds.length > 0))
+  ) {
     const pConds = [eq(projects.organizationId, orgId), isNull(projects.archivedAt)];
     if (accessible) pConds.push(inArray(projects.id, accessible));
     if (entityIds) pConds.push(inArray(projects.entityId, entityIds));
     if (projectIds) pConds.push(inArray(projects.id, projectIds));
-    const conds = [isNull(deliverables.deletedAt), like(deliverables.name, `%${text}%`)];
+    const conds = [isNull(deliverables.deletedAt)];
+    if (text) conds.push(like(deliverables.name, `%${text}%`));
+    if (taggedDeliverableIds) conds.push(inArray(deliverables.id, taggedDeliverableIds));
     if (parsed.status) conds.push(eq(deliverables.status, parsed.status));
     const rows = await db
       .select({ d: deliverables, projectName: projects.name, projectId: projects.id, entityId: projects.entityId })

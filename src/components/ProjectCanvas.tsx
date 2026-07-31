@@ -1,4 +1,4 @@
-import { For, Show, batch, createEffect, createMemo, createSignal, on, onCleanup, onMount, untrack } from "solid-js";
+import { For, Show, batch, createEffect, createMemo, createResource, createSignal, on, onCleanup, onMount, untrack } from "solid-js";
 import { useNavigate, useParams, A } from "@solidjs/router";
 import { Icon } from "@iconify-icon/solid";
 import { createCamera } from "../lib/canvas/camera";
@@ -17,18 +17,24 @@ import {
 } from "../lib/canvas/geometry";
 import { useProject, uploadVersion } from "../lib/store";
 import { fileUrl } from "../lib/types";
+import type { Tag, TagColor } from "../lib/types";
+import { createTag, listTags } from "../lib/tag-api";
+import { createTask, listProjectTasks, updateTask } from "../lib/task-api";
+import { deliverableStage } from "../lib/stage";
 import { newId } from "../lib/id";
 import type { Rect } from "../lib/canvas/camera";
-import type { Annotation, CanvasObject, Decision, Deliverable, NoteColor, Version } from "../lib/types";
+import type { Annotation, CanvasObject, Decision, Deliverable, NoteColor, Task, TaskStatus, Version } from "../lib/types";
 import { ContextMenu, type MenuEntry, type MenuState } from "./ContextMenu";
 import { DeliverableCard, STATUS_META } from "./DeliverableCard";
 import { NOTE_COLORS, NOTE_W, StickyNote } from "./StickyNote";
 import { HistoryPanel } from "./HistoryPanel";
 import { NotesPanel } from "./NotesPanel";
+import { NavMenu } from "./NavMenu";
 import { ProjectInfoModal } from "./ProjectInfoModal";
 import { ReviewPlane } from "./ReviewPlane";
 import { ThreadSidebar } from "./ThreadSidebar";
-import { StatusRail } from "./StatusRail";
+import { DeliverableTasksPanel } from "./DeliverableTasksPanel";
+import { Callout } from "./Callout";
 import { CommandPalette } from "./CommandPalette";
 import { GlobalSearch } from "./GlobalSearch";
 
@@ -38,6 +44,83 @@ export function ProjectCanvas() {
   const navigate = useNavigate();
   const camera = createCamera();
 
+  // shared org tags for the deliverable tag editor (in the info modal)
+  const [orgTags, { refetch: refetchTags }] = createResource(
+    () => store.state.graph?.project.organizationId ?? null,
+    () => listTags(),
+  );
+  async function makeTag(name: string, color: TagColor): Promise<Tag> {
+    const t = await createTag(name, color);
+    await refetchTags();
+    return t;
+  }
+
+  // Project tasks power both the on-canvas Tasks panel and the derived
+  // per-deliverable stage. Optimistic local copy: mutations apply immediately,
+  // then hit the server; errors refetch to reconverge (same as the store).
+  const [serverTasks, { refetch: refetchTasks }] = createResource(
+    () => (store.can("task", "update") ? store.projectId : null),
+    () => listProjectTasks(store.projectId),
+  );
+  const [tasks, setTasks] = createSignal<Task[]>([]);
+  createEffect(() => {
+    const rows = serverTasks();
+    if (rows) setTasks(rows);
+  });
+  const tasksFor = (deliverableId: string) =>
+    tasks().filter(t => t.deliverableId === deliverableId);
+  const stageOf = (d: Deliverable) => deliverableStage(d, tasksFor(d.id));
+
+  function failTasks(err: unknown) {
+    setStatusMsg(String(err instanceof Error ? err.message : err));
+    void refetchTasks();
+  }
+  // deliverableId null → a project-level task (e.g. a project with no
+  // deliverables yet), otherwise scoped to that deliverable.
+  function addDeliverableTask(deliverableId: string | null, title: string) {
+    const trimmed = title.trim();
+    if (!trimmed) return;
+    const id = newId();
+    const v = store.viewer();
+    const optimistic: Task = {
+      id,
+      organizationId: store.state.graph?.project.organizationId ?? "",
+      title: trimmed,
+      description: "",
+      status: "todo",
+      priority: "none",
+      assigneeId: null,
+      assigneeName: null,
+      dueDate: null,
+      projectId: store.projectId,
+      projectName: store.state.graph?.project.name ?? null,
+      entityId: store.state.graph?.project.entityId ?? null,
+      deliverableId,
+      createdBy: v?.userId ?? "",
+      createdAt: Date.now(),
+      completedAt: null,
+    };
+    setTasks(list => [optimistic, ...list]);
+    createTask(id, trimmed, { projectId: store.projectId, deliverableId }).catch(failTasks);
+  }
+  // The task panel shows the current deliverable's tasks in review mode, or all
+  // project tasks when there's no deliverable in view (project scope).
+  const panelTasks = () => {
+    const d = current();
+    return d ? tasksFor(d.id) : tasks();
+  };
+  const addPanelTask = (title: string) => addDeliverableTask(current()?.id ?? null, title);
+  function setDeliverableTaskStatus(task: Task, status: TaskStatus) {
+    setTasks(list =>
+      list.map(t =>
+        t.id === task.id
+          ? { ...t, status, completedAt: status === "done" ? Date.now() : null }
+          : t,
+      ),
+    );
+    updateTask(task.id, { status }).catch(failTasks);
+  }
+
   let container!: HTMLDivElement;
   let fileInput!: HTMLInputElement;
 
@@ -46,6 +129,7 @@ export function ProjectCanvas() {
   const [compare, setCompare] = createSignal(false);
   const [historyOpen, setHistoryOpen] = createSignal(false);
   const [notesOpen, setNotesOpen] = createSignal(false);
+  const [tasksOpen, setTasksOpen] = createSignal(false);
   const [infoOpen, setInfoOpen] = createSignal(false);
   const [sidebarOpen, setSidebarOpen] = createSignal(true);
   const [paletteOpen, setPaletteOpen] = createSignal(false);
@@ -146,36 +230,63 @@ export function ProjectCanvas() {
   /** Marquee-select rect in screen space, while actively dragging on empty canvas. */
   const [marquee, setMarquee] = createSignal<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
 
-  function toggleSelect(id: string) {
-    setSelected(s => {
-      const n = new Set(s);
-      if (n.has(id)) n.delete(id);
-      else n.add(id);
-      return n;
+  /** Single-click highlight: one card, border only, no checkmark. Distinct
+   * from the multi-select `selected` set (checkmarks). */
+  const [activeId, setActiveId] = createSignal<string | null>(null);
+
+  /** Plain click — highlight exactly this card, clearing any multi-selection. */
+  function highlightCard(id: string) {
+    batch(() => {
+      setSelected(new Set<string>());
+      setSelectedGroups(new Set<string>());
+      setActiveId(id);
     });
   }
+
+  /** Checkbox / shift+click — toggle this card in the multi-select set,
+   * folding the current highlight (if any) into the set first. */
+  function extendSelection(id: string) {
+    batch(() => {
+      setSelected(s => {
+        const n = new Set(s);
+        const a = activeId();
+        if (a) n.add(a);
+        if (n.has(id)) n.delete(id);
+        else n.add(id);
+        return n;
+      });
+      setActiveId(null);
+    });
+  }
+
   const clearSelection = () => {
     setSelected(new Set<string>());
     setSelectedGroups(new Set<string>());
+    setActiveId(null);
   };
 
   /** Clicking a group's label selects/deselects the whole group as a unit. */
   function toggleGroupSelect(groupId: string) {
     const members = store.membersOfGroup(groupId);
     const isSelected = selectedGroups().has(groupId);
-    setSelectedGroups(s => {
-      const n = new Set(s);
-      if (isSelected) n.delete(groupId);
-      else n.add(groupId);
-      return n;
-    });
-    setSelected(s => {
-      const n = new Set(s);
-      for (const id of members) {
-        if (isSelected) n.delete(id);
-        else n.add(id);
-      }
-      return n;
+    batch(() => {
+      // a group selection supersedes any lingering single-card highlight —
+      // otherwise the stale active card leaks into the info modal
+      setActiveId(null);
+      setSelectedGroups(s => {
+        const n = new Set(s);
+        if (isSelected) n.delete(groupId);
+        else n.add(groupId);
+        return n;
+      });
+      setSelected(s => {
+        const n = new Set(s);
+        for (const id of members) {
+          if (isSelected) n.delete(id);
+          else n.add(id);
+        }
+        return n;
+      });
     });
   }
 
@@ -370,8 +481,25 @@ export function ProjectCanvas() {
   const focusedDeliverable = createMemo<Deliverable | undefined>(() => {
     const d = current();
     if (d) return d;
+    const a = activeId();
+    if (a) return store.byId(a);
     const sel = selected();
     return sel.size === 1 ? store.byId([...sel][0]) : undefined;
+  });
+
+  /** When one or more whole groups are selected on the board, the info modal
+   * lists every deliverable they contain (rather than a single card). */
+  const selectedGroupInfo = createMemo<{ label: string; members: Deliverable[] } | undefined>(() => {
+    if (current()) return undefined; // review mode describes the reviewed asset
+    if (selectedGroups().size === 0 || !selectionIsWholeGroups()) return undefined;
+    const gids = [...selectedGroups()];
+    const memberIds = new Set(gids.flatMap(g => store.membersOfGroup(g)));
+    const members = [...memberIds]
+      .map(id => store.byId(id))
+      .filter((d): d is Deliverable => !!d);
+    if (members.length === 0) return undefined;
+    const label = gids.length === 1 ? (store.groupById(gids[0])?.label ?? "group") : `${gids.length} groups`;
+    return { label, members };
   });
   const focusedVersion = createMemo<Version | undefined>(() => {
     const d = focusedDeliverable();
@@ -831,6 +959,7 @@ export function ProjectCanvas() {
       const world = marqueeWorldRect(start, p);
       const ids = store.deliverables().filter(d => rectsOverlap(world, effCardRect(d))).map(d => d.id);
       setSelected(new Set(ids));
+      setActiveId(null);
     };
     const onUp = (ev: PointerEvent) => {
       container.removeEventListener("pointermove", onMove);
@@ -996,6 +1125,7 @@ export function ProjectCanvas() {
             },
           ]
         : []),
+      { label: "Sticky notes", icon: "iconoir:notes", run: () => setNotesOpen(o => !o) },
       { label: "Project info", icon: "iconoir:info-circle", hint: "I", run: () => setInfoOpen(true) },
       { label: "Project history", icon: "iconoir:clock", hint: "H", run: () => setHistoryOpen(o => !o) },
       ...(!locked()
@@ -1026,6 +1156,13 @@ export function ProjectCanvas() {
       { label: "Project info", icon: "iconoir:info-circle", hint: "I", run: () => setInfoOpen(true) },
       { label: "Project history", icon: "iconoir:clock", hint: "H", run: () => setHistoryOpen(o => !o) },
       { label: "Fit to screen", icon: "iconoir:frame", hint: "F", run: () => fitPlane(true, 250) },
+      { label: sidebarOpen() ? "Hide comments" : "Show comments", icon: "iconoir:message-text", hint: "Tab", run: () => setSidebarOpen(o => !o) },
+      ...(store.deliverables().length > 1
+        ? [
+            { label: "Previous deliverable", icon: "iconoir:arrow-left", hint: "←", run: () => cycleReview(-1) },
+            { label: "Next deliverable", icon: "iconoir:arrow-right", hint: "→", run: () => cycleReview(1) },
+          ]
+        : []),
       ...(canDeleteVersion() && v
         ? [
             { separator: true } as const,
@@ -1404,13 +1541,31 @@ export function ProjectCanvas() {
             </Show>
           </div>
 
-          <div class="hidden md:block">
-            <Show when={store.state.graph}>
-              <StatusRail phase={store.state.graph!.project.phase} />
+          {/* center: primary navigation — these leave the canvas view entirely.
+              "Tasks, Library" (no Projects link; the back arrow fills that role). */}
+          <div class="hidden md:flex items-center gap-6">
+            <Show when={store.state.graph?.viewer.role !== "guest"}>
+              <A
+                href="/tasks"
+                class="flex items-center gap-1 text-xs text-neutral-500 hover:text-neutral-800"
+                title="Tasks"
+              >
+                <Icon icon="iconoir:task-list" width="14" />
+                Tasks
+              </A>
             </Show>
+            <A
+              href="/library"
+              class="flex items-center gap-1 text-xs text-neutral-500 hover:text-neutral-800"
+              title="Media Library"
+            >
+              <Icon icon="iconoir:media-image-folder" width="14" />
+              Library
+            </A>
           </div>
 
-          <div class="flex items-center gap-2 relative">
+          <div class="flex items-center gap-6 relative">
+            {/* action group — these open a panel or menu in place */}
             <button
               class="flex items-center p-1.5 rounded cursor-pointer text-neutral-500 hover:text-neutral-800 hover:bg-neutral-200/50"
               title="Search (/)"
@@ -1429,36 +1584,38 @@ export function ProjectCanvas() {
             >
               <Icon icon="iconoir:clock" width="15" />
             </button>
-            <Show when={!reviewId()}>
-              <button
-                class="flex items-center p-1.5 rounded cursor-pointer"
-                classList={{
-                  "bg-neutral-200/70 text-neutral-800": notesOpen(),
-                  "text-neutral-500 hover:text-neutral-800 hover:bg-neutral-200/50": !notesOpen(),
-                }}
-                title="Sticky notes"
-                onClick={() => setNotesOpen(o => !o)}
-              >
-                <Icon icon="iconoir:notes" width="15" />
-              </button>
-            </Show>
             <Show
               when={current()}
-              fallback={
-                <Show when={canCreate()}>
-                  <button
-                    class="flex items-center gap-1 text-xs bg-neutral-900 text-white rounded px-2.5 py-1.5 hover:bg-neutral-700 cursor-pointer"
-                    onClick={newDeliverableAtCenter}
-                    title="New deliverable (N)"
-                  >
-                    <Icon icon="iconoir:plus" width="14" /> Deliverable
-                    <span class="text-[10px] text-neutral-400 bg-neutral-800 rounded px-1 ml-1">N</span>
-                  </button>
-                </Show>
-              }
+              fallback={null}
             >
               {d => (
                 <>
+                  {/* deliverable tasks — opens in the same right-sidebar slot as
+                      threads/history, where the work is discussed & decided */}
+                  <Show when={store.state.graph?.viewer.role !== "guest"}>
+                    <button
+                      class="flex items-center gap-1 p-1.5 rounded cursor-pointer relative"
+                      classList={{
+                        "bg-neutral-200/70 text-neutral-800": tasksOpen(),
+                        "text-neutral-500 hover:text-neutral-800 hover:bg-neutral-200/50": !tasksOpen(),
+                      }}
+                      title="Deliverable tasks"
+                      onClick={() => {
+                        setTasksOpen(o => !o);
+                        if (!tasksOpen()) return;
+                        setHistoryOpen(false);
+                        setNotesOpen(false);
+                      }}
+                    >
+                      <Icon icon="iconoir:task-list" width="15" />
+                      <Show when={tasksFor(d().id).some(t => t.status !== "done")}>
+                        <span class="text-[10px]">
+                          {tasksFor(d().id).filter(t => t.status !== "done").length}
+                        </span>
+                      </Show>
+                    </button>
+                  </Show>
+
                   {/* version tabs */}
                   <div class="flex items-center gap-0.5 bg-[#efeded] rounded p-0.5">
                     <For each={d().versions}>
@@ -1707,9 +1864,12 @@ export function ProjectCanvas() {
                             d={d}
                             x={pos().x}
                             y={pos().y}
+                            stage={stageOf(d)}
                             readOnly={!canEdit()}
                             selected={selected().has(d.id)}
-                            onToggleSelect={dl => toggleSelect(dl.id)}
+                            active={activeId() === d.id}
+                            onSelect={(dl, o) => (o.additive ? extendSelection(dl.id) : highlightCard(dl.id))}
+                            onToggleSelect={dl => extendSelection(dl.id)}
                             onOpen={enterReview}
                             onMove={handleCardMove}
                             onRename={(dl, name) => store.renameDeliverable(dl.id, name)}
@@ -1857,7 +2017,7 @@ export function ProjectCanvas() {
             {/* empty state */}
             <Show when={store.state.loaded && !reviewId() && store.deliverables().length === 0}>
               <div class="absolute inset-0 flex items-center justify-center pointer-events-none">
-                <div class="text-center text-neutral-400">
+                <div class="text-center text-neutral-400 max-w-sm px-4">
                   <Icon icon="iconoir:media-image-list" width="40" />
                   <p class="mt-3 text-sm font-medium text-neutral-500">No deliverables yet</p>
                   <p class="mt-1 text-xs">
@@ -1869,6 +2029,36 @@ export function ProjectCanvas() {
                       double-click the canvas, or drop images anywhere
                     </Show>
                   </p>
+                  {/* lopsided state: tasks exist but there's nothing to review yet */}
+                  <Show when={tasks().length > 0}>
+                    <div class="mt-4 pointer-events-auto text-left">
+                      <Callout
+                        tone="warn"
+                        icon="iconoir:task-list"
+                        actions={
+                          <>
+                            <Show when={canCreate()}>
+                              <button
+                                class="text-[11px] text-white bg-neutral-800 hover:bg-neutral-700 rounded px-2 py-1 cursor-pointer"
+                                onClick={() => newDeliverableAtCenter()}
+                              >
+                                Create deliverable
+                              </button>
+                            </Show>
+                            <button
+                              class="text-[11px] text-amber-800 hover:bg-amber-100 rounded px-2 py-1 cursor-pointer"
+                              onClick={() => setTasksOpen(true)}
+                            >
+                              View tasks
+                            </button>
+                          </>
+                        }
+                      >
+                        {tasks().length} task{tasks().length === 1 ? "" : "s"} tracked here, but no
+                        deliverables yet.
+                      </Callout>
+                    </div>
+                  </Show>
                 </div>
               </div>
             </Show>
@@ -1879,8 +2069,71 @@ export function ProjectCanvas() {
               </div>
             </Show>
 
+            {/* floating Add — the single entry point for creating a new asset or
+                a sticky note; hovers over the canvas so creation isn't split
+                between the navbar and the board toolbar */}
+            <Show when={!reviewId() && (canCreate() || canNote())}>
+              <div
+                class="absolute top-3 left-3 z-10"
+                onPointerDown={e => e.stopPropagation()}
+                onDblClick={e => e.stopPropagation()}
+                onWheel={e => e.stopPropagation()}
+                onContextMenu={e => {
+                  e.preventDefault();
+                  e.stopPropagation();
+                }}
+              >
+                <NavMenu
+                  anchor="bottom"
+                  align="left"
+                  panelClass="w-44"
+                  trigger={({ toggle }) => (
+                    <button
+                      class="flex items-center gap-1 text-xs bg-neutral-900 text-white rounded px-2.5 py-1.5 hover:bg-neutral-700 cursor-pointer shadow-sm"
+                      title="Add"
+                      onClick={toggle}
+                    >
+                      <Icon icon="iconoir:plus" width="14" /> Add
+                    </button>
+                  )}
+                >
+                  {({ close }) => (
+                    <div class="p-1.5">
+                      <Show when={canCreate()}>
+                        <button
+                          class="rounded-md w-full flex items-center gap-2 px-3 py-2 text-left text-xs text-neutral-600 hover:bg-neutral-50 cursor-pointer"
+                          onClick={() => {
+                            close();
+                            newDeliverableAtCenter();
+                          }}
+                        >
+                          <Icon icon="iconoir:media-image" width="14" class="shrink-0 text-neutral-500" />
+                          <span class="flex-1">New asset</span>
+                          <kbd class="text-[9px] font-semibold text-neutral-400 bg-neutral-100 border border-neutral-200 rounded px-1 py-px">N</kbd>
+                        </button>
+                      </Show>
+                      <Show when={canNote()}>
+                        <button
+                          class="rounded-md w-full flex items-center gap-2 px-3 py-2 text-left text-xs text-neutral-600 hover:bg-neutral-50 cursor-pointer"
+                          onClick={() => {
+                            close();
+                            setNoteTool(true);
+                            flash("Sticky note: click the canvas to place");
+                          }}
+                        >
+                          <Icon icon="iconoir:notes" width="14" class="shrink-0 text-neutral-500" />
+                          <span class="flex-1">Sticky note</span>
+                          <kbd class="text-[9px] font-semibold text-neutral-400 bg-neutral-100 border border-neutral-200 rounded px-1 py-px">S</kbd>
+                        </button>
+                      </Show>
+                    </div>
+                  )}
+                </NavMenu>
+              </div>
+            </Show>
+
             {/* board tools — a light toolbar for placeable canvas objects + layout actions */}
-            <Show when={!reviewId() && (canNote() || canEdit())}>
+            <Show when={!reviewId() && canEdit() && store.deliverables().length > 0}>
               <div
                 class="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center rounded-lg border border-neutral-200 bg-white/95 shadow-sm overflow-clip divide-x divide-neutral-100"
                 onPointerDown={e => e.stopPropagation()}
@@ -1891,28 +2144,13 @@ export function ProjectCanvas() {
                   e.stopPropagation();
                 }}
               >
-                <Show when={canNote()}>
-                  <button
-                    class="p-1.5 cursor-pointer"
-                    classList={{
-                      "text-amber-600 bg-amber-50 hover:bg-amber-100": noteTool(),
-                      "text-neutral-500 hover:text-neutral-800 hover:bg-neutral-50": !noteTool(),
-                    }}
-                    title="Sticky note (S) — click the canvas to place"
-                    onClick={() => setNoteTool(t => !t)}
-                  >
-                    <Icon icon="iconoir:notes" width="14" />
-                  </button>
-                </Show>
-                <Show when={canEdit() && store.deliverables().length > 0}>
-                  <button
-                    class="p-1.5 cursor-pointer text-neutral-500 hover:text-neutral-800 hover:bg-neutral-50"
-                    title="Auto-arrange — grid-pack deliverables, groups stay clustered"
-                    onClick={autoArrange}
-                  >
-                    <Icon icon="iconoir:view-grid" width="14" />
-                  </button>
-                </Show>
+                <button
+                  class="p-1.5 cursor-pointer text-neutral-500 hover:text-neutral-800 hover:bg-neutral-50"
+                  title="Auto-arrange — grid-pack deliverables, groups stay clustered"
+                  onClick={autoArrange}
+                >
+                  <Icon icon="iconoir:view-grid" width="14" />
+                </button>
               </div>
             </Show>
 
@@ -1999,13 +2237,27 @@ export function ProjectCanvas() {
               <Show
                 when={notesOpen()}
                 fallback={
-                  <Show when={current() && sidebarOpen()}>
-                    <ThreadSidebar
-                      annotations={versionAnnotations()}
-                      selectedId={selectedAnnId()}
-                      onSelect={selectAnnotation}
-                      onComment={(annId, body) => store.addComment(current()!.id, annId, body)}
-                      onResolve={(annId, status) => store.resolveAnnotation(current()!.id, annId, status)}
+                  <Show
+                    when={tasksOpen()}
+                    fallback={
+                      <Show when={current() && sidebarOpen()}>
+                        <ThreadSidebar
+                          annotations={versionAnnotations()}
+                          selectedId={selectedAnnId()}
+                          onSelect={selectAnnotation}
+                          onComment={(annId, body) => store.addComment(current()!.id, annId, body)}
+                          onResolve={(annId, status) => store.resolveAnnotation(current()!.id, annId, status)}
+                        />
+                      </Show>
+                    }
+                  >
+                    <DeliverableTasksPanel
+                      tasks={panelTasks()}
+                      projectScope={!current()}
+                      canManage={store.can("task", "create")}
+                      onClose={() => setTasksOpen(false)}
+                      onAdd={addPanelTask}
+                      onSetStatus={setDeliverableTaskStatus}
                     />
                   </Show>
                 }
@@ -2223,10 +2475,15 @@ export function ProjectCanvas() {
             project={graph().project}
             deliverables={store.deliverables()}
             current={focusedDeliverable()}
+            selectedGroup={selectedGroupInfo()}
             currentVersion={focusedVersion()}
             openThreadCount={focusedOpenThreadCount()}
             reviewing={!!current()}
             onOpenHistory={() => setHistoryOpen(true)}
+            allTags={orgTags() ?? []}
+            canTagDeliverable={canEdit()}
+            onSetDeliverableTags={(d, tags) => store.setDeliverableTags(d.id, tags)}
+            onCreateTag={makeTag}
           />
         )}
       </Show>

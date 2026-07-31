@@ -1,7 +1,7 @@
 import { Show, type JSX } from "solid-js";
 import { createAsync, revalidate, useNavigate } from "@solidjs/router";
 import { Icon } from "@iconify-icon/solid";
-import { myOrgsQuery, requireUserQuery } from "../lib/org-api";
+import { myOrgsQuery, requireUserQuery, sessionQuery } from "../lib/org-api";
 import { authClient } from "../lib/auth-client";
 import { useViewerRole } from "../lib/viewer";
 import { Avatar } from "./Avatar";
@@ -22,7 +22,9 @@ export function AppFooter(props: { children?: JSX.Element }) {
 
   async function signOut() {
     await authClient.signOut();
-    await revalidate(requireUserQuery.key);
+    // clear every auth-derived query cache — otherwise the sign-in page's
+    // sessionQuery stays "authed" and bounces straight back to the projects page
+    await revalidate([sessionQuery.key, requireUserQuery.key, myOrgsQuery.key]);
     navigate("/sign-in", { replace: true });
   }
 

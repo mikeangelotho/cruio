@@ -4,9 +4,9 @@ import {
   createEffect,
   createMemo,
   createSignal,
+  on,
   onCleanup,
   onMount,
-  untrack,
 } from "solid-js";
 import { useNavigate } from "@solidjs/router";
 import { Icon } from "@iconify-icon/solid";
@@ -28,6 +28,7 @@ const OPERATOR_HINTS = [
   "type:task|project|deliverable|media|entity",
   "status:value",
   "assignee:name",
+  "tag:name",
   "is:mine",
 ];
 
@@ -46,7 +47,9 @@ export function GlobalSearch(props: GlobalSearchProps) {
   const isModal = () => props.variant === "modal";
 
   const [value, setValue] = createSignal("");
-  const [debounced, setDebounced] = createSignal("");
+  // equals:false so clearing and retyping the *same* term still re-fires the
+  // fetch effect (otherwise the setDebounced(sameString) is a no-op).
+  const [debounced, setDebounced] = createSignal("", { equals: false });
   const [open, setOpen] = createSignal(false);
   const [activeIndex, setActiveIndex] = createSignal(0);
   let inputRef: HTMLInputElement | undefined;
@@ -70,12 +73,16 @@ export function GlobalSearch(props: GlobalSearchProps) {
 
   createEffect(() => {
     const org = props.orgId();
-    const q = debounced().trim();
-    if (!org || !q) {
+    const text = debounced().trim();
+    if (!org || !text) {
       setResults([]);
       setResultsLoading(false);
       return;
     }
+    // Compose the active scope into the outgoing query only here — the visible
+    // input stays pure free text. withScopeToken quotes the value correctly.
+    const s = activeScope();
+    const q = s ? withScopeToken(text, s.kind, s.value) : text;
     let cancelled = false;
     setResultsLoading(true);
     globalSearch(q)
@@ -114,44 +121,24 @@ export function GlobalSearch(props: GlobalSearchProps) {
     return null;
   }
 
-  // Tracks the exact string we last auto-inserted, so we can tell "untouched
-  // prefill" apart from "user typed/edited something" — only the former gets
-  // live-updated when the scope changes (e.g. switching entities).
-  let autoInserted: string | null = null;
-
-  // untrack() the value() read: this runs inside a createEffect that must
-  // depend only on scopeToken() — reading value() untracked keeps it from
-  // becoming a transitive dependency too, which would otherwise re-run this
-  // on every keystroke (and snap an emptied box right back to the token).
-  function applyScopeToken() {
-    const current = untrack(value);
-    if (current !== "" && current !== autoInserted) return; // user has edited it — leave alone
-    const tok = scopeToken();
-    // Only one scope kind is ever meant to be present at once — projectContext
-    // resolves asynchronously (the project graph loads after mount), so the
-    // first pass here can insert an entity token before it's ready, then a
-    // later pass needs to swap in the project token. withScopeToken() only
-    // strips its own kind, so both kinds are cleared first to avoid stacking.
-    const cleared = withScopeToken(withScopeToken(current, "project", null), "entity", null);
-    const next = tok ? withScopeToken(cleared, tok.kind, tok.value) : cleared;
-    autoInserted = next || null;
-    if (next !== current) setValue(next);
-  }
-
-  // Live-update the prefilled scope token whenever it changes (e.g. switching
-  // entities), regardless of whether the box is currently focused/open — the
-  // inline input stays visible in the nav even when its results dropdown is
-  // closed, so a stale token would otherwise sit there until next focus.
-  createEffect(() => {
-    scopeToken();
-    applyScopeToken();
-  });
+  // Scope is UI state, never injected into the input text: the active
+  // entity/project shows as a removable chip and is composed into the query
+  // only at fetch time. This avoids the "cleared box snaps back to the token"
+  // and malformed-token classes of bugs the token-in-text approach had.
+  const [scopeDismissed, setScopeDismissed] = createSignal(false);
+  const activeScope = () => (scopeDismissed() ? null : scopeToken());
+  // Re-show the chip whenever the scope itself changes (e.g. switching
+  // entities); keyed on a stable string so it fires only on real changes.
+  const scopeKey = () => {
+    const t = scopeToken();
+    return t ? `${t.kind}:${t.value}` : "";
+  };
+  createEffect(on(scopeKey, () => setScopeDismissed(false)));
 
   function focusInput() {
     queueMicrotask(() => {
       if (!inputRef) return;
       inputRef.focus();
-      applyScopeToken();
       inputRef.setSelectionRange(inputRef.value.length, inputRef.value.length);
     });
   }
@@ -192,6 +179,12 @@ export function GlobalSearch(props: GlobalSearchProps) {
     e.stopPropagation();
     if (e.key === "Escape") {
       closeSearch();
+      return;
+    }
+    // Backspace on an empty query removes the scope chip (like deleting a token).
+    if (e.key === "Backspace" && value() === "" && activeScope()) {
+      e.preventDefault();
+      setScopeDismissed(true);
       return;
     }
     if (e.key === "ArrowDown") {
@@ -333,6 +326,34 @@ export function GlobalSearch(props: GlobalSearchProps) {
     );
   }
 
+  function ScopeChip() {
+    return (
+      <Show when={activeScope()}>
+        {s => (
+          <span class="shrink-0 flex items-center gap-1 text-[11px] bg-neutral-100 text-neutral-600 rounded px-1.5 py-0.5 max-w-[45%]">
+            <Icon
+              icon={s().kind === "project" ? "iconoir:folder" : "iconoir:building"}
+              width="11"
+              class="shrink-0 text-neutral-400"
+            />
+            <span class="truncate">{s().value}</span>
+            <button
+              class="shrink-0 text-neutral-400 hover:text-neutral-700 cursor-pointer flex items-center"
+              title="Search everywhere (remove scope)"
+              onClick={e => {
+                e.stopPropagation();
+                setScopeDismissed(true);
+                inputRef?.focus();
+              }}
+            >
+              <Icon icon="iconoir:xmark" width="11" />
+            </button>
+          </span>
+        )}
+      </Show>
+    );
+  }
+
   function SearchField() {
     return (
       <input
@@ -342,10 +363,7 @@ export function GlobalSearch(props: GlobalSearchProps) {
         placeholder="Search…"
         value={value()}
         onInput={e => setValue(e.currentTarget.value)}
-        onFocus={() => {
-          setOpen(true);
-          applyScopeToken();
-        }}
+        onFocus={() => setOpen(true)}
         onKeyDown={onKeyDown}
       />
     );
@@ -362,8 +380,9 @@ export function GlobalSearch(props: GlobalSearchProps) {
             class="w-[520px] max-w-[90vw] bg-white rounded-xl shadow-2xl border border-neutral-200 overflow-hidden"
             onClick={e => e.stopPropagation()}
           >
-            <div class="flex items-center gap-2 px-3 border-b border-neutral-100">
+            <div class="flex items-center gap-2 px-3 py-2.5 border-b border-neutral-100">
               <Icon icon="iconoir:search" width="15" class="text-neutral-400" />
+              <ScopeChip />
               <SearchField />
               <span class="text-[10px] text-neutral-400 bg-neutral-100 rounded px-1 py-0.5">Esc</span>
             </div>
@@ -378,6 +397,7 @@ export function GlobalSearch(props: GlobalSearchProps) {
     <div ref={wrapperRef} class="relative w-full max-w-md" onClick={e => e.stopPropagation()}>
       <div class="flex items-center gap-2 px-2.5 py-1.5 rounded-lg outline outline-neutral-200/80 bg-white/60 focus-within:bg-white focus-within:outline-neutral-300">
         <Icon icon="iconoir:search" width="13" class="text-neutral-400 shrink-0" />
+        <ScopeChip />
         <SearchField />
         <Show when={!open()}>
           <span class="shrink-0 text-[10px] text-neutral-400 bg-neutral-100 rounded px-1 py-0.5">/</span>

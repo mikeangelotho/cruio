@@ -24,6 +24,11 @@ export const auth = betterAuth({
   trustedOrigins: [
     "http://localhost:5173",
     "http://localhost:3000",
+    // the app is reached over the Tailscale host on :3000 (http) — the exact
+    // origin must be listed or better-auth rejects auth POSTs (e.g. an invitee
+    // accepting an invite) from that origin as untrusted
+    "http://bippy.tail44eee4.ts.net:3000",
+    "https://bippy.tail44eee4.ts.net:3000",
     "https://bippy.tail44eee4.ts.net",
   ],
   emailAndPassword: { enabled: true },

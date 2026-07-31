@@ -3,6 +3,8 @@ import { Icon } from "@iconify-icon/solid";
 import type { Deliverable } from "../lib/types";
 import { fileUrl } from "../lib/types";
 import { CARD_W, thumbHeight } from "../lib/canvas/geometry";
+import { STAGE_META, type Stage } from "../lib/stage";
+import { TagChips } from "./TagChips";
 
 export const STATUS_META: Record<
   Deliverable["status"],
@@ -30,7 +32,13 @@ export function DeliverableCard(props: {
   registerActions?: (id: string, actions: { startRename: () => void }) => void;
   /** multi-select state, shown as a hover-revealed checkbox */
   selected?: boolean;
+  /** single-click highlight — border only, no checkmark (distinct from `selected`) */
+  active?: boolean;
+  /** derived lifecycle stage (tasks + review); when set, shown instead of the raw review status */
+  stage?: Stage;
   onToggleSelect?: (d: Deliverable) => void;
+  /** card-body click: plain click highlights one, shift+click extends the set */
+  onSelect?: (d: Deliverable, opts: { additive: boolean }) => void;
   /** convert a screen delta to a world delta (depends on zoom) */
   screenToWorldDelta: (dx: number, dy: number) => { x: number; y: number };
   hidden?: boolean;
@@ -52,6 +60,7 @@ export function DeliverableCard(props: {
     const startY = e.clientY;
     const origX = props.x;
     const origY = props.y;
+    const additive = e.shiftKey;
     let dragged = false;
 
     const onMove = (ev: PointerEvent) => {
@@ -71,9 +80,9 @@ export function DeliverableCard(props: {
         const wd = props.screenToWorldDelta(ev.clientX - startX, ev.clientY - startY);
         props.onMove(props.d, origX + wd.x, origY + wd.y, true);
       } else {
-        // a clean click selects; double-click (native dblclick, fired after
-        // this) opens — see onDblClick below
-        props.onToggleSelect?.(props.d);
+        // a clean click highlights (plain) or extends the set (shift);
+        // double-click (native dblclick, fired after this) opens — see onDblClick
+        props.onSelect?.(props.d, { additive });
       }
     };
     el.addEventListener("pointermove", onMove);
@@ -85,8 +94,8 @@ export function DeliverableCard(props: {
       data-card={props.d.id}
       class="group absolute select-none rounded-lg bg-white border-2 shadow-[0_1px_4px_rgba(0,0,0,0.06)] hover:shadow-[0_2px_10px_rgba(0,0,0,0.10)] transition-shadow cursor-default outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
       classList={{
-        "border-sky-500": !!props.selected,
-        "border-neutral-200 hover:border-neutral-300": !props.selected,
+        "border-sky-500": !!props.selected || !!props.active,
+        "border-neutral-200 hover:border-neutral-300": !props.selected && !props.active,
       }}
       style={{
         left: `${props.x}px`,
@@ -118,9 +127,9 @@ export function DeliverableCard(props: {
     >
       <Show when={props.onToggleSelect && !props.readOnly}>
         <button
-          class="absolute top-1.5 left-1.5 z-10 w-4 h-4 rounded border bg-white flex items-center justify-center cursor-pointer"
+          class="absolute top-1.5 left-1.5 z-10 w-4 h-4 rounded border flex items-center justify-center cursor-pointer"
           classList={{
-            "border-neutral-300 opacity-0 group-hover:opacity-100": !props.selected,
+            "border-neutral-300 bg-white opacity-0 group-hover:opacity-100": !props.selected,
             "border-sky-500 bg-sky-500 text-white opacity-100": !!props.selected,
           }}
           title="Select"
@@ -135,10 +144,38 @@ export function DeliverableCard(props: {
           </Show>
         </button>
       </Show>
+      {/* Card action menu — a corner ⋯ that's revealed on hover and stays put
+          whenever the card is selected/active, so a selected card's actions are
+          never hidden behind a hover-only footer control. */}
+      <Show when={props.onMenu}>
+        <button
+          class="absolute top-1.5 right-1.5 z-10 p-0.5 rounded border border-neutral-200 bg-white/90 text-neutral-400 shadow-sm hover:text-neutral-700 hover:bg-white cursor-pointer transition-opacity"
+          classList={{
+            "opacity-0 group-hover:opacity-100": !props.selected && !props.active,
+            "opacity-100": !!props.selected || !!props.active,
+          }}
+          title="Deliverable actions"
+          onPointerDown={e => e.stopPropagation()}
+          onClick={e => {
+            e.stopPropagation();
+            const r = e.currentTarget.getBoundingClientRect();
+            props.onMenu!(props.d, r.left, r.bottom + 4);
+          }}
+        >
+          <Icon icon="iconoir:more-horiz" width="13" />
+        </button>
+      </Show>
       <div
-        class="overflow-hidden rounded-t-lg bg-neutral-50 flex items-center justify-center"
+        class="relative overflow-hidden rounded-t-lg bg-neutral-50 flex items-center justify-center"
         style={{ height: `${thumbHeight(props.d)}px` }}
       >
+        {/* tag chips overlaid on the thumbnail so they don't change the card's
+            layout height (canvas geometry depends on thumbHeight + header). */}
+        <Show when={props.d.tags.length > 0}>
+          <div class="absolute left-1.5 bottom-1.5 right-1.5 pointer-events-none">
+            <TagChips tags={props.d.tags} />
+          </div>
+        </Show>
         <Show
           when={latest()}
           fallback={
@@ -198,20 +235,6 @@ export function DeliverableCard(props: {
         </Show>
 
         <div class="flex items-center gap-1.5 shrink-0">
-          <Show when={props.onMenu}>
-            <button
-              class="p-0.5 rounded text-neutral-300 opacity-0 group-hover:opacity-100 hover:text-neutral-600 hover:bg-neutral-100 cursor-pointer"
-              title="Deliverable actions"
-              onPointerDown={e => e.stopPropagation()}
-              onClick={e => {
-                e.stopPropagation();
-                const r = e.currentTarget.getBoundingClientRect();
-                props.onMenu!(props.d, r.left, r.bottom + 4);
-              }}
-            >
-              <Icon icon="iconoir:more-horiz" width="13" />
-            </button>
-          </Show>
           <Show when={openThreads() > 0}>
             <span class="flex items-center gap-0.5 text-[10px] text-orange-600 bg-orange-50 rounded-full px-1.5 py-px">
               <Icon icon="iconoir:message-text" width="10" />
@@ -221,11 +244,22 @@ export function DeliverableCard(props: {
           <Show when={props.d.versions.length > 0}>
             <span class="text-[10px] text-neutral-400">v{latest()!.number}</span>
           </Show>
-          <span
-            class={`text-[10px] rounded-full px-1.5 py-px ${STATUS_META[props.d.status].chip}`}
+          <Show
+            when={props.stage}
+            fallback={
+              <span
+                class={`text-[10px] rounded-full px-1.5 py-px ${STATUS_META[props.d.status].chip}`}
+              >
+                {STATUS_META[props.d.status].label}
+              </span>
+            }
           >
-            {STATUS_META[props.d.status].label}
-          </span>
+            {stage => (
+              <span class={`text-[10px] rounded-full px-1.5 py-px ${STAGE_META[stage()].chip}`}>
+                {STAGE_META[stage()].label}
+              </span>
+            )}
+          </Show>
         </div>
       </div>
     </div>

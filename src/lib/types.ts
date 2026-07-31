@@ -19,6 +19,21 @@ export interface Entity {
   projectCount?: number;
 }
 
+export type TagColor =
+  | "neutral"
+  | "sky"
+  | "emerald"
+  | "amber"
+  | "rose"
+  | "violet";
+
+/** Shared org-level tag applied to projects and deliverables. */
+export interface Tag {
+  id: string;
+  name: string;
+  color: TagColor;
+}
+
 export interface Project {
   id: string;
   organizationId: string;
@@ -31,6 +46,11 @@ export interface Project {
   createdAt: number;
   archivedAt?: number | null;
   deliverableCount?: number;
+  tags?: Tag[];
+  /** fileName of the most recent version image across the project's deliverables — the card cover */
+  cover?: string | null;
+  /** counts of deliverables in each non-draft review status, for the card rollup */
+  statusCounts?: { in_review: number; revisions_requested: number; approved: number };
 }
 
 /** The signed-in user as seen by the project graph; drives role-adaptive UI. */
@@ -96,6 +116,7 @@ export interface Deliverable {
   /** joined for display */
   groupLabel?: string | null;
   createdAt: number;
+  tags: Tag[];
   versions: Version[];
   annotations: Annotation[];
   approvals: Approval[];
@@ -203,6 +224,17 @@ export interface Task {
   createdBy: string;
   createdAt: number;
   completedAt: number | null;
+}
+
+export type TaskLinkType = "blocks" | "related";
+
+/** A directed link between two tasks. "blocks": `from` blocks `to`. "related":
+ * non-directional (stored once, rendered both ways). */
+export interface TaskLink {
+  id: string;
+  fromTaskId: string;
+  toTaskId: string;
+  type: TaskLinkType;
 }
 
 export interface LibraryFolder {

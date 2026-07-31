@@ -1,8 +1,9 @@
 import { Show, For } from "solid-js";
 import { Icon } from "@iconify-icon/solid";
 import { STATUS_META } from "./DeliverableCard";
-import { StatusRail } from "./StatusRail";
-import type { Deliverable, Project, Version } from "../lib/types";
+import { TagChips } from "./TagChips";
+import { TagPicker } from "./TagPicker";
+import type { Deliverable, Project, Tag, TagColor, Version } from "../lib/types";
 
 const STATUS_ORDER: Deliverable["status"][] = [
   "draft",
@@ -22,11 +23,18 @@ export function ProjectInfoModal(props: {
   project: Project;
   deliverables: Deliverable[];
   current?: Deliverable;
+  /** set when whole group(s) are selected on the board — lists their members */
+  selectedGroup?: { label: string; members: Deliverable[] };
   currentVersion?: Version;
   openThreadCount: number;
   /** true when `current` is open in review; false when it's merely selected on the board */
   reviewing?: boolean;
   onOpenHistory: () => void;
+  /** shared org tags for the deliverable tag editor */
+  allTags?: Tag[];
+  canTagDeliverable?: boolean;
+  onSetDeliverableTags?: (d: Deliverable, tags: Tag[]) => void;
+  onCreateTag?: (name: string, color: TagColor) => Promise<Tag>;
 }) {
   const counts = () => {
     const tally = { draft: 0, in_review: 0, revisions_requested: 0, approved: 0 };
@@ -58,6 +66,7 @@ export function ProjectInfoModal(props: {
                     {props.project.entityName}
                   </span>
                 </Show>
+                <TagChips tags={props.project.tags ?? []} size="sm" />
               </div>
             </div>
             <button
@@ -67,10 +76,6 @@ export function ProjectInfoModal(props: {
             >
               <Icon icon="iconoir:xmark" width="16" />
             </button>
-          </div>
-
-          <div class="px-4 mt-3">
-            <StatusRail phase={props.project.phase} />
           </div>
 
           <div class="mt-4 mx-4 border-t border-neutral-100" />
@@ -102,7 +107,57 @@ export function ProjectInfoModal(props: {
             {props.deliverables.length} deliverable{props.deliverables.length === 1 ? "" : "s"} total
           </p>
 
-          <Show when={props.current}>
+          <Show when={props.selectedGroup}>
+            {g => (
+              <div class="mx-4 mb-4 rounded-lg border border-neutral-200 bg-neutral-50/60 p-3">
+                <p class="text-[10px] uppercase tracking-wide text-neutral-400 font-medium mb-2 flex items-center gap-1">
+                  <Icon icon="iconoir:link" width="11" class="text-violet-600" />
+                  Group “{g().label}” · {g().members.length} deliverable{g().members.length === 1 ? "" : "s"}
+                </p>
+                <div class="flex flex-col max-h-64 overflow-auto">
+                  <For each={g().members}>
+                    {m => {
+                      const open = m.annotations.filter(a => a.status === "open").length;
+                      const latest = m.versions[m.versions.length - 1];
+                      return (
+                        <div class="py-1.5 border-b border-neutral-200/60 last:border-b-0">
+                          <div class="flex items-center justify-between gap-2">
+                            <span class="text-sm font-medium text-neutral-800 truncate">{m.name}</span>
+                            <span class={`shrink-0 text-[10px] rounded-full px-1.5 py-px ${STATUS_META[m.status].chip}`}>
+                              {STATUS_META[m.status].label}
+                            </span>
+                          </div>
+                          <div class="mt-1 flex items-center gap-3 flex-wrap text-[11px] text-neutral-500">
+                            <Show when={latest}>
+                              {v => (
+                                <span class="flex items-center gap-1">
+                                  <Icon icon="iconoir:media-image" width="12" />
+                                  v{v().number} · {v().width}×{v().height}
+                                </span>
+                              )}
+                            </Show>
+                            <span
+                              class="flex items-center gap-1"
+                              classList={{ "text-orange-600": open > 0 }}
+                            >
+                              <Icon icon="iconoir:chat-bubble" width="12" />
+                              {open} open thread{open === 1 ? "" : "s"}
+                            </span>
+                            <span class="flex items-center gap-1">
+                              <Icon icon="iconoir:copy" width="12" />
+                              {m.versions.length} version{m.versions.length === 1 ? "" : "s"}
+                            </span>
+                          </div>
+                        </div>
+                      );
+                    }}
+                  </For>
+                </div>
+              </div>
+            )}
+          </Show>
+
+          <Show when={!props.selectedGroup && props.current}>
             {d => (
               <div class="mx-4 mb-4 rounded-lg border border-neutral-200 bg-neutral-50/60 p-3">
                 <p class="text-[10px] uppercase tracking-wide text-neutral-400 font-medium mb-1.5">
@@ -151,6 +206,27 @@ export function ProjectInfoModal(props: {
                     </p>
                   </div>
                 </Show>
+                <div class="mt-2 pt-2 border-t border-neutral-200/70 flex items-center gap-1.5 flex-wrap">
+                  <span class="text-[10px] uppercase tracking-wide text-neutral-400 font-medium">Tags</span>
+                  <TagChips
+                    tags={d().tags}
+                    size="sm"
+                    onRemove={
+                      props.canTagDeliverable && props.onSetDeliverableTags
+                        ? t => props.onSetDeliverableTags!(d(), d().tags.filter(x => x.id !== t.id))
+                        : undefined
+                    }
+                  />
+                  <Show when={props.canTagDeliverable && props.onSetDeliverableTags}>
+                    <TagPicker
+                      selected={d().tags}
+                      allTags={props.allTags ?? []}
+                      onChange={next => props.onSetDeliverableTags!(d(), next)}
+                      onCreateTag={props.onCreateTag}
+                      canManage={true}
+                    />
+                  </Show>
+                </div>
               </div>
             )}
           </Show>

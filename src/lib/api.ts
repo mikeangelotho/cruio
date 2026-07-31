@@ -8,10 +8,13 @@ import {
   comments,
   deliverables,
   deliverableGroups,
+  deliverableTags,
   history,
   personalPositions,
   projects,
   projectShares,
+  projectTags,
+  tags,
   versions,
 } from "../db/schema";
 import type {
@@ -27,6 +30,7 @@ import type {
   Phase,
   Project,
   ProjectGraph,
+  TagColor,
 } from "./types";
 import {
   authorize,
@@ -96,16 +100,59 @@ export async function listProjects(entityId?: string | null): Promise<Project[]>
   const ids = rows.map((r) => r.p.id);
   const counts = ids.length
     ? await db
-        .select({ projectId: deliverables.projectId, id: deliverables.id })
+        .select({
+          projectId: deliverables.projectId,
+          id: deliverables.id,
+          status: deliverables.status,
+        })
         .from(deliverables)
         .where(and(inArray(deliverables.projectId, ids), isNull(deliverables.deletedAt)))
     : [];
-  return rows.map((r) => ({
-    ...(r.p as unknown as Project),
-    entityName: r.entityName ?? null,
-    phase: r.p.phase as Phase,
-    deliverableCount: counts.filter((c) => c.projectId === r.p.id).length,
-  }));
+  // Cover = the most recently uploaded image across the project's deliverables.
+  // Ordered newest-first so the first row per project is that project's cover.
+  const coverRows = ids.length
+    ? await db
+        .select({
+          projectId: deliverables.projectId,
+          fileName: versions.fileName,
+        })
+        .from(versions)
+        .innerJoin(deliverables, eq(deliverables.id, versions.deliverableId))
+        .where(and(inArray(deliverables.projectId, ids), isNull(deliverables.deletedAt)))
+        .orderBy(desc(versions.createdAt))
+    : [];
+  const tagRows = ids.length
+    ? await db
+        .select({
+          projectId: projectTags.projectId,
+          id: tags.id,
+          name: tags.name,
+          color: tags.color,
+        })
+        .from(projectTags)
+        .innerJoin(tags, eq(tags.id, projectTags.tagId))
+        .where(inArray(projectTags.projectId, ids))
+    : [];
+  return rows.map((r) => {
+    const projectDeliverables = counts.filter((c) => c.projectId === r.p.id);
+    return {
+      ...(r.p as unknown as Project),
+      entityName: r.entityName ?? null,
+      phase: r.p.phase as Phase,
+      deliverableCount: projectDeliverables.length,
+      cover: coverRows.find((c) => c.projectId === r.p.id)?.fileName ?? null,
+      statusCounts: {
+        in_review: projectDeliverables.filter((c) => c.status === "in_review").length,
+        revisions_requested: projectDeliverables.filter(
+          (c) => c.status === "revisions_requested",
+        ).length,
+        approved: projectDeliverables.filter((c) => c.status === "approved").length,
+      },
+      tags: tagRows
+        .filter((t) => t.projectId === r.p.id)
+        .map((t) => ({ id: t.id, name: t.name, color: t.color as TagColor })),
+    };
+  });
 }
 
 export async function createProject(
@@ -200,6 +247,24 @@ export async function getProjectGraph(
     .where(eq(deliverableGroups.projectId, projectId));
   const groupLabels = new Map(groupRows.map(g => [g.id, g.label]));
 
+  const pTagRows = await db
+    .select({ id: tags.id, name: tags.name, color: tags.color })
+    .from(projectTags)
+    .innerJoin(tags, eq(tags.id, projectTags.tagId))
+    .where(eq(projectTags.projectId, projectId));
+  const dTagRows = dIds.length
+    ? await db
+        .select({
+          deliverableId: deliverableTags.deliverableId,
+          id: tags.id,
+          name: tags.name,
+          color: tags.color,
+        })
+        .from(deliverableTags)
+        .innerJoin(tags, eq(tags.id, deliverableTags.tagId))
+        .where(inArray(deliverableTags.deliverableId, dIds))
+    : [];
+
   const coRows = await db
     .select()
     .from(canvasObjects)
@@ -215,7 +280,12 @@ export async function getProjectGraph(
     : [];
 
   const graph: ProjectGraph = {
-    project: { ...(project as unknown as Project), entityName, phase: project.phase as Phase },
+    project: {
+      ...(project as unknown as Project),
+      entityName,
+      phase: project.phase as Phase,
+      tags: pTagRows.map(t => ({ id: t.id, name: t.name, color: t.color as TagColor })),
+    },
     viewer: { userId: session.userId, name: session.name, role },
     groups: groupRows.map(g => ({
       id: g.id,
@@ -236,6 +306,9 @@ export async function getProjectGraph(
       ...(d as unknown as Deliverable),
       status: d.status as DeliverableStatus,
       groupLabel: d.groupId ? (groupLabels.get(d.groupId) ?? null) : null,
+      tags: dTagRows
+        .filter(t => t.deliverableId === d.id)
+        .map(t => ({ id: t.id, name: t.name, color: t.color as TagColor })),
       versions: vRows.filter(v => v.deliverableId === d.id),
       annotations: aRows
         .filter(a => a.deliverableId === d.id)

@@ -18,11 +18,15 @@ import { Avatar, EntityAvatar } from "../components/Avatar";
 import { ContextMenu, type MenuState } from "../components/ContextMenu";
 import { NavMenu } from "../components/NavMenu";
 import { TaskPanel } from "../components/TaskPanel";
+import { Callout } from "../components/Callout";
 import {
+  addTaskLink,
   createTask,
   deleteTask,
   listAssignees,
+  listTaskLinks,
   listTasks,
+  removeTaskLink,
   updateTask,
   type TaskPatchInput,
 } from "../lib/task-api";
@@ -31,7 +35,7 @@ import { myOrgsQuery, requireUserQuery } from "../lib/org-api";
 import { newId } from "../lib/id";
 import { PRIORITIES, priorityMeta } from "../lib/priority";
 import { useViewerRole } from "../lib/viewer";
-import type { Task, TaskPriority, TaskStatus } from "../lib/types";
+import type { Project, Task, TaskLink, TaskLinkType, TaskPriority, TaskStatus } from "../lib/types";
 
 export const route = {
   preload: () => {
@@ -46,6 +50,13 @@ const GROUPS: { status: TaskStatus; label: string }[] = [
   { status: "done", label: "Done" },
 ];
 
+/** Inline status control metadata — a colored dot + label per workflow state. */
+const STATUS_META: Record<TaskStatus, { label: string; dot: string; text: string }> = {
+  todo: { label: "To do", dot: "bg-neutral-300", text: "text-neutral-500" },
+  in_progress: { label: "In progress", dot: "bg-sky-500", text: "text-sky-600" },
+  done: { label: "Done", dot: "bg-emerald-500", text: "text-emerald-600" },
+};
+
 type ViewMode = "list" | "board";
 type GroupBy = "status" | "priority" | "assignee" | "project";
 const GROUP_BY_OPTIONS: { value: GroupBy; label: string }[] = [
@@ -54,6 +65,19 @@ const GROUP_BY_OPTIONS: { value: GroupBy; label: string }[] = [
   { value: "assignee", label: "Assignee" },
   { value: "project", label: "Project" },
 ];
+
+type SortBy = "created" | "due" | "priority" | "title";
+const SORT_BY_OPTIONS: { value: SortBy; label: string }[] = [
+  { value: "created", label: "Created" },
+  { value: "due", label: "Due date" },
+  { value: "priority", label: "Priority" },
+  { value: "title", label: "Title" },
+];
+/** Rank for priority sort — urgent first (matches PRIORITIES order). */
+const priorityRank = (p: TaskPriority) => {
+  const i = PRIORITIES.findIndex(x => x.value === p);
+  return i === -1 ? PRIORITIES.length : i;
+};
 
 const overdue = (t: Task) =>
   t.dueDate !== null && t.status !== "done" && t.dueDate < Date.now();
@@ -92,8 +116,57 @@ export default function TasksPage() {
     if (rows) setItems(rows);
   });
 
+  // Situation (2): projects that have deliverables but no tasks never surface in
+  // the task-grouped views (grouping iterates tasks). Diff the in-memory project
+  // list against the projectIds present in the task list to find them.
+  const taskProjectIds = () =>
+    new Set(items().map(t => t.projectId).filter((id): id is string => !!id));
+  const projectsNeedingTasks = () =>
+    (projectsList() ?? []).filter(
+      p => (p.deliverableCount ?? 0) > 0 && !taskProjectIds().has(p.id),
+    );
+
+  // task dependency / related links (org-wide; indexed per task on the client)
+  const [serverLinks, { refetch: refetchLinks }] = createResource(
+    () => user()?.activeOrganizationId,
+    () => listTaskLinks(),
+  );
+  const [linkItems, setLinkItems] = createSignal<TaskLink[]>([]);
+  createEffect(() => {
+    const rows = serverLinks();
+    if (rows) setLinkItems(rows);
+  });
+
+  /** Blockers of `id` that aren't done yet — the ones that actually block it. */
+  function openBlockers(t: Task): Task[] {
+    return linkItems()
+      .filter(l => l.type === "blocks" && l.toTaskId === t.id)
+      .map(l => items().find(x => x.id === l.fromTaskId))
+      .filter((x): x is Task => !!x && x.status !== "done");
+  }
+  const isBlocked = (t: Task) => openBlockers(t).length > 0;
+
+  async function addLink(fromId: string, toId: string, type: TaskLinkType) {
+    setError("");
+    try {
+      const created = await addTaskLink(fromId, toId, type);
+      setLinkItems(l => [...l, created]);
+    } catch (e) {
+      setError(String(e instanceof Error ? e.message : e));
+      void refetchLinks();
+    }
+  }
+  function removeLink(id: string) {
+    setLinkItems(l => l.filter(x => x.id !== id));
+    removeTaskLink(id).catch(e => {
+      setError(String(e instanceof Error ? e.message : e));
+      void refetchLinks();
+    });
+  }
+
   const [view, setView] = createSignal<ViewMode>("list");
   const [groupBy, setGroupBy] = createSignal<GroupBy>("status");
+  const [sortBy, setSortBy] = createSignal<SortBy>("created");
   const [search, setSearch] = createSignal("");
   const [onlyMine, setOnlyMine] = createSignal(false);
   const [onlyOverdue, setOnlyOverdue] = createSignal(false);
@@ -153,6 +226,10 @@ export default function TasksPage() {
   }
 
   function setStatus(t: Task, status: TaskStatus) {
+    if (status === "done" && isBlocked(t)) {
+      const names = openBlockers(t).map(b => b.title).join(", ");
+      if (!window.confirm(`“${t.title}” is still blocked by: ${names}. Mark it done anyway?`)) return;
+    }
     applyPatch(t.id, { status }, {
       status,
       completedAt: status === "done" ? Date.now() : null,
@@ -184,6 +261,34 @@ export default function TasksPage() {
     };
     setItems(list => [optimistic, ...list]);
     createTask(id, trimmed, { status }).catch(fail);
+  }
+
+  // Situation (2) CTA: create a task pre-linked to a project and open it to edit.
+  function addTaskForProject(p: Project) {
+    setError("");
+    const id = newId();
+    const title = "New task";
+    const optimistic: Task = {
+      id,
+      organizationId: user()?.activeOrganizationId ?? "",
+      title,
+      description: "",
+      status: "todo",
+      priority: "none",
+      assigneeId: null,
+      assigneeName: null,
+      dueDate: null,
+      projectId: p.id,
+      projectName: p.name,
+      entityId: p.entityId,
+      deliverableId: null,
+      createdBy: user()?.userId ?? "",
+      createdAt: Date.now(),
+      completedAt: null,
+    };
+    setItems(list => [optimistic, ...list]);
+    createTask(id, title, { projectId: p.id }).catch(fail);
+    setPanelId(id);
   }
 
   function removeTask(t: Task) {
@@ -352,7 +457,15 @@ export default function TasksPage() {
     if (q) list = list.filter(t => t.title.toLowerCase().includes(q));
     if (onlyMine()) list = list.filter(t => t.assigneeId === user()?.userId);
     if (onlyOverdue()) list = list.filter(overdue);
-    return list;
+    const by = sortBy();
+    const sorted = [...list];
+    sorted.sort((a, b) => {
+      if (by === "title") return a.title.localeCompare(b.title);
+      if (by === "priority") return priorityRank(a.priority) - priorityRank(b.priority) || b.createdAt - a.createdAt;
+      if (by === "due") return (a.dueDate ?? Infinity) - (b.dueDate ?? Infinity) || b.createdAt - a.createdAt;
+      return b.createdAt - a.createdAt; // created (newest first)
+    });
+    return sorted;
   });
 
   const stats = createMemo(() => {
@@ -405,6 +518,104 @@ export default function TasksPage() {
     );
   }
 
+  // Inline priority picker — replaces the static icon so priority is editable
+  // without opening the meatball. Stops propagation so it doesn't open the panel.
+  const priorityPicker = (t: Task, size = 13) => (
+    <NavMenu
+      panelClass="w-40"
+      trigger={({ toggle }) => (
+        <button
+          class="shrink-0 p-0.5 rounded hover:bg-neutral-100 cursor-pointer"
+          title={`Priority: ${priorityMeta(t.priority).label}`}
+          onClick={e => {
+            e.stopPropagation();
+            toggle();
+          }}
+        >
+          <Icon icon={priorityMeta(t.priority).icon} width={String(size)} class={priorityMeta(t.priority).color} />
+        </button>
+      )}
+    >
+      {({ close }) => (
+        <div class="p-1" onClick={e => e.stopPropagation()}>
+          <For each={PRIORITIES}>
+            {p => (
+              <button
+                class="w-full flex items-center gap-2 px-2 py-1.5 rounded text-left text-xs text-neutral-700 hover:bg-neutral-50 cursor-pointer"
+                onClick={() => {
+                  close();
+                  applyPatch(t.id, { priority: p.value }, { priority: p.value });
+                }}
+              >
+                <Icon icon={p.icon} width="13" class={p.color} />
+                <span class="flex-1">{p.label}</span>
+                <Show when={t.priority === p.value}>
+                  <Icon icon="iconoir:check" width="12" class="text-neutral-400" />
+                </Show>
+              </button>
+            )}
+          </For>
+        </div>
+      )}
+    </NavMenu>
+  );
+
+  // Inline status picker — a compact dot+label pill that moves a task between
+  // workflow states without the meatball (useful under non-status groupings).
+  const statusPicker = (t: Task) => (
+    <NavMenu
+      panelClass="w-36"
+      trigger={({ toggle }) => (
+        <button
+          class="shrink-0 flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-neutral-100 cursor-pointer"
+          title={`Status: ${STATUS_META[t.status].label}`}
+          onClick={e => {
+            e.stopPropagation();
+            toggle();
+          }}
+        >
+          <span class={`size-1.5 rounded-full ${STATUS_META[t.status].dot}`} />
+          <span class={`text-[10px] font-medium ${STATUS_META[t.status].text}`}>
+            {STATUS_META[t.status].label}
+          </span>
+        </button>
+      )}
+    >
+      {({ close }) => (
+        <div class="p-1" onClick={e => e.stopPropagation()}>
+          <For each={GROUPS}>
+            {g => (
+              <button
+                class="w-full flex items-center gap-2 px-2 py-1.5 rounded text-left text-xs text-neutral-700 hover:bg-neutral-50 cursor-pointer"
+                onClick={() => {
+                  close();
+                  setStatus(t, g.status);
+                }}
+              >
+                <span class={`size-1.5 rounded-full ${STATUS_META[g.status].dot}`} />
+                <span class="flex-1">{g.label}</span>
+                <Show when={t.status === g.status}>
+                  <Icon icon="iconoir:check" width="12" class="text-neutral-400" />
+                </Show>
+              </button>
+            )}
+          </For>
+        </div>
+      )}
+    </NavMenu>
+  );
+
+  const blockedBadge = (t: Task) => (
+    <Show when={isBlocked(t)}>
+      <span
+        class="shrink-0 flex items-center gap-0.5 text-[10px] font-medium text-amber-700 bg-amber-50 rounded-full px-1.5 py-px"
+        title={`Blocked by: ${openBlockers(t).map(b => b.title).join(", ")}`}
+      >
+        <Icon icon="iconoir:lock" width="10" /> Blocked
+      </span>
+    </Show>
+  );
+
   const taskRow = (t: Task) => (
     <div
       ref={el => rowRefs.set(t.id, el)}
@@ -452,12 +663,8 @@ export default function TasksPage() {
         <Icon icon="iconoir:check" width="10" />
       </button>
 
-      <Icon
-        icon={priorityMeta(t.priority).icon}
-        width="13"
-        class={`shrink-0 ${priorityMeta(t.priority).color}`}
-        title={priorityMeta(t.priority).label}
-      />
+      {priorityPicker(t)}
+      {blockedBadge(t)}
 
       <Show
         when={editingId() === t.id}
@@ -502,6 +709,8 @@ export default function TasksPage() {
           {t.projectName}
         </span>
       </Show>
+
+      {statusPicker(t)}
 
       <Show
         when={editingDueId() === t.id}
@@ -607,11 +816,7 @@ export default function TasksPage() {
             <Icon icon="iconoir:check" width="9" />
           </Show>
         </button>
-        <Icon
-          icon={priorityMeta(t.priority).icon}
-          width="12"
-          class={`shrink-0 mt-0.5 ${priorityMeta(t.priority).color}`}
-        />
+        <span class="shrink-0 mt-0.5">{priorityPicker(t, 12)}</span>
         <p
           class="flex-1 min-w-0 text-xs text-neutral-800 break-words"
           classList={{ "text-neutral-400 line-through": t.status === "done" }}
@@ -625,6 +830,7 @@ export default function TasksPage() {
             {t.projectName}
           </span>
         </Show>
+        {blockedBadge(t)}
         <Show when={t.dueDate}>{dueBadge(t)}</Show>
         <span class="flex-1" />
         <Show when={t.assigneeName}>
@@ -702,7 +908,7 @@ export default function TasksPage() {
                       class="flex items-center gap-1 text-[11px] text-neutral-500 hover:bg-neutral-100 rounded-md px-2 py-1.5 cursor-pointer"
                       onClick={toggle}
                     >
-                      <Icon icon="iconoir:sort" width="13" />
+                      <Icon icon="iconoir:view-grid" width="13" />
                       Group: {GROUP_BY_OPTIONS.find(o => o.value === groupBy())?.label}
                     </button>
                   )}
@@ -729,6 +935,40 @@ export default function TasksPage() {
                   )}
                 </NavMenu>
               </Show>
+
+              <NavMenu
+                panelClass="w-36"
+                trigger={({ toggle }) => (
+                  <button
+                    class="flex items-center gap-1 text-[11px] text-neutral-500 hover:bg-neutral-100 rounded-md px-2 py-1.5 cursor-pointer"
+                    onClick={toggle}
+                  >
+                    <Icon icon="iconoir:sort" width="13" />
+                    Sort: {SORT_BY_OPTIONS.find(o => o.value === sortBy())?.label}
+                  </button>
+                )}
+              >
+                {({ close }) => (
+                  <div class="p-1">
+                    <For each={SORT_BY_OPTIONS}>
+                      {o => (
+                        <button
+                          class="w-full flex items-center justify-between px-2 py-1.5 rounded text-left text-xs text-neutral-700 hover:bg-neutral-50 cursor-pointer"
+                          onClick={() => {
+                            close();
+                            setSortBy(o.value);
+                          }}
+                        >
+                          {o.label}
+                          <Show when={sortBy() === o.value}>
+                            <Icon icon="iconoir:check" width="12" class="text-neutral-400" />
+                          </Show>
+                        </button>
+                      )}
+                    </For>
+                  </div>
+                )}
+              </NavMenu>
 
               <button
                 class="text-[11px] rounded-md px-2 py-1.5 cursor-pointer"
@@ -770,6 +1010,32 @@ export default function TasksPage() {
               <p class="mb-4 text-xs text-rose-600 bg-rose-50 border border-rose-200 rounded px-3 py-2">
                 {error()}
               </p>
+            </Show>
+
+            <Show when={projectsNeedingTasks().length > 0}>
+              <div class="mb-4">
+                <Callout tone="info" icon="iconoir:media-image-list">
+                  <span class="font-medium">
+                    {projectsNeedingTasks().length} project
+                    {projectsNeedingTasks().length === 1 ? "" : "s"}
+                  </span>{" "}
+                  {projectsNeedingTasks().length === 1 ? "has" : "have"} deliverables but no tasks yet.
+                  <div class="mt-1.5 flex flex-wrap gap-1.5">
+                    <For each={projectsNeedingTasks()}>
+                      {p => (
+                        <button
+                          class="flex items-center gap-1 text-[11px] text-sky-800 bg-white/70 border border-sky-200 rounded-full px-2 py-0.5 hover:bg-white cursor-pointer"
+                          title={`Add a task to ${p.name}`}
+                          onClick={() => addTaskForProject(p)}
+                        >
+                          <Icon icon="iconoir:plus" width="11" />
+                          {p.name}
+                        </button>
+                      )}
+                    </For>
+                  </div>
+                </Callout>
+              </div>
             </Show>
 
             <Show when={view() === "list"}>
@@ -1003,6 +1269,10 @@ export default function TasksPage() {
         onPatch={applyPatch}
         onDelete={removeTask}
         onOpenProject={openProjectFor}
+        allTasks={items()}
+        links={linkItems()}
+        onAddLink={(from, to, type) => void addLink(from, to, type)}
+        onRemoveLink={removeLink}
       />
     </div>
   );

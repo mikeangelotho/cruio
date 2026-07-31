@@ -12,6 +12,7 @@ import {
 import { useViewerRole } from "../../lib/viewer";
 import { SettingsNav } from "../../components/SettingsNav";
 import { AppFooter } from "../../components/AppFooter";
+import { EntityOptions } from "../../components/EntityOptions";
 
 export const route = {
   preload: () => {
@@ -141,6 +142,14 @@ export default function EntitiesPage() {
                       <span class="text-[11px] text-neutral-400">
                         {c.projectCount ?? 0} project{c.projectCount === 1 ? "" : "s"}
                       </span>
+                      <EntityOptions
+                        entity={{ id: c.id, name: c.name }}
+                        isAdmin={true}
+                        sections={["archived"]}
+                        triggerIcon="iconoir:archive"
+                        triggerClass="text-neutral-400 hover:text-neutral-700 cursor-pointer p-1"
+                        onChanged={() => void refetch()}
+                      />
                       <button
                         class="text-neutral-400 hover:text-rose-600 cursor-pointer p-1"
                         title={`Delete ${c.name}`}

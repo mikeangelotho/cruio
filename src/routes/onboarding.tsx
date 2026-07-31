@@ -1,8 +1,8 @@
 import { Show, createSignal } from "solid-js";
-import { createAsync, useNavigate } from "@solidjs/router";
+import { createAsync, revalidate, useNavigate } from "@solidjs/router";
 import { Icon } from "@iconify-icon/solid";
 import { authClient } from "../lib/auth-client";
-import { requireUserQuery } from "../lib/org-api";
+import { myOrgsQuery, requireUserQuery, sessionQuery } from "../lib/org-api";
 
 export const route = { preload: () => requireUserQuery() };
 
@@ -35,6 +35,9 @@ export default function Onboarding() {
       return;
     }
     await authClient.organization.setActive({ organizationId: res.data.id });
+    // refresh the auth caches so "/" sees the new org instead of the stale
+    // empty list that would bounce us right back into onboarding
+    await revalidate([sessionQuery.key, requireUserQuery.key, myOrgsQuery.key]);
     setBusy(false);
     navigate("/", { replace: true });
   }

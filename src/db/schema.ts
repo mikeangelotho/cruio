@@ -306,6 +306,82 @@ export const tasks = sqliteTable(
   ],
 );
 
+// Shared org-level tags — a reusable, named, colored vocabulary applied to
+// projects and deliverables via the join tables below. Unique per (org, name).
+export const tags = sqliteTable(
+  "tags",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id),
+    name: text("name").notNull(),
+    color: text("color").notNull().default("neutral"),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [uniqueIndex("uidx_tags_org_name").on(table.organizationId, table.name)],
+);
+
+export const projectTags = sqliteTable(
+  "project_tags",
+  {
+    id: text("id").primaryKey(),
+    projectId: text("project_id")
+      .notNull()
+      .references(() => projects.id),
+    tagId: text("tag_id")
+      .notNull()
+      .references(() => tags.id),
+  },
+  (table) => [
+    uniqueIndex("uidx_project_tags").on(table.projectId, table.tagId),
+    index("idx_project_tags_tag").on(table.tagId),
+  ],
+);
+
+export const deliverableTags = sqliteTable(
+  "deliverable_tags",
+  {
+    id: text("id").primaryKey(),
+    deliverableId: text("deliverable_id")
+      .notNull()
+      .references(() => deliverables.id),
+    tagId: text("tag_id")
+      .notNull()
+      .references(() => tags.id),
+  },
+  (table) => [
+    uniqueIndex("uidx_deliverable_tags").on(table.deliverableId, table.tagId),
+    index("idx_deliverable_tags_tag").on(table.tagId),
+  ],
+);
+
+// Directed links between tasks. type "blocks": from blocks to (⇒ `to` is
+// blocked-by `from`). type "related": non-directional reference (one row,
+// rendered both ways). Unique per (from, to, type).
+export const taskLinks = sqliteTable(
+  "task_links",
+  {
+    id: text("id").primaryKey(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id),
+    fromTaskId: text("from_task_id")
+      .notNull()
+      .references(() => tasks.id),
+    toTaskId: text("to_task_id")
+      .notNull()
+      .references(() => tasks.id),
+    type: text("type").notNull(),
+    createdAt: integer("created_at").notNull(),
+  },
+  (table) => [
+    uniqueIndex("uidx_task_links").on(table.fromTaskId, table.toTaskId, table.type),
+    index("idx_task_links_from").on(table.fromTaskId),
+    index("idx_task_links_to").on(table.toTaskId),
+  ],
+);
+
 // Project scope attached to a pending guest invitation; copied into
 // project_shares when the invitation is accepted.
 export const invitationGrants = sqliteTable(

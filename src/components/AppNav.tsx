@@ -44,8 +44,8 @@ export function AppNav(props: { onOrgSwitch?: () => void }) {
     }`;
 
   return (
-    <nav class="min-h-12 px-4 flex items-center justify-start gap-6 bg-[#f8f7f7] border-b border-[#f0eeee]">
-      <div class="flex items-center gap-3">
+    <nav class="min-h-12 px-4 flex items-center gap-4 bg-[#f8f7f7] border-b border-[#f0eeee]">
+      <div class="flex-1 flex items-center gap-3 min-w-0">
         <Show when={activeOrg()}>
           {o => (
             <NavMenu
@@ -176,7 +176,7 @@ export function AppNav(props: { onOrgSwitch?: () => void }) {
         </Show>
       </div>
 
-      <div class="flex items-center gap-6 shrink-0">
+      <div class="flex items-center gap-6 shrink-0 justify-center">
         <Show when={!isGuest()}>
           <A href="/tasks" class={linkClass("/tasks")}>
             <Icon icon="iconoir:task-list" width="14" />
@@ -193,7 +193,7 @@ export function AppNav(props: { onOrgSwitch?: () => void }) {
         </A>
       </div>
 
-      <div class="flex-1 flex justify-end min-w-0 px-4">
+      <div class="flex-1 flex justify-end min-w-0">
         <GlobalSearch orgId={() => user()?.activeOrganizationId ?? null} />
       </div>
     </nav>
