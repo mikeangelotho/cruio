@@ -1510,10 +1510,10 @@ export function ProjectCanvas() {
   });
 
   return (
-    <div class="p-1 h-screen bg-[#fffefe]">
-      <div class="rounded-lg overflow-clip w-full flex flex-col h-full border border-[#eceaea]">
+    <div class="p-1 h-screen bg-canvas">
+      <div class="rounded-lg overflow-clip w-full flex flex-col h-full border border-line">
         {/* ---- nav ---- */}
-        <nav class="min-h-12 px-3 flex items-center justify-between gap-4 bg-[#f8f7f7] border-b border-[#f0eeee] z-10">
+        <nav class="min-h-12 px-3 flex items-center justify-between gap-4 bg-surface border-b border-hairline z-10">
           <div class="flex items-center gap-2 text-sm min-w-0">
             <button
               class="flex items-center text-neutral-500 hover:text-neutral-800 cursor-pointer p-1"
@@ -1526,7 +1526,7 @@ export function ProjectCanvas() {
               {store.state.graph?.project.name ?? "…"}
             </span>
             <Show when={store.state.graph?.project.entityName}>
-              <span class="bg-[#efeded] text-neutral-500 text-xs py-0.5 px-1.5 rounded truncate max-w-32 shrink-0">
+              <span class="bg-muted text-neutral-500 text-xs py-0.5 px-1.5 rounded truncate max-w-32 shrink-0">
                 {store.state.graph!.project.entityName}
               </span>
             </Show>
@@ -1635,13 +1635,13 @@ export function ProjectCanvas() {
               {d => (
                 <>
                   {/* version tabs */}
-                  <div class="flex items-center gap-0.5 bg-[#efeded] rounded p-0.5">
+                  <div class="flex items-center gap-0.5 bg-muted rounded p-0.5">
                     <For each={d().versions}>
                       {v => (
                         <button
                           class="text-[11px] px-1.5 py-0.5 rounded cursor-pointer"
                           classList={{
-                            "bg-white shadow-sm text-neutral-800": currentVersion()?.id === v.id,
+                            "bg-panel shadow-sm text-neutral-800": currentVersion()?.id === v.id,
                             "text-neutral-500 hover:text-neutral-800": currentVersion()?.id !== v.id,
                           }}
                           title={`Version ${v.number} (${v.number}) — right-click for actions`}
@@ -1699,7 +1699,7 @@ export function ProjectCanvas() {
 
                   {/* decision popover */}
                   <Show when={pendingDecision()}>
-                    <div class="absolute top-full right-0 mt-2 w-72 bg-white border border-neutral-200 rounded-lg shadow-xl p-3 z-30">
+                    <div class="absolute top-full right-0 mt-2 w-72 bg-panel border border-neutral-200 rounded-lg shadow-xl p-3 z-30">
                       <p class="text-xs font-semibold text-neutral-800 mb-2">
                         {pendingDecision() === "approved" ? "Approve" : "Request revisions on"}{" "}
                         {d().name} v{currentVersion()?.number}
@@ -1765,7 +1765,7 @@ export function ProjectCanvas() {
         <div class="flex-1 flex min-h-0">
           <div
             ref={container}
-            class="relative flex-1 overflow-hidden bg-[#fffefe] select-none"
+            class="relative flex-1 overflow-hidden bg-canvas select-none"
             classList={{
               "cursor-copy": noteTool() && !spaceHeld(),
               "cursor-grabbing": panning(),
@@ -1822,7 +1822,7 @@ export function ProjectCanvas() {
                                   when={renamingGroupId() !== g.id}
                                   fallback={
                                     <input
-                                      class="absolute left-2 top-0 text-[11px] font-medium rounded px-1.5 py-0.5 bg-white border border-violet-300 outline-none whitespace-nowrap pointer-events-auto select-text"
+                                      class="absolute left-2 top-0 text-[11px] font-medium rounded px-1.5 py-0.5 bg-panel border border-violet-300 outline-none whitespace-nowrap pointer-events-auto select-text"
                                       style={{
                                         transform: `scale(${1 / camera.cam.zoom}) translateY(-50%)`,
                                         "transform-origin": "0 50%",
@@ -1981,7 +1981,7 @@ export function ProjectCanvas() {
                                 <img
                                   src={fileUrl(item.v.fileName)}
                                   alt={`Version ${item.v.number}`}
-                                  class="absolute max-w-none bg-white shadow-[0_4px_24px_rgba(0,0,0,0.10)] cursor-pointer"
+                                  class="absolute max-w-none bg-panel shadow-[0_4px_24px_rgba(0,0,0,0.10)] cursor-pointer"
                                   draggable={false}
                                   style={{
                                     left: `${item.rect.x}px`,
@@ -2118,7 +2118,7 @@ export function ProjectCanvas() {
                   panelClass="w-44"
                   trigger={({ toggle }) => (
                     <button
-                      class="flex items-center gap-1 text-xs bg-neutral-900 text-white rounded px-2.5 py-1.5 hover:bg-neutral-700 cursor-pointer shadow-sm"
+                      class="flex items-center gap-1 text-xs bg-brand text-on-brand rounded px-2.5 py-1.5 hover:bg-neutral-700 cursor-pointer shadow-sm"
                       title="Add"
                       onClick={toggle}
                     >
@@ -2164,7 +2164,7 @@ export function ProjectCanvas() {
             {/* board tools — a light toolbar for placeable canvas objects + layout actions */}
             <Show when={!reviewId() && canEdit() && store.deliverables().length > 0}>
               <div
-                class="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center rounded-lg border border-neutral-200 bg-white/95 shadow-sm overflow-clip divide-x divide-neutral-100"
+                class="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center rounded-lg border border-neutral-200 bg-panel/95 shadow-sm overflow-clip divide-x divide-neutral-100"
                 onPointerDown={e => e.stopPropagation()}
                 onDblClick={e => e.stopPropagation()}
                 onWheel={e => e.stopPropagation()}
@@ -2186,7 +2186,7 @@ export function ProjectCanvas() {
             {/* navigation controls — the visible face of scroll-zoom and F */}
             <Show when={!locked()}>
               <div
-                class="absolute bottom-3 right-3 z-10 flex flex-col rounded-lg border border-neutral-200 bg-white/95 shadow-sm overflow-clip"
+                class="absolute bottom-3 right-3 z-10 flex flex-col rounded-lg border border-neutral-200 bg-panel/95 shadow-sm overflow-clip"
                 onPointerDown={e => e.stopPropagation()}
                 onDblClick={e => e.stopPropagation()}
                 onWheel={e => e.stopPropagation()}
@@ -2412,7 +2412,7 @@ export function ProjectCanvas() {
               {h => (
                 <span class="flex items-center gap-1 whitespace-nowrap">
                   <Show when={h.key}>
-                    <kbd class="text-[9px] font-semibold text-neutral-500 bg-white border border-neutral-200 rounded px-1 py-px">
+                    <kbd class="text-[9px] font-semibold text-neutral-500 bg-panel border border-neutral-200 rounded px-1 py-px">
                       {h.key}
                     </kbd>
                   </Show>
@@ -2441,12 +2441,12 @@ export function ProjectCanvas() {
       <ContextMenu state={ctxMenu()} onClose={() => setCtxMenu(null)} />
 
       <Show when={!current() && selected().size > 0}>
-        <div class="fixed bottom-16 left-1/2 -translate-x-1/2 z-30 flex items-center gap-1.5 bg-neutral-900 text-white rounded-lg shadow-2xl px-3 py-2 text-xs">
+        <div class="fixed bottom-16 left-1/2 -translate-x-1/2 z-30 flex items-center gap-1.5 bg-brand text-on-brand rounded-lg shadow-2xl px-3 py-2 text-xs">
           <Show
             when={!groupPromptOpen()}
             fallback={
               <input
-                class="text-xs text-neutral-900 bg-white rounded px-2 py-1 outline-none w-40"
+                class="text-xs text-neutral-900 bg-panel rounded px-2 py-1 outline-none w-40"
                 placeholder="Group label…"
                 ref={el => queueMicrotask(() => el.focus())}
                 onKeyDown={e => {
@@ -2468,7 +2468,7 @@ export function ProjectCanvas() {
             </span>
             <Show when={canEdit() && groupButtonAction()}>
               <button
-                class="flex items-center gap-1 px-2 py-1 rounded hover:bg-white/10 cursor-pointer"
+                class="flex items-center gap-1 px-2 py-1 rounded hover:bg-panel/10 cursor-pointer"
                 onClick={() => setGroupPromptOpen(true)}
               >
                 <Icon icon="iconoir:link" width="13" /> Group
@@ -2477,7 +2477,7 @@ export function ProjectCanvas() {
             <Show when={canEdit() && addToExistingGroupAction()}>
               {action => (
                 <button
-                  class="flex items-center gap-1 px-2 py-1 rounded hover:bg-white/10 cursor-pointer"
+                  class="flex items-center gap-1 px-2 py-1 rounded hover:bg-panel/10 cursor-pointer"
                   onClick={() => addSelectedToGroup(action())}
                 >
                   <Icon icon="iconoir:link" width="13" /> Add to “{action().label}”
@@ -2486,7 +2486,7 @@ export function ProjectCanvas() {
             </Show>
             <Show when={canEdit() && selectedGroups().size === 1 && selectionIsWholeGroups()}>
               <button
-                class="flex items-center gap-1 px-2 py-1 rounded hover:bg-white/10 cursor-pointer"
+                class="flex items-center gap-1 px-2 py-1 rounded hover:bg-panel/10 cursor-pointer"
                 onClick={ungroupSelected}
               >
                 <Icon icon="iconoir:link-slash" width="13" /> Ungroup
@@ -2494,14 +2494,14 @@ export function ProjectCanvas() {
             </Show>
             <Show when={canDeleteDeliverable()}>
               <button
-                class="flex items-center gap-1 px-2 py-1 rounded text-rose-300 hover:bg-white/10 cursor-pointer"
+                class="flex items-center gap-1 px-2 py-1 rounded text-rose-300 hover:bg-panel/10 cursor-pointer"
                 onClick={bulkDeleteDeliverables}
               >
                 <Icon icon="iconoir:trash" width="13" /> Delete
               </button>
             </Show>
             <button
-              class="p-1 rounded hover:bg-white/10 cursor-pointer"
+              class="p-1 rounded hover:bg-panel/10 cursor-pointer"
               title="Clear selection"
               onClick={clearSelection}
             >

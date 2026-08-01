@@ -74,7 +74,7 @@ export function FilterBar(props: {
                 <button
                   class="flex items-center gap-1 text-[11px] rounded px-2 py-1 cursor-pointer"
                   classList={{
-                    "bg-white shadow-sm text-neutral-800": seg().value === o.value,
+                    "bg-panel shadow-sm text-neutral-800": seg().value === o.value,
                     "text-neutral-500": seg().value !== o.value,
                   }}
                   onClick={() => seg().onChange(o.value)}

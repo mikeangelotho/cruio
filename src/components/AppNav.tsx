@@ -44,7 +44,7 @@ export function AppNav(props: { onOrgSwitch?: () => void }) {
     }`;
 
   return (
-    <nav class="min-h-12 px-4 flex items-center gap-4 bg-[#f8f7f7] border-b border-[#f0eeee]">
+    <nav class="min-h-12 px-4 flex items-center gap-4 bg-surface border-b border-hairline">
       <div class="flex-1 flex items-center gap-3 min-w-0">
         <Show when={activeOrg()}>
           {o => (

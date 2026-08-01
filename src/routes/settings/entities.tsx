@@ -75,8 +75,8 @@ export default function EntitiesPage() {
   }
 
   return (
-    <div class="p-1 h-screen bg-[#fffefe]">
-      <div class="rounded-lg overflow-clip w-full flex flex-col h-full border border-[#eceaea]">
+    <div class="p-1 h-screen bg-canvas">
+      <div class="rounded-lg overflow-clip w-full flex flex-col h-full border border-line">
         <SettingsNav
           title="Entities"
           orgName={activeOrg()?.name}
@@ -110,25 +110,25 @@ export default function EntitiesPage() {
                   <input
                     name="name"
                     required
-                    class="mt-1 w-full text-sm border border-neutral-200 rounded px-2 py-1.5 outline-none focus:border-sky-400 bg-white"
+                    class="mt-1 w-full text-sm border border-neutral-200 rounded px-2 py-1.5 outline-none focus:border-sky-400 bg-panel"
                     placeholder="e.g. Benzel-Busch, or Marketing Dept."
                   />
                 </label>
                 <button
                   type="submit"
-                  class="text-xs bg-neutral-900 text-white rounded px-3 py-2 hover:bg-neutral-700 cursor-pointer"
+                  class="text-xs bg-brand text-on-brand rounded px-3 py-2 hover:bg-neutral-700 cursor-pointer"
                 >
                   Add entity
                 </button>
               </form>
 
-              <div class="border border-neutral-200 rounded-lg bg-white divide-y divide-neutral-100">
+              <div class="border border-neutral-200 rounded-lg bg-panel divide-y divide-neutral-100">
                 <For each={entities() ?? []}>
                   {c => (
                     <div class="px-4 py-2.5 flex items-center gap-3">
                       <Icon icon="iconoir:building" width="14" class="text-neutral-300" />
                       <input
-                        class="flex-1 text-xs font-medium text-neutral-800 bg-transparent border border-transparent rounded px-1.5 py-1 outline-none hover:border-neutral-200 focus:border-sky-400 focus:bg-white"
+                        class="flex-1 text-xs font-medium text-neutral-800 bg-transparent border border-transparent rounded px-1.5 py-1 outline-none hover:border-neutral-200 focus:border-sky-400 focus:bg-panel"
                         value={c.name}
                         onKeyDown={e => {
                           if (e.key === "Enter") (e.currentTarget as HTMLInputElement).blur();

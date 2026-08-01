@@ -686,7 +686,7 @@ export default function TasksPage() {
         }
       >
         <input
-          class="flex-1 min-w-0 text-xs bg-white border border-sky-300 rounded px-1.5 py-1 outline-none"
+          class="flex-1 min-w-0 text-xs bg-panel border border-sky-300 rounded px-1.5 py-1 outline-none"
           value={t.title}
           ref={el => queueMicrotask(() => el.select())}
           onClick={e => e.stopPropagation()}
@@ -706,7 +706,7 @@ export default function TasksPage() {
       </Show>
 
       <Show when={t.projectName}>
-        <span class="shrink-0 text-[10px] text-neutral-500 bg-[#efeded] rounded px-1.5 py-0.5 truncate max-w-32">
+        <span class="shrink-0 text-[10px] text-neutral-500 bg-muted rounded px-1.5 py-0.5 truncate max-w-32">
           {t.projectName}
         </span>
       </Show>
@@ -791,7 +791,7 @@ export default function TasksPage() {
         e.preventDefault();
         openTaskMenu(t, e.clientX, e.clientY);
       }}
-      class="group bg-white border border-neutral-200 border-l-4 rounded-lg p-2.5 cursor-pointer hover:border-neutral-300 hover:shadow-sm"
+      class="group bg-panel border border-neutral-200 border-l-4 rounded-lg p-2.5 cursor-pointer hover:border-neutral-300 hover:shadow-sm"
       classList={{
         "bg-amber-50": highlightId() === t.id,
         [priorityMeta(t.priority).bg]: highlightId() !== t.id && !!priorityMeta(t.priority).bg,
@@ -827,7 +827,7 @@ export default function TasksPage() {
       </div>
       <div class="flex items-center gap-1.5 flex-wrap">
         <Show when={t.projectName}>
-          <span class="text-[10px] text-neutral-500 bg-[#efeded] rounded px-1.5 py-0.5 truncate max-w-24">
+          <span class="text-[10px] text-neutral-500 bg-muted rounded px-1.5 py-0.5 truncate max-w-24">
             {t.projectName}
           </span>
         </Show>
@@ -842,8 +842,8 @@ export default function TasksPage() {
   );
 
   return (
-    <div class="p-1 h-screen bg-[#fffefe]">
-      <div class="rounded-lg overflow-clip w-full flex flex-col h-full border border-[#eceaea]">
+    <div class="p-1 h-screen bg-canvas">
+      <div class="rounded-lg overflow-clip w-full flex flex-col h-full border border-line">
         <AppNav onOrgSwitch={() => void refetch()} />
 
         <main class="flex-1 overflow-y-auto p-8">
@@ -869,7 +869,7 @@ export default function TasksPage() {
                 </Show>
               </div>
               <button
-                class="flex items-center gap-1 text-xs bg-neutral-900 text-white rounded-md px-3 py-1.5 hover:bg-neutral-700 cursor-pointer"
+                class="flex items-center gap-1 text-xs bg-brand text-on-brand rounded-md px-3 py-1.5 hover:bg-neutral-700 cursor-pointer"
                 onClick={() => setCreatingIn("todo")}
               >
                 <Icon icon="iconoir:plus" width="14" /> New task
@@ -937,7 +937,7 @@ export default function TasksPage() {
                     <For each={projectsNeedingTasks()}>
                       {p => (
                         <button
-                          class="flex items-center gap-1 text-[11px] text-sky-800 bg-white/70 border border-sky-200 rounded-full px-2 py-0.5 hover:bg-white cursor-pointer"
+                          class="flex items-center gap-1 text-[11px] text-sky-800 bg-panel/70 border border-sky-200 rounded-full px-2 py-0.5 hover:bg-panel cursor-pointer"
                           title={`Add a task to ${p.name}`}
                           onClick={() => addTaskForProject(p)}
                         >
@@ -981,12 +981,12 @@ export default function TasksPage() {
                       </Show>
                     </div>
                     <Show when={!collapsed().has(`${groupBy()}:${group.key}`)}>
-                      <div class="border border-neutral-200 rounded-lg bg-white divide-y divide-neutral-100">
+                      <div class="border border-neutral-200 rounded-lg bg-panel divide-y divide-neutral-100">
                         <Show when={groupBy() === "status" && creatingIn() === group.key}>
                           <div class="px-3 py-2 flex items-center gap-2.5">
                             <span class="w-4 h-4 rounded-full border border-dashed border-neutral-300" />
                             <input
-                              class="flex-1 text-xs bg-white outline-none placeholder:text-neutral-400"
+                              class="flex-1 text-xs bg-panel outline-none placeholder:text-neutral-400"
                               placeholder="Task title — Enter to add, Esc to cancel"
                               ref={el => queueMicrotask(() => el.focus())}
                               onKeyDown={e => {
@@ -1053,9 +1053,9 @@ export default function TasksPage() {
                       </div>
                       <div class="flex flex-col gap-2">
                         <Show when={creatingIn() === col.status}>
-                          <div class="bg-white border border-sky-300 rounded-lg p-2">
+                          <div class="bg-panel border border-sky-300 rounded-lg p-2">
                             <input
-                              class="w-full text-xs bg-white outline-none placeholder:text-neutral-400"
+                              class="w-full text-xs bg-panel outline-none placeholder:text-neutral-400"
                               placeholder="Task title — Enter to add"
                               ref={el => queueMicrotask(() => el.focus())}
                               onKeyDown={e => {
@@ -1101,10 +1101,10 @@ export default function TasksPage() {
       </div>
 
       <Show when={selected().size > 0}>
-        <div class="fixed bottom-5 left-1/2 -translate-x-1/2 z-30 flex items-center gap-1.5 bg-neutral-900 text-white rounded-lg shadow-2xl px-3 py-2 text-xs">
+        <div class="fixed bottom-5 left-1/2 -translate-x-1/2 z-30 flex items-center gap-1.5 bg-brand text-on-brand rounded-lg shadow-2xl px-3 py-2 text-xs">
           <span class="px-2 font-medium">{selected().size} selected</span>
           <button
-            class="flex items-center gap-1 rounded-md px-2 py-1 hover:bg-white/10 cursor-pointer"
+            class="flex items-center gap-1 rounded-md px-2 py-1 hover:bg-panel/10 cursor-pointer"
             onClick={bulkMarkDone}
           >
             <Icon icon="iconoir:check" width="13" /> Mark done
@@ -1114,7 +1114,7 @@ export default function TasksPage() {
             panelClass="w-40"
             trigger={({ toggle }) => (
               <button
-                class="flex items-center gap-1 rounded-md px-2 py-1 hover:bg-white/10 cursor-pointer"
+                class="flex items-center gap-1 rounded-md px-2 py-1 hover:bg-panel/10 cursor-pointer"
                 onClick={toggle}
               >
                 <Icon icon="iconoir:flag-outline" width="13" /> Priority
@@ -1145,7 +1145,7 @@ export default function TasksPage() {
             panelClass="w-44"
             trigger={({ toggle }) => (
               <button
-                class="flex items-center gap-1 rounded-md px-2 py-1 hover:bg-white/10 cursor-pointer"
+                class="flex items-center gap-1 rounded-md px-2 py-1 hover:bg-panel/10 cursor-pointer"
                 onClick={toggle}
               >
                 <Icon icon="iconoir:user" width="13" /> Assign
@@ -1172,13 +1172,13 @@ export default function TasksPage() {
             )}
           </NavMenu>
           <button
-            class="flex items-center gap-1 rounded-md px-2 py-1 text-rose-300 hover:bg-white/10 cursor-pointer"
+            class="flex items-center gap-1 rounded-md px-2 py-1 text-rose-300 hover:bg-panel/10 cursor-pointer"
             onClick={bulkDelete}
           >
             <Icon icon="iconoir:trash" width="13" /> Delete
           </button>
           <button
-            class="ml-1 rounded-md p-1 hover:bg-white/10 cursor-pointer"
+            class="ml-1 rounded-md p-1 hover:bg-panel/10 cursor-pointer"
             title="Clear selection"
             onClick={clearSelection}
           >

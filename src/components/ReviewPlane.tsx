@@ -51,7 +51,7 @@ export function ReviewPlane(props: {
         fallback={
           <div
             data-plane="drop"
-            class="w-full h-full rounded-sm border-2 border-dashed border-neutral-300 bg-white/60 flex flex-col items-center justify-center gap-3 text-neutral-400"
+            class="w-full h-full rounded-sm border-2 border-dashed border-neutral-300 bg-panel/60 flex flex-col items-center justify-center gap-3 text-neutral-400"
           >
             <Icon
               icon={props.canUpload ? "iconoir:media-image-plus" : "iconoir:clock"}
@@ -72,7 +72,7 @@ export function ReviewPlane(props: {
             alt={props.d.name}
             width={props.rect.w}
             height={props.rect.h}
-            class="w-full h-full shadow-[0_4px_24px_rgba(0,0,0,0.10)] bg-white select-none cursor-crosshair"
+            class="w-full h-full shadow-[0_4px_24px_rgba(0,0,0,0.10)] bg-panel select-none cursor-crosshair"
             draggable={false}
           />
         )}

@@ -373,11 +373,11 @@ export function GlobalSearch(props: GlobalSearchProps) {
     return (
       <Show when={props.modalOpen}>
         <div
-          class="fixed inset-0 z-50 bg-black/10 flex items-start justify-center pt-[18vh]"
+          class="fixed inset-0 z-50 bg-black/10 dark:bg-black/50 flex items-start justify-center pt-[18vh]"
           onClick={closeSearch}
         >
           <div
-            class="w-[520px] max-w-[90vw] bg-white rounded-xl shadow-2xl border border-neutral-200 overflow-hidden"
+            class="w-[520px] max-w-[90vw] bg-panel rounded-xl shadow-2xl border border-neutral-200 overflow-hidden"
             onClick={e => e.stopPropagation()}
           >
             <div class="flex items-center gap-2 px-3 py-2.5 border-b border-neutral-100">
@@ -395,7 +395,7 @@ export function GlobalSearch(props: GlobalSearchProps) {
 
   return (
     <div ref={wrapperRef} class="relative w-full max-w-md" onClick={e => e.stopPropagation()}>
-      <div class="flex items-center gap-2 px-2.5 py-1.5 rounded-lg outline outline-neutral-200/80 bg-white/60 focus-within:bg-white focus-within:outline-neutral-300">
+      <div class="flex items-center gap-2 px-2.5 py-1.5 rounded-lg outline outline-neutral-200/80 bg-panel/60 focus-within:bg-panel focus-within:outline-neutral-300">
         <Icon icon="iconoir:search" width="13" class="text-neutral-400 shrink-0" />
         <ScopeChip />
         <SearchField />
@@ -404,7 +404,7 @@ export function GlobalSearch(props: GlobalSearchProps) {
         </Show>
       </div>
       <Show when={open()}>
-        <div class="absolute top-full left-0 mt-1 w-[420px] max-w-[90vw] bg-white border border-neutral-200 rounded-lg shadow-xl z-30">
+        <div class="absolute top-full left-0 mt-1 w-[420px] max-w-[90vw] bg-panel border border-neutral-200 rounded-lg shadow-xl z-30">
           <ResultsPanel />
         </div>
       </Show>

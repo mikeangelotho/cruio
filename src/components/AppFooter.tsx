@@ -6,6 +6,7 @@ import { authClient } from "../lib/auth-client";
 import { useViewerRole } from "../lib/viewer";
 import { Avatar } from "./Avatar";
 import { NavMenu } from "./NavMenu";
+import { theme, toggleTheme } from "../lib/theme";
 
 /**
  * The single app status bar, used on every screen (main pages and the
@@ -31,7 +32,7 @@ export function AppFooter(props: { start?: JSX.Element; children?: JSX.Element }
   }
 
   return (
-    <footer class="relative min-h-8 px-3 py-1 flex gap-3 items-center justify-between bg-[#f8f7f7] border-t border-[#f0eeee] text-[11px] text-neutral-400">
+    <footer class="relative min-h-8 px-3 py-1 flex gap-3 items-center justify-between bg-surface border-t border-hairline text-[11px] text-neutral-400">
       <div class="flex items-center gap-2 min-w-0">
         <Show when={user()}>
           {u => (
@@ -63,6 +64,19 @@ export function AppFooter(props: { start?: JSX.Element; children?: JSX.Element }
                   </div>
                   <div class="p-2">
                     <button
+                      class="rounded-md w-full flex items-center justify-between px-3 py-2 text-left text-xs text-neutral-600 hover:bg-neutral-50 cursor-pointer"
+                      onClick={toggleTheme}
+                    >
+                      <span class="flex items-center gap-2">
+                        <Icon
+                          icon={theme() === "dark" ? "iconoir:sun-light" : "iconoir:half-moon"}
+                          width="13"
+                        />
+                        {theme() === "dark" ? "Light mode" : "Dark mode"}
+                      </span>
+                      <span class="text-[10px] text-neutral-400 capitalize">{theme()}</span>
+                    </button>
+                    <button
                       class="rounded-md w-full flex items-center gap-2 px-3 py-2 text-left text-xs text-neutral-600 hover:bg-neutral-50 cursor-pointer"
                       onClick={() => {
                         close();
@@ -83,7 +97,7 @@ export function AppFooter(props: { start?: JSX.Element; children?: JSX.Element }
         href="/"
         class="absolute left-1/2 -translate-x-1/2 opacity-20 hover:opacity-100 transition-opacity ease-in-out duration-150"
       >
-        <img style="height: 16px;" src="/CRIO_Logo-2026.svg" />
+        <img class="dark:invert" style="height: 16px;" src="/CRIO_Logo-2026.svg" />
       </a>
       <div class="flex items-center gap-2.5 shrink-0 justify-end">{props.children}</div>
     </footer>

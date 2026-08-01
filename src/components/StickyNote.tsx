@@ -123,7 +123,7 @@ export function StickyNote(props: {
           <div class="px-2.5 pb-1 flex flex-wrap gap-1">
             <For each={props.o.tags}>
               {t => (
-                <span class="text-[9px] text-neutral-600 bg-white/60 rounded px-1 py-px">{t}</span>
+                <span class="text-[9px] text-neutral-600 bg-panel/60 rounded px-1 py-px">{t}</span>
               )}
             </For>
           </div>

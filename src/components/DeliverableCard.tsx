@@ -92,7 +92,7 @@ export function DeliverableCard(props: {
   return (
     <div
       data-card={props.d.id}
-      class="group absolute select-none rounded-lg bg-white border-2 shadow-[0_1px_4px_rgba(0,0,0,0.06)] hover:shadow-[0_2px_10px_rgba(0,0,0,0.10)] transition-shadow cursor-default outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+      class="group absolute select-none rounded-lg bg-panel border-2 shadow-[0_1px_4px_rgba(0,0,0,0.06)] hover:shadow-[0_2px_10px_rgba(0,0,0,0.10)] transition-shadow cursor-default outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
       classList={{
         "border-sky-500": !!props.selected || !!props.active,
         "border-neutral-200 hover:border-neutral-300": !props.selected && !props.active,
@@ -129,7 +129,7 @@ export function DeliverableCard(props: {
         <button
           class="absolute top-1.5 left-1.5 z-10 w-4 h-4 rounded border flex items-center justify-center cursor-pointer"
           classList={{
-            "border-neutral-300 bg-white opacity-0 group-hover:opacity-100": !props.selected,
+            "border-neutral-300 bg-panel opacity-0 group-hover:opacity-100": !props.selected,
             "border-sky-500 bg-sky-500 text-white opacity-100": !!props.selected,
           }}
           title="Select"
@@ -149,7 +149,7 @@ export function DeliverableCard(props: {
           never hidden behind a hover-only footer control. */}
       <Show when={props.onMenu}>
         <button
-          class="absolute top-1.5 right-1.5 z-10 p-0.5 rounded border border-neutral-200 bg-white/90 text-neutral-400 shadow-sm hover:text-neutral-700 hover:bg-white cursor-pointer transition-opacity"
+          class="absolute top-1.5 right-1.5 z-10 p-0.5 rounded border border-neutral-200 bg-panel/90 text-neutral-400 shadow-sm hover:text-neutral-700 hover:bg-panel cursor-pointer transition-opacity"
           classList={{
             "opacity-0 group-hover:opacity-100": !props.selected && !props.active,
             "opacity-100": !!props.selected || !!props.active,

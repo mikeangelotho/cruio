@@ -1,9 +1,59 @@
 @import "tailwindcss";
 
-/* Cruio is light-mode by design (whitepaper V1). */
+/* Dark theme is opt-in via [data-theme="dark"] on <html> (see the no-flash
+   init in entry-server + lib/theme.ts). */
+@custom-variant dark (&:where([data-theme="dark"], [data-theme="dark"] *));
+
+@theme {
+  /* Semantic surface tokens — the recurring greys the app paints with. Light
+     values match the originals exactly, so light mode is pixel-identical. */
+  --color-canvas: #fffefe; /* page background */
+  --color-surface: #f8f7f7; /* nav / footer / toolbars */
+  --color-panel: #ffffff; /* cards, sidebars, popovers, inputs */
+  --color-hairline: #f0eeee; /* faint separators */
+  --color-line: #eceaea; /* standard borders */
+  --color-muted: #efeded; /* neutral chips */
+
+  /* Primary ("brand") solid button — a dark chip in light mode that becomes a
+     light chip in dark mode, keeping its label readable in both. */
+  --color-brand: #171717;
+  --color-brand-hover: #404040;
+  --color-on-brand: #fafafa;
+}
+
+/* Dark theme: invert the neutral ramp (so every text-/bg-/border-neutral-*
+   utility flips at once) and re-point the surface + brand tokens. Accent
+   scales (sky/emerald/amber/rose/violet) are intentionally left alone. */
+:root[data-theme="dark"] {
+  --color-neutral-50: #1b1b1f;
+  --color-neutral-100: #212127;
+  --color-neutral-200: #2b2b32;
+  --color-neutral-300: #3a3a42;
+  --color-neutral-400: #6e6e78;
+  --color-neutral-500: #9a9aa4;
+  --color-neutral-600: #b8b8c0;
+  --color-neutral-700: #d2d2d8;
+  --color-neutral-800: #e9e9ee;
+  --color-neutral-900: #f6f6f8;
+  --color-neutral-950: #fcfcfd;
+
+  --color-canvas: #0e0e11;
+  --color-surface: #16161a;
+  --color-panel: #1c1c21;
+  --color-hairline: #26262c;
+  --color-line: #2e2e35;
+  --color-muted: #26262c;
+
+  --color-brand: #f6f6f8;
+  --color-brand-hover: #d2d2d8;
+  --color-on-brand: #16161a;
+
+  color-scheme: dark;
+}
+
 body {
-  background: #fffefe;
-  color: #262626;
+  background: var(--color-canvas);
+  color: var(--color-neutral-800);
   overscroll-behavior: none;
 }
 

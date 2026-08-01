@@ -39,7 +39,7 @@ export function NavMenu(props: {
       {props.trigger({ open, toggle })}
       <Show when={open()}>
         <div
-          class={`absolute z-30 bg-white border border-neutral-200 rounded-lg shadow-xl ${
+          class={`absolute z-30 bg-panel border border-neutral-200 rounded-lg shadow-xl ${
             props.anchor === "top" ? "bottom-full mb-1" : "top-full mt-1"
           } ${props.align === "right" ? "right-0" : "left-0"} ${props.panelClass ?? "w-52"}`}
         >

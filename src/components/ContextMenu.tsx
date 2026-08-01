@@ -61,7 +61,7 @@ export function ContextMenu(props: { state: MenuState | null; onClose: () => voi
         }}
       >
         <div
-          class="absolute bg-white border border-neutral-200 rounded-lg shadow-xl py-1 select-none"
+          class="absolute bg-panel border border-neutral-200 rounded-lg shadow-xl py-1 select-none"
           style={{ left: `${pos().x}px`, top: `${pos().y}px`, width: `${MENU_W}px` }}
           onClick={e => e.stopPropagation()}
         >

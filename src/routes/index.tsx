@@ -302,8 +302,8 @@ export default function Home() {
   }
 
   return (
-    <div class="p-1 h-screen bg-[#fffefe]">
-      <div class="rounded-lg overflow-clip w-full flex flex-col h-full border border-[#eceaea]">
+    <div class="p-1 h-screen bg-canvas">
+      <div class="rounded-lg overflow-clip w-full flex flex-col h-full border border-line">
         <AppNav
           onOrgSwitch={() => {
             void refetch();
@@ -331,7 +331,7 @@ export default function Home() {
               <Show when={isAdmin()}>
                 <button
                   ref={newProjectBtnRef}
-                  class="flex items-center gap-1 text-xs bg-neutral-900 text-white rounded-md px-3 py-1.5 hover:bg-neutral-700 cursor-pointer"
+                  class="flex items-center gap-1 text-xs bg-brand text-on-brand rounded-md px-3 py-1.5 hover:bg-neutral-700 cursor-pointer"
                   onClick={() => setCreating((c) => !c)}
                 >
                   <Icon icon="iconoir:plus" width="14" /> New project
@@ -378,7 +378,7 @@ export default function Home() {
               <form
                 ref={createFormRef}
                 onSubmit={submit}
-                class="relative mb-6 p-4 border border-neutral-200 rounded-lg bg-white flex gap-3 items-end"
+                class="relative mb-6 p-4 border border-neutral-200 rounded-lg bg-panel flex gap-3 items-end"
               >
                 <button
                   type="button"
@@ -404,7 +404,7 @@ export default function Home() {
                     <div class="flex-1 text-xs text-neutral-500">
                       Entity
                       <div class="mt-1 flex items-center h-[30px]">
-                        <span class="bg-[#efeded] text-neutral-600 text-xs py-1 px-2 rounded">
+                        <span class="bg-muted text-neutral-600 text-xs py-1 px-2 rounded">
                           {scope.entity()!.name}
                         </span>
                       </div>
@@ -414,7 +414,7 @@ export default function Home() {
                   <label class="flex-1 text-xs text-neutral-500">
                     Entity
                     <select
-                      class="mt-1 block w-full text-sm border border-neutral-200 rounded px-2 py-1.5 outline-none focus:border-sky-400 bg-white"
+                      class="mt-1 block w-full text-sm border border-neutral-200 rounded px-2 py-1.5 outline-none focus:border-sky-400 bg-panel"
                       onChange={(e) => setFormEntity(e.currentTarget.value)}
                     >
                       <option value="" selected={formEntity() === ""}>
@@ -460,7 +460,7 @@ export default function Home() {
                 </div>
                 <button
                   type="submit"
-                  class="text-xs bg-neutral-900 text-white rounded px-3 py-2 hover:bg-neutral-700 cursor-pointer"
+                  class="text-xs bg-brand text-on-brand rounded px-3 py-2 hover:bg-neutral-700 cursor-pointer"
                 >
                   Create
                 </button>
@@ -503,7 +503,7 @@ export default function Home() {
                         <For each={g.projects}>
                           {(p) => (
                     <div
-                      class="group text-left border rounded-lg bg-white overflow-hidden hover:shadow-sm transition-all cursor-pointer"
+                      class="group text-left border rounded-lg bg-panel overflow-hidden hover:shadow-sm transition-all cursor-pointer"
                       classList={{
                         "border-sky-500 ring-2 ring-sky-500": selected().has(p.id),
                         "border-neutral-200 hover:border-neutral-300": !selected().has(p.id),
@@ -535,7 +535,7 @@ export default function Home() {
                         </span>
                         <Show when={isAdmin()}>
                           <button
-                            class="absolute top-2 left-2 w-4 h-4 rounded border flex items-center justify-center cursor-pointer bg-white/90"
+                            class="absolute top-2 left-2 w-4 h-4 rounded border flex items-center justify-center cursor-pointer bg-panel/90"
                             classList={{
                               "border-neutral-300 opacity-0 group-hover:opacity-100": !selected().has(p.id),
                               "border-sky-500 bg-sky-500 text-white opacity-100": selected().has(p.id),
@@ -561,7 +561,7 @@ export default function Home() {
                           <div class="flex items-center gap-1.5 shrink-0">
                             {/* entity chip is redundant once scoped into that entity */}
                             <Show when={!scope.entity() && groupMode() !== "entity" && p.entityName}>
-                              <span class="bg-[#efeded] text-neutral-500 text-xs py-0.5 px-1.5 rounded truncate max-w-28">
+                              <span class="bg-muted text-neutral-500 text-xs py-0.5 px-1.5 rounded truncate max-w-28">
                                 {p.entityName}
                               </span>
                             </Show>
@@ -649,16 +649,16 @@ export default function Home() {
       </div>
       <ContextMenu state={ctxMenu()} onClose={() => setCtxMenu(null)} />
       <Show when={selected().size > 0}>
-        <div class="fixed bottom-5 left-1/2 -translate-x-1/2 z-30 flex items-center gap-1.5 bg-neutral-900 text-white rounded-lg shadow-2xl px-3 py-2 text-xs">
+        <div class="fixed bottom-5 left-1/2 -translate-x-1/2 z-30 flex items-center gap-1.5 bg-brand text-on-brand rounded-lg shadow-2xl px-3 py-2 text-xs">
           <span class="px-2 font-medium">{selected().size} selected</span>
           <button
-            class="flex items-center gap-1 px-2 py-1 rounded hover:bg-white/10 cursor-pointer"
+            class="flex items-center gap-1 px-2 py-1 rounded hover:bg-panel/10 cursor-pointer"
             onClick={() => void bulkArchive()}
           >
             <Icon icon="iconoir:archive" width="13" /> Archive
           </button>
           <button
-            class="p-1 rounded hover:bg-white/10 cursor-pointer"
+            class="p-1 rounded hover:bg-panel/10 cursor-pointer"
             title="Clear selection"
             onClick={clearSelection}
           >

@@ -41,7 +41,7 @@ export function FileCard(props: {
   };
   return (
     <div
-      class="group text-left border border-neutral-200 rounded-lg bg-white hover:border-neutral-300 hover:shadow-sm transition-all cursor-pointer overflow-clip select-none"
+      class="group text-left border border-neutral-200 rounded-lg bg-panel hover:border-neutral-300 hover:shadow-sm transition-all cursor-pointer overflow-clip select-none"
       classList={{ "ring-2 ring-sky-400": props.highlighted }}
       onClick={e => props.onClick?.(e)}
       onContextMenu={e => {
@@ -49,7 +49,7 @@ export function FileCard(props: {
         props.onContextMenu?.(e);
       }}
     >
-      <div class="h-24 bg-[#f6f5f5] flex items-center justify-center overflow-clip p-2">
+      <div class="h-24 bg-surface flex items-center justify-center overflow-clip p-2">
         <Show
           when={kind() === "image"}
           fallback={

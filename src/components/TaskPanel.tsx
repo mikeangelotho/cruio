@@ -137,7 +137,7 @@ export function TaskPanel(props: {
       {task => (
         <div class="fixed inset-0 z-40">
           <div class="absolute inset-0 bg-neutral-900/10" onClick={props.onClose} />
-          <div class="absolute right-0 top-0 bottom-0 w-[420px] max-w-full bg-white border-l border-neutral-200 shadow-2xl flex flex-col">
+          <div class="absolute right-0 top-0 bottom-0 w-[420px] max-w-full bg-panel border-l border-neutral-200 shadow-2xl flex flex-col">
             <div class="px-4 py-3 flex items-center justify-between border-b border-neutral-100">
               <div class="flex gap-1">
                 <For each={STATUSES}>
@@ -145,7 +145,7 @@ export function TaskPanel(props: {
                     <button
                       class="text-[11px] rounded-md px-2 py-1 cursor-pointer"
                       classList={{
-                        "bg-neutral-900 text-white": task().status === s.value,
+                        "bg-brand text-on-brand": task().status === s.value,
                         "text-neutral-500 hover:bg-neutral-100": task().status !== s.value,
                       }}
                       onClick={() =>

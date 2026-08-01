@@ -150,8 +150,8 @@ export default function MembersPage() {
   }
 
   return (
-    <div class="p-1 h-screen bg-[#fffefe]">
-      <div class="rounded-lg overflow-clip w-full flex flex-col h-full border border-[#eceaea]">
+    <div class="p-1 h-screen bg-canvas">
+      <div class="rounded-lg overflow-clip w-full flex flex-col h-full border border-line">
         <SettingsNav
           title="Members"
           orgName={activeOrg()?.name}
@@ -178,7 +178,7 @@ export default function MembersPage() {
                 <h2 class="text-sm font-semibold text-neutral-800 mb-3">Invite someone</h2>
                 <form
                   onSubmit={invite}
-                  class="p-4 border border-neutral-200 rounded-lg bg-white space-y-3"
+                  class="p-4 border border-neutral-200 rounded-lg bg-panel space-y-3"
                 >
                   <div class="flex gap-3 items-end">
                     <label class="flex-1 text-xs text-neutral-500">
@@ -194,7 +194,7 @@ export default function MembersPage() {
                     <label class="text-xs text-neutral-500">
                       Role
                       <select
-                        class="mt-1 block text-sm border border-neutral-200 rounded px-2 py-1.5 outline-none focus:border-sky-400 bg-white"
+                        class="mt-1 block text-sm border border-neutral-200 rounded px-2 py-1.5 outline-none focus:border-sky-400 bg-panel"
                         onChange={e => setInviteRole(e.currentTarget.value as OrgRole)}
                       >
                         <For each={ROLES}>
@@ -209,7 +209,7 @@ export default function MembersPage() {
                     <button
                       type="submit"
                       disabled={busy()}
-                      class="text-xs bg-neutral-900 text-white rounded px-3 py-2 hover:bg-neutral-700 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                      class="text-xs bg-brand text-on-brand rounded px-3 py-2 hover:bg-neutral-700 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                     >
                       Create invite link
                     </button>
@@ -256,7 +256,7 @@ export default function MembersPage() {
               <Show when={(invitations() ?? []).length > 0}>
                 <section>
                   <h2 class="text-sm font-semibold text-neutral-800 mb-3">Pending invitations</h2>
-                  <div class="border border-neutral-200 rounded-lg bg-white divide-y divide-neutral-100">
+                  <div class="border border-neutral-200 rounded-lg bg-panel divide-y divide-neutral-100">
                     <For each={invitations()}>
                       {i => (
                         <div class="px-4 py-2.5 flex items-center gap-3">
@@ -297,7 +297,7 @@ export default function MembersPage() {
               {/* members */}
               <section>
                 <h2 class="text-sm font-semibold text-neutral-800 mb-3">Members</h2>
-                <div class="border border-neutral-200 rounded-lg bg-white divide-y divide-neutral-100">
+                <div class="border border-neutral-200 rounded-lg bg-panel divide-y divide-neutral-100">
                   <For each={members() ?? []}>
                     {m => {
                       const self = () => m.userId === user()?.userId;
@@ -336,7 +336,7 @@ export default function MembersPage() {
                               }
                             >
                               <select
-                                class="text-[11px] border border-neutral-200 rounded px-1.5 py-1 bg-white outline-none focus:border-sky-400 cursor-pointer"
+                                class="text-[11px] border border-neutral-200 rounded px-1.5 py-1 bg-panel outline-none focus:border-sky-400 cursor-pointer"
                                 onChange={e =>
                                   void changeRole(m.memberId, e.currentTarget.value as OrgRole)
                                 }

@@ -290,13 +290,13 @@ export default function LibraryPage() {
     (listing()?.folders ?? []).find(f => f.id === file.folderId)?.entityName ?? null;
 
   return (
-    <div class="p-1 h-screen bg-[#fffefe]">
-      <div class="rounded-lg overflow-clip w-full flex flex-col h-full border border-[#eceaea]">
+    <div class="p-1 h-screen bg-canvas">
+      <div class="rounded-lg overflow-clip w-full flex flex-col h-full border border-line">
         <AppNav onOrgSwitch={() => void refetch()} />
 
         <div class="flex-1 flex min-h-0">
           {/* folder rail */}
-          <aside class="w-56 shrink-0 border-r border-[#f0eeee] bg-[#fbfafa] p-3 overflow-y-auto">
+          <aside class="w-56 shrink-0 border-r border-hairline bg-panel p-3 overflow-y-auto">
             <button
               class="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md text-left text-xs cursor-pointer mb-2"
               classList={{
@@ -327,7 +327,7 @@ export default function LibraryPage() {
                   name="name"
                   required
                   placeholder="Folder name"
-                  class="w-full text-xs border border-neutral-200 rounded px-2 py-1 outline-none focus:border-sky-400 bg-white"
+                  class="w-full text-xs border border-neutral-200 rounded px-2 py-1 outline-none focus:border-sky-400 bg-panel"
                   ref={el => queueMicrotask(() => el.focus())}
                   onKeyDown={e => {
                     if (e.key === "Escape") setAddingFolder(false);
@@ -388,7 +388,7 @@ export default function LibraryPage() {
               </div>
               <Show when={canUpload()}>
                 <button
-                  class="flex items-center gap-1 text-xs bg-neutral-900 text-white rounded-md px-3 py-1.5 hover:bg-neutral-700 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                  class="flex items-center gap-1 text-xs bg-brand text-on-brand rounded-md px-3 py-1.5 hover:bg-neutral-700 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                   disabled={!uploadTargetId()}
                   title={uploadTargetId() ? "Upload files (U)" : "Select a folder to upload into"}
                   onClick={pickAndUpload}
