@@ -72,7 +72,7 @@ export function ReviewPlane(props: {
             alt={props.d.name}
             width={props.rect.w}
             height={props.rect.h}
-            class="w-full h-full shadow-[0_4px_24px_rgba(0,0,0,0.10)] bg-panel select-none cursor-crosshair"
+            class="w-full h-full shadow-[var(--shadow-plane)] bg-panel select-none cursor-crosshair"
             draggable={false}
           />
         )}

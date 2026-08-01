@@ -163,7 +163,7 @@ export default function InvitePage() {
 
                     {/* signed in with a different account */}
                     <Match when={session()}>
-                      <p class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1.5">
+                      <p class="text-xs text-on-accent-amber bg-accent-amber border border-accent-amber-line rounded px-2 py-1.5">
                         You're signed in as {session()!.email}, but this invite is for{" "}
                         {i().email}.
                       </p>

@@ -10,10 +10,10 @@ export const STATUS_META: Record<
   Deliverable["status"],
   { label: string; chip: string; dot: string }
 > = {
-  draft: { label: "Draft", chip: "bg-neutral-100 text-neutral-500", dot: "bg-neutral-400" },
-  in_review: { label: "In review", chip: "bg-sky-50 text-sky-700", dot: "bg-sky-500" },
-  revisions_requested: { label: "Revisions", chip: "bg-amber-50 text-amber-700", dot: "bg-amber-500" },
-  approved: { label: "Approved", chip: "bg-emerald-50 text-emerald-700", dot: "bg-emerald-500" },
+  draft: { label: "Draft", chip: "bg-accent-neutral text-on-accent-neutral", dot: "bg-neutral-400" },
+  in_review: { label: "In review", chip: "bg-accent-sky text-on-accent-sky", dot: "bg-sky-500" },
+  revisions_requested: { label: "Revisions", chip: "bg-accent-amber text-on-accent-amber", dot: "bg-amber-500" },
+  approved: { label: "Approved", chip: "bg-accent-emerald text-on-accent-emerald", dot: "bg-emerald-500" },
 };
 
 export function DeliverableCard(props: {
@@ -92,7 +92,7 @@ export function DeliverableCard(props: {
   return (
     <div
       data-card={props.d.id}
-      class="group absolute select-none rounded-lg bg-panel border-2 shadow-[0_1px_4px_rgba(0,0,0,0.06)] hover:shadow-[0_2px_10px_rgba(0,0,0,0.10)] transition-shadow cursor-default outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+      class="group absolute select-none rounded-lg bg-panel border-2 shadow-[var(--shadow-card)] hover:shadow-[var(--shadow-lift)] transition-shadow cursor-default outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
       classList={{
         "border-sky-500": !!props.selected || !!props.active,
         "border-neutral-200 hover:border-neutral-300": !props.selected && !props.active,
@@ -236,7 +236,7 @@ export function DeliverableCard(props: {
 
         <div class="flex items-center gap-1.5 shrink-0">
           <Show when={openThreads() > 0}>
-            <span class="flex items-center gap-0.5 text-[10px] text-orange-600 bg-orange-50 rounded-full px-1.5 py-px">
+            <span class="flex items-center gap-0.5 text-[10px] text-on-accent-orange bg-accent-orange rounded-full px-1.5 py-px">
               <Icon icon="iconoir:message-text" width="10" />
               {openThreads()}
             </span>

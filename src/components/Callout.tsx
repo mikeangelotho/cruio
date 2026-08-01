@@ -2,8 +2,8 @@ import { Show, type JSX } from "solid-js";
 import { Icon } from "@iconify-icon/solid";
 
 const TONES = {
-  info: { wrap: "bg-sky-50 border-sky-200 text-sky-800", icon: "text-sky-500" },
-  warn: { wrap: "bg-amber-50 border-amber-200 text-amber-800", icon: "text-amber-500" },
+  info: { wrap: "bg-accent-sky border-accent-sky-line text-on-accent-sky", icon: "text-sky-500" },
+  warn: { wrap: "bg-accent-amber border-accent-amber-line text-on-accent-amber", icon: "text-amber-500" },
 } as const;
 
 /**

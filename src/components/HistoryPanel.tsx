@@ -52,7 +52,7 @@ export function HistoryPanel(props: {
 
       <div class="flex-1 overflow-y-auto">
         <Show when={error()}>
-          <p class="m-3 text-xs text-rose-600 bg-rose-50 border border-rose-200 rounded px-2 py-1.5">
+          <p class="m-3 text-xs text-on-accent-rose bg-accent-rose border border-accent-rose-line rounded px-2 py-1.5">
             {error()}
           </p>
         </Show>
@@ -75,7 +75,7 @@ export function HistoryPanel(props: {
                   <p class="text-[10px] text-neutral-400 mt-0.5">{timeAgo(e.createdAt)}</p>
                   <Show when={e.restorable && props.canRestore}>
                     <button
-                      class="mt-1 text-[11px] text-sky-700 border border-sky-200 bg-sky-50 rounded px-2 py-0.5 hover:bg-sky-100 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                      class="mt-1 text-[11px] text-on-accent-sky border border-accent-sky-line bg-accent-sky rounded px-2 py-0.5 hover:bg-accent-sky-hover cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                       disabled={busyId() === e.id}
                       onClick={() => void restore(e)}
                     >

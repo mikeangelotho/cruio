@@ -241,10 +241,12 @@ export async function globalSearch(rawQuery: string): Promise<SearchResultItem[]
           t: tasks,
           projectName: projects.name,
           entityId: projects.entityId,
+          entityName: entities.name,
           assigneeName: user.name,
         })
         .from(tasks)
         .leftJoin(projects, eq(projects.id, tasks.projectId))
+        .leftJoin(entities, eq(entities.id, projects.entityId))
         .leftJoin(user, eq(user.id, tasks.assigneeId))
         .where(and(...conds))
         .orderBy(desc(tasks.createdAt))
@@ -269,6 +271,7 @@ export async function globalSearch(rawQuery: string): Promise<SearchResultItem[]
           projectId: r.t.projectId,
           deliverableId: r.t.deliverableId,
           entityId: r.entityId ?? null,
+          entityName: r.entityName ?? null,
         });
       }
     }
@@ -282,11 +285,13 @@ export async function globalSearch(rawQuery: string): Promise<SearchResultItem[]
         folderProjectId: libraryFolders.projectId,
         folderName: libraryFolders.name,
         projectEntityId: projects.entityId,
+        projectEntityName: entities.name,
         deliverableId: versions.deliverableId,
       })
       .from(libraryFiles)
       .innerJoin(libraryFolders, eq(libraryFolders.id, libraryFiles.folderId))
       .leftJoin(projects, eq(projects.id, libraryFolders.projectId))
+      .leftJoin(entities, eq(entities.id, projects.entityId))
       .leftJoin(versions, eq(versions.id, libraryFiles.versionId))
       .where(and(eq(libraryFiles.organizationId, orgId), isNull(libraryFiles.deletedAt), like(libraryFiles.name, `%${text}%`)))
       .orderBy(desc(libraryFiles.createdAt))
@@ -311,6 +316,7 @@ export async function globalSearch(rawQuery: string): Promise<SearchResultItem[]
         folderId: r.f.folderId,
         fileName: r.f.fileName,
         entityId: r.projectEntityId ?? null,
+        entityName: r.projectEntityName ?? null,
         isMirror: !!r.f.versionId,
       });
     }

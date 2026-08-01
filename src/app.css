@@ -19,11 +19,106 @@
   --color-brand: #171717;
   --color-brand-hover: #404040;
   --color-on-brand: #fafafa;
+  /* Destructive label *on* the brand bar. Because brand inverts polarity, a
+     fixed rose would vanish in one mode — this flips with it. */
+  --color-on-brand-danger: #fca5a5;
+
+  /* Modal / drawer backdrop. Alpha is baked in, so don't write bg-scrim/50 —
+     it would double-alpha. Nothing needs a modified scrim. */
+  --color-scrim: rgb(0 0 0 / 0.10);
+
+  /* ---- Accent triplets: the chip contract -------------------------------
+     A tinted surface is `bg-accent-{hue}` and ALWAYS carries the paired
+     `text-on-accent-{hue}`; `border-accent-{hue}-line` when it needs an edge.
+     Both halves are theme-aware, so the pairing cannot desync — which is the
+     whole point. Never write a bare bg-{hue}-50/100/200 again.
+
+     Saturated -400/-500/-600 fills (status dots, primary accent buttons) are
+     deliberately exempt: they don't invert, and neither does white on them.
+
+     Light values are the Tailwind -50/-700/-200 shades they replace, so this
+     is a no-op in light mode. */
+  --color-accent-neutral: #f5f5f5;
+  --color-on-accent-neutral: #525252;
+  --color-accent-neutral-line: #e5e5e5;
+  --color-accent-neutral-hover: #e5e5e5;
+
+  --color-accent-sky: #f0f9ff;
+  --color-on-accent-sky: #0369a1;
+  --color-accent-sky-line: #bae6fd;
+  --color-accent-sky-hover: #e0f2fe;
+
+  --color-accent-emerald: #ecfdf5;
+  --color-on-accent-emerald: #047857;
+  --color-accent-emerald-line: #a7f3d0;
+  --color-accent-emerald-hover: #d1fae5;
+
+  --color-accent-amber: #fffbeb;
+  --color-on-accent-amber: #b45309;
+  --color-accent-amber-line: #fde68a;
+  --color-accent-amber-hover: #fef3c7;
+
+  --color-accent-rose: #fff1f2;
+  --color-on-accent-rose: #be123c;
+  --color-accent-rose-line: #fecdd3;
+  --color-accent-rose-hover: #ffe4e6;
+
+  --color-accent-violet: #f5f3ff;
+  --color-on-accent-violet: #6d28d9;
+  --color-accent-violet-line: #ddd6fe;
+  --color-accent-violet-hover: #ede9fe;
+
+  --color-accent-orange: #fff7ed;
+  --color-on-accent-orange: #c2410c;
+  --color-accent-orange-line: #fed7aa;
+  --color-accent-orange-hover: #ffedd5;
+
+  /* Sticky-note fills — same contract as chips, but a separate scale because
+     notes are deliberately louder (a -100 fill, not a -50 tint). */
+  --color-note-yellow: #fef3c7;
+  --color-note-yellow-line: #fde68a;
+  --color-note-pink: #fce7f3;
+  --color-note-pink-line: #fbcfe8;
+  --color-note-blue: #e0f2fe;
+  --color-note-blue-line: #bae6fd;
+  --color-note-green: #d1fae5;
+  --color-note-green-line: #a7f3d0;
+  --color-on-note: #262626;
+  /* a touch darker than the neutral-500 this replaces: the author/placeholder
+     line is 9px, and #737373 on a -100 fill lands at ~4.2:1, under AA */
+  --color-on-note-dim: #595959;
+}
+
+/* Tokens that must stay *runtime* CSS variables, so they live outside @theme.
+   Two different reasons, both load-bearing:
+
+   - --color-focus / --color-dot are read by plain CSS and by JS
+     (getComputedStyle, in lib/canvas/DotGrid), never by a utility class.
+
+   - The shadows are deliberately NOT @theme keys. Tailwind v4 inlines a
+     theme shadow's value into the utility at build time
+     (`.shadow-card { --tw-shadow: 0 1px 4px rgb(0 0 0/.06) }`) rather than
+     referencing var(--shadow-card), so a [data-theme="dark"] override would
+     be silently ignored. Keeping them out means `shadow-card` isn't a class
+     at all and the mistake fails loudly; use shadow-[var(--shadow-card)],
+     which resolves at runtime and does follow the theme.
+
+   A black shadow is a no-op on a dark surface, so the dark values are
+   deepened and gain a top light hairline to fake the lift. */
+:root {
+  --color-focus: #38bdf8; /* sky-400 */
+  --color-dot: #e2e1e1; /* infinite-canvas grid dots */
+
+  --shadow-card: 0 1px 4px rgb(0 0 0 / 0.06);
+  --shadow-lift: 0 2px 10px rgb(0 0 0 / 0.1);
+  --shadow-note: 0 2px 8px rgb(0 0 0 / 0.08);
+  --shadow-plane: 0 4px 24px rgb(0 0 0 / 0.1);
 }
 
 /* Dark theme: invert the neutral ramp (so every text-/bg-/border-neutral-*
-   utility flips at once) and re-point the surface + brand tokens. Accent
-   scales (sky/emerald/amber/rose/violet) are intentionally left alone. */
+   utility flips at once) and re-point the surface + brand tokens. The frozen
+   accent scales (sky/emerald/amber/rose/violet) are still left alone — the
+   accent-* tokens above are what carry tinted surfaces across themes. */
 :root[data-theme="dark"] {
   --color-neutral-50: #1b1b1f;
   --color-neutral-100: #212127;
@@ -47,6 +142,62 @@
   --color-brand: #f6f6f8;
   --color-brand-hover: #d2d2d8;
   --color-on-brand: #16161a;
+  --color-on-brand-danger: #9f1239; /* brand is LIGHT here, so the ink goes dark */
+
+  --color-scrim: rgb(0 0 0 / 0.55);
+
+  --color-dot: #2a2a31;
+
+  --color-accent-neutral: #26262c;
+  --color-on-accent-neutral: #b8b8c0;
+  --color-accent-neutral-line: #34343c;
+  --color-accent-neutral-hover: #34343c;
+
+  --color-accent-sky: #0c2537;
+  --color-on-accent-sky: #7dd3fc;
+  --color-accent-sky-line: #164a6b;
+  --color-accent-sky-hover: #123650;
+
+  --color-accent-emerald: #072a20;
+  --color-on-accent-emerald: #6ee7b7;
+  --color-accent-emerald-line: #0d4a37;
+  --color-accent-emerald-hover: #0b3d2e;
+
+  --color-accent-amber: #2e1f05;
+  --color-on-accent-amber: #fcd34d;
+  --color-accent-amber-line: #5a3d0a;
+  --color-accent-amber-hover: #422d08;
+
+  --color-accent-rose: #33101a;
+  --color-on-accent-rose: #fda4af;
+  --color-accent-rose-line: #5c1e2f;
+  --color-accent-rose-hover: #4a1826;
+
+  --color-accent-violet: #1e1638;
+  --color-on-accent-violet: #c4b5fd;
+  --color-accent-violet-line: #362a63;
+  --color-accent-violet-hover: #2b2050;
+
+  --color-accent-orange: #2f1a08;
+  --color-on-accent-orange: #fdba74;
+  --color-accent-orange-line: #5a3210;
+  --color-accent-orange-hover: #43250c;
+
+  --color-note-yellow: #3a2f0b;
+  --color-note-yellow-line: #574714;
+  --color-note-pink: #3a1226;
+  --color-note-pink-line: #57203a;
+  --color-note-blue: #0b2739;
+  --color-note-blue-line: #123a53;
+  --color-note-green: #08301f;
+  --color-note-green-line: #0f4a30;
+  --color-on-note: #e9e9ee;
+  --color-on-note-dim: #9a9aa4;
+
+  --shadow-card: 0 1px 3px rgb(0 0 0 / 0.5), inset 0 1px 0 rgb(255 255 255 / 0.04);
+  --shadow-lift: 0 4px 14px rgb(0 0 0 / 0.6), inset 0 1px 0 rgb(255 255 255 / 0.06);
+  --shadow-note: 0 2px 10px rgb(0 0 0 / 0.5), inset 0 1px 0 rgb(255 255 255 / 0.04);
+  --shadow-plane: 0 8px 32px rgb(0 0 0 / 0.7);
 
   color-scheme: dark;
 }
@@ -66,6 +217,6 @@ body {
 button:focus-visible,
 a:focus-visible,
 [role="button"]:focus-visible {
-  outline: 2px solid #38bdf8; /* sky-400 */
+  outline: 2px solid var(--color-focus);
   outline-offset: 2px;
 }

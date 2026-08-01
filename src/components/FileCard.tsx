@@ -77,7 +77,7 @@ export function FileCard(props: {
           </p>
           <Show when={props.file.versionId}>
             <span
-              class="shrink-0 flex items-center gap-0.5 text-[10px] text-sky-700 bg-sky-50 border border-sky-200 rounded px-1 py-px"
+              class="shrink-0 flex items-center gap-0.5 text-[10px] text-on-accent-sky bg-accent-sky border border-accent-sky-line rounded px-1 py-px"
               title="Deliverable version — managed from the canvas"
             >
               <Icon icon="iconoir:frame" width="9" /> canvas

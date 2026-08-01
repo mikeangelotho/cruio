@@ -97,7 +97,7 @@ export function DeliverableTasksPanel(props: {
             />
             <Show when={draft().trim()}>
               <button
-                class="shrink-0 text-[10px] text-white bg-neutral-800 hover:bg-neutral-700 rounded px-2 py-1 cursor-pointer"
+                class="shrink-0 text-[10px] text-on-brand bg-brand hover:bg-brand-hover rounded px-2 py-1 cursor-pointer"
                 onClick={submit}
               >
                 Add

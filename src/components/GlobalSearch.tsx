@@ -161,13 +161,22 @@ export function GlobalSearch(props: GlobalSearchProps) {
       case "deliverable":
         navigate(`/p/${item.projectId}/d/${item.deliverableId}`);
         break;
+      // Search is org-wide but /tasks and /library are entity-scoped, so a hit
+      // in another entity would land on a page that never lists it — the click
+      // would silently do nothing. Move the scope with the result.
       case "task":
+        scope.setEntity(
+          item.entityId && item.entityName ? { id: item.entityId, name: item.entityName } : null,
+        );
         navigate(`/tasks?task=${item.id}`);
         break;
       case "media":
         if (item.isMirror && item.projectId && item.deliverableId) {
           navigate(`/p/${item.projectId}/d/${item.deliverableId}`);
         } else {
+          scope.setEntity(
+            item.entityId && item.entityName ? { id: item.entityId, name: item.entityName } : null,
+          );
           navigate(`/library?folder=${item.folderId}&file=${item.id}`);
         }
         break;
@@ -373,7 +382,7 @@ export function GlobalSearch(props: GlobalSearchProps) {
     return (
       <Show when={props.modalOpen}>
         <div
-          class="fixed inset-0 z-50 bg-black/10 dark:bg-black/50 flex items-start justify-center pt-[18vh]"
+          class="fixed inset-0 z-50 bg-scrim flex items-start justify-center pt-[18vh]"
           onClick={closeSearch}
         >
           <div

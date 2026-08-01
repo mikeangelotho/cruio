@@ -1667,7 +1667,7 @@ export function ProjectCanvas() {
                     <button
                       class="flex items-center gap-1 text-xs rounded border px-2.5 py-1.5 cursor-pointer"
                       classList={{
-                        "bg-sky-50 border-sky-200 text-sky-700": compare(),
+                        "bg-accent-sky border-accent-sky-line text-on-accent-sky": compare(),
                         "border-neutral-200 text-neutral-600 hover:bg-neutral-50": !compare(),
                       }}
                       title="Compare versions side by side (C)"
@@ -1678,7 +1678,7 @@ export function ProjectCanvas() {
                   </Show>
 
                   <button
-                    class="flex items-center gap-1 text-xs border border-amber-200 bg-amber-50 text-amber-700 rounded px-2.5 py-1.5 hover:bg-amber-100 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                    class="flex items-center gap-1 text-xs border border-accent-amber-line bg-accent-amber text-on-accent-amber rounded px-2.5 py-1.5 hover:bg-accent-amber-hover cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                     disabled={!currentVersion()}
                     onClick={() => setPendingDecision("revision_requested")}
                   >
@@ -1807,7 +1807,7 @@ export function ProjectCanvas() {
                                 class="absolute rounded-lg pointer-events-none"
                                 classList={{
                                   "border-violet-400": !selectedGroups().has(g.id),
-                                  "border-violet-600 bg-violet-50/30": selectedGroups().has(g.id),
+                                  "border-violet-600 bg-accent-violet/30": selectedGroups().has(g.id),
                                 }}
                                 style={{
                                   left: `${r().x}px`,
@@ -1850,7 +1850,7 @@ export function ProjectCanvas() {
                                   <button
                                     class="absolute left-2 top-0 inline-flex items-center gap-1 text-[11px] font-medium rounded px-1.5 py-0.5 cursor-pointer whitespace-nowrap pointer-events-auto"
                                     classList={{
-                                      "bg-violet-100 text-violet-700 hover:bg-violet-200": !selectedGroups().has(g.id),
+                                      "bg-accent-violet text-on-accent-violet hover:bg-accent-violet-hover": !selectedGroups().has(g.id),
                                       "bg-violet-600 text-white": selectedGroups().has(g.id),
                                     }}
                                     style={{
@@ -1981,7 +1981,7 @@ export function ProjectCanvas() {
                                 <img
                                   src={fileUrl(item.v.fileName)}
                                   alt={`Version ${item.v.number}`}
-                                  class="absolute max-w-none bg-panel shadow-[0_4px_24px_rgba(0,0,0,0.10)] cursor-pointer"
+                                  class="absolute max-w-none bg-panel shadow-[var(--shadow-plane)] cursor-pointer"
                                   draggable={false}
                                   style={{
                                     left: `${item.rect.x}px`,
@@ -2068,14 +2068,14 @@ export function ProjectCanvas() {
                           <>
                             <Show when={canCreate()}>
                               <button
-                                class="text-[11px] text-white bg-neutral-800 hover:bg-neutral-700 rounded px-2 py-1 cursor-pointer"
+                                class="text-[11px] text-on-brand bg-brand hover:bg-brand-hover rounded px-2 py-1 cursor-pointer"
                                 onClick={() => newDeliverableAtCenter()}
                               >
                                 Create deliverable
                               </button>
                             </Show>
                             <button
-                              class="text-[11px] text-amber-800 hover:bg-amber-100 rounded px-2 py-1 cursor-pointer"
+                              class="text-[11px] text-on-accent-amber hover:bg-accent-amber-hover rounded px-2 py-1 cursor-pointer"
                               onClick={() => openPanel("tasks")}
                             >
                               View tasks
@@ -2220,7 +2220,7 @@ export function ProjectCanvas() {
                   <button
                     class="p-1.5 cursor-pointer border-t border-neutral-100"
                     classList={{
-                      "text-sky-600 bg-sky-50 hover:bg-sky-100": snapObjects(),
+                      "text-on-accent-sky bg-accent-sky hover:bg-accent-sky-hover": snapObjects(),
                       "text-neutral-400 hover:text-neutral-800 hover:bg-neutral-50": !snapObjects(),
                     }}
                     title={snapObjects() ? "Snap to deliverables: on" : "Snap to deliverables: off"}
@@ -2231,7 +2231,7 @@ export function ProjectCanvas() {
                   <button
                     class="p-1.5 cursor-pointer border-t border-neutral-100"
                     classList={{
-                      "text-sky-600 bg-sky-50 hover:bg-sky-100": snapGrid(),
+                      "text-on-accent-sky bg-accent-sky hover:bg-accent-sky-hover": snapGrid(),
                       "text-neutral-400 hover:text-neutral-800 hover:bg-neutral-50": !snapGrid(),
                     }}
                     title={snapGrid() ? "Snap to grid: on" : "Snap to grid: off"}
@@ -2242,7 +2242,7 @@ export function ProjectCanvas() {
                   <button
                     class="flex items-center gap-1 px-2 py-1.5 cursor-pointer border-t border-neutral-100 text-[10px] font-medium"
                     classList={{
-                      "text-violet-600 bg-violet-50 hover:bg-violet-100": layoutMode() === "personal",
+                      "text-on-accent-violet bg-accent-violet hover:bg-accent-violet-hover": layoutMode() === "personal",
                       "text-neutral-500 hover:text-neutral-800 hover:bg-neutral-50": layoutMode() === "sync",
                     }}
                     title={
@@ -2344,19 +2344,19 @@ export function ProjectCanvas() {
                     {counts().total} deliverable{counts().total === 1 ? "" : "s"}
                   </span>
                   <Show when={counts().inReview > 0}>
-                    <span class="shrink-0 flex items-center gap-1 text-[10px] font-medium rounded-full px-1.5 py-px bg-sky-50 text-sky-700">
+                    <span class="shrink-0 flex items-center gap-1 text-[10px] font-medium rounded-full px-1.5 py-px bg-accent-sky text-on-accent-sky">
                       <span class="size-1.5 rounded-full bg-sky-500" />
                       {counts().inReview} in review
                     </span>
                   </Show>
                   <Show when={counts().revisions > 0}>
-                    <span class="shrink-0 flex items-center gap-1 text-[10px] font-medium rounded-full px-1.5 py-px bg-amber-50 text-amber-700">
+                    <span class="shrink-0 flex items-center gap-1 text-[10px] font-medium rounded-full px-1.5 py-px bg-accent-amber text-on-accent-amber">
                       <span class="size-1.5 rounded-full bg-amber-500" />
                       {counts().revisions} need revisions
                     </span>
                   </Show>
                   <Show when={counts().approved > 0}>
-                    <span class="shrink-0 flex items-center gap-1 text-[10px] font-medium rounded-full px-1.5 py-px bg-emerald-50 text-emerald-700">
+                    <span class="shrink-0 flex items-center gap-1 text-[10px] font-medium rounded-full px-1.5 py-px bg-accent-emerald text-on-accent-emerald">
                       <span class="size-1.5 rounded-full bg-emerald-500" />
                       {counts().approved} approved
                     </span>
@@ -2389,7 +2389,7 @@ export function ProjectCanvas() {
                   <span
                     class="shrink-0 flex items-center gap-1 text-[10px] font-medium rounded-full px-1.5 py-px"
                     classList={{
-                      "bg-orange-50 text-orange-600": focusedOpenThreadCount() > 0,
+                      "bg-accent-orange text-on-accent-orange": focusedOpenThreadCount() > 0,
                       "bg-neutral-200/60 text-neutral-500": focusedOpenThreadCount() === 0,
                     }}
                   >
@@ -2400,7 +2400,7 @@ export function ProjectCanvas() {
             </Show>
 
             <Show when={statusMsg()}>
-              <span class="shrink-0 text-[10px] font-medium text-sky-700 bg-sky-50 rounded-full px-2 py-0.5 truncate">
+              <span class="shrink-0 text-[10px] font-medium text-on-accent-sky bg-accent-sky rounded-full px-2 py-0.5 truncate">
                 {statusMsg()}
               </span>
             </Show>
@@ -2494,7 +2494,7 @@ export function ProjectCanvas() {
             </Show>
             <Show when={canDeleteDeliverable()}>
               <button
-                class="flex items-center gap-1 px-2 py-1 rounded text-rose-300 hover:bg-panel/10 cursor-pointer"
+                class="flex items-center gap-1 px-2 py-1 rounded text-on-brand-danger hover:bg-panel/10 cursor-pointer"
                 onClick={bulkDeleteDeliverables}
               >
                 <Icon icon="iconoir:trash" width="13" /> Delete

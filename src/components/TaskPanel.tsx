@@ -136,7 +136,7 @@ export function TaskPanel(props: {
     <Show when={props.task}>
       {task => (
         <div class="fixed inset-0 z-40">
-          <div class="absolute inset-0 bg-neutral-900/10" onClick={props.onClose} />
+          <div class="absolute inset-0 bg-scrim" onClick={props.onClose} />
           <div class="absolute right-0 top-0 bottom-0 w-[420px] max-w-full bg-panel border-l border-neutral-200 shadow-2xl flex flex-col">
             <div class="px-4 py-3 flex items-center justify-between border-b border-neutral-100">
               <div class="flex gap-1">
@@ -431,7 +431,7 @@ export function TaskPanel(props: {
 
             <div class="px-4 py-3 border-t border-neutral-100">
               <button
-                class="flex items-center gap-1.5 text-xs text-rose-600 hover:bg-rose-50 rounded-md px-2 py-1.5 cursor-pointer"
+                class="flex items-center gap-1.5 text-xs text-rose-600 hover:bg-accent-rose rounded-md px-2 py-1.5 cursor-pointer"
                 onClick={() => {
                   props.onDelete(task());
                   props.onClose();

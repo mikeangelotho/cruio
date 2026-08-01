@@ -168,7 +168,7 @@ export default function MembersPage() {
           >
             <div class="max-w-2xl mx-auto space-y-8">
               <Show when={error()}>
-                <p class="text-xs text-rose-600 bg-rose-50 border border-rose-200 rounded px-3 py-2">
+                <p class="text-xs text-on-accent-rose bg-accent-rose border border-accent-rose-line rounded px-3 py-2">
                   {error()}
                 </p>
               </Show>

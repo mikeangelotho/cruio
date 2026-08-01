@@ -74,7 +74,7 @@ export function ContextMenu(props: { state: MenuState | null; onClose: () => voi
                   class="w-full flex items-center gap-2 px-3 py-1.5 text-left text-xs cursor-pointer"
                   classList={{
                     "text-neutral-700 hover:bg-neutral-100": !entry.danger,
-                    "text-rose-600 hover:bg-rose-50": entry.danger,
+                    "text-rose-600 hover:bg-accent-rose": entry.danger,
                   }}
                   onClick={() => {
                     props.onClose();

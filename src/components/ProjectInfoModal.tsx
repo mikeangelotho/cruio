@@ -45,7 +45,7 @@ export function ProjectInfoModal(props: {
   return (
     <Show when={props.open}>
       <div
-        class="fixed inset-0 z-50 bg-black/10 dark:bg-black/50 flex items-center justify-center"
+        class="fixed inset-0 z-50 bg-scrim flex items-center justify-center"
         onClick={props.onClose}
       >
         <div

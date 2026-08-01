@@ -195,7 +195,11 @@ export default function TasksPage() {
     () => searchParams.task,
     raw => {
       const id = Array.isArray(raw) ? raw[0] : raw;
-      if (id) setHighlightId(id);
+      if (!id) return;
+      setHighlightId(id);
+      // arriving from search means the user picked *this* task — open it, don't
+      // just tint its row and make them hunt for it in the list
+      setPanelId(id);
     },
   ));
   createEffect(on(
@@ -510,7 +514,7 @@ export default function TasksPage() {
       <span
         class="shrink-0 text-[10px] rounded px-1.5 py-0.5"
         classList={{
-          "text-rose-600 bg-rose-50": overdue(t),
+          "text-on-accent-rose bg-accent-rose": overdue(t),
           "text-neutral-400 bg-neutral-100": !overdue(t),
         }}
       >
@@ -609,7 +613,7 @@ export default function TasksPage() {
   const blockedBadge = (t: Task) => (
     <Show when={isBlocked(t)}>
       <span
-        class="shrink-0 flex items-center gap-0.5 text-[10px] font-medium text-amber-700 bg-amber-50 rounded-full px-1.5 py-px"
+        class="shrink-0 flex items-center gap-0.5 text-[10px] font-medium text-on-accent-amber bg-accent-amber rounded-full px-1.5 py-px"
         title={`Blocked by: ${openBlockers(t).map(b => b.title).join(", ")}`}
       >
         <Icon icon="iconoir:lock" width="10" /> Blocked
@@ -622,8 +626,8 @@ export default function TasksPage() {
       ref={el => rowRefs.set(t.id, el)}
       class="group px-3 py-2 flex items-center gap-2 hover:bg-neutral-50 cursor-pointer"
       classList={{
-        "bg-amber-50": highlightId() === t.id,
-        "bg-sky-50": selected().has(t.id) && highlightId() !== t.id,
+        "bg-accent-amber": highlightId() === t.id,
+        "bg-accent-sky": selected().has(t.id) && highlightId() !== t.id,
       }}
       onContextMenu={e => {
         e.preventDefault();
@@ -793,7 +797,7 @@ export default function TasksPage() {
       }}
       class="group bg-panel border border-neutral-200 border-l-4 rounded-lg p-2.5 cursor-pointer hover:border-neutral-300 hover:shadow-sm"
       classList={{
-        "bg-amber-50": highlightId() === t.id,
+        "bg-accent-amber": highlightId() === t.id,
         [priorityMeta(t.priority).bg]: highlightId() !== t.id && !!priorityMeta(t.priority).bg,
         [priorityMeta(t.priority).border]: true,
         "opacity-40": dragId() === t.id,
@@ -909,7 +913,7 @@ export default function TasksPage() {
                   label: "Overdue",
                   active: onlyOverdue(),
                   onToggle: () => setOnlyOverdue(v => !v),
-                  activeClass: "bg-rose-100 text-rose-700",
+                  activeClass: "bg-accent-rose text-on-accent-rose",
                 },
               ]}
               search={{
@@ -920,7 +924,7 @@ export default function TasksPage() {
             />
 
             <Show when={error()}>
-              <p class="mb-4 text-xs text-rose-600 bg-rose-50 border border-rose-200 rounded px-3 py-2">
+              <p class="mb-4 text-xs text-on-accent-rose bg-accent-rose border border-accent-rose-line rounded px-3 py-2">
                 {error()}
               </p>
             </Show>
@@ -937,7 +941,7 @@ export default function TasksPage() {
                     <For each={projectsNeedingTasks()}>
                       {p => (
                         <button
-                          class="flex items-center gap-1 text-[11px] text-sky-800 bg-panel/70 border border-sky-200 rounded-full px-2 py-0.5 hover:bg-panel cursor-pointer"
+                          class="flex items-center gap-1 text-[11px] text-on-accent-sky bg-accent-sky border border-accent-sky-line rounded-full px-2 py-0.5 hover:bg-accent-sky-hover cursor-pointer"
                           title={`Add a task to ${p.name}`}
                           onClick={() => addTaskForProject(p)}
                         >
@@ -1022,7 +1026,7 @@ export default function TasksPage() {
                   {col => (
                     <div
                       class="flex-1 min-w-0 rounded-lg p-2"
-                      classList={{ "bg-sky-50/60 outline outline-dashed outline-sky-200": dragOverStatus() === col.status }}
+                      classList={{ "bg-accent-sky/60 outline outline-dashed outline-accent-sky-line": dragOverStatus() === col.status }}
                       onDragOver={e => {
                         e.preventDefault();
                         setDragOverStatus(col.status);
@@ -1172,7 +1176,7 @@ export default function TasksPage() {
             )}
           </NavMenu>
           <button
-            class="flex items-center gap-1 rounded-md px-2 py-1 text-rose-300 hover:bg-panel/10 cursor-pointer"
+            class="flex items-center gap-1 rounded-md px-2 py-1 text-on-brand-danger hover:bg-panel/10 cursor-pointer"
             onClick={bulkDelete}
           >
             <Icon icon="iconoir:trash" width="13" /> Delete

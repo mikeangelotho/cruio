@@ -359,7 +359,7 @@ export default function LibraryPage() {
           {/* file grid */}
           <main
             class="flex-1 overflow-y-auto p-6"
-            classList={{ "bg-sky-50/40": dragOver() }}
+            classList={{ "bg-accent-sky/40": dragOver() }}
             onDragOver={e => {
               if (!canUpload() || !uploadTargetId()) return;
               e.preventDefault();
@@ -400,7 +400,7 @@ export default function LibraryPage() {
             </div>
 
             <Show when={error()}>
-              <p class="mb-4 text-xs text-rose-600 bg-rose-50 border border-rose-200 rounded px-3 py-2">
+              <p class="mb-4 text-xs text-on-accent-rose bg-accent-rose border border-accent-rose-line rounded px-3 py-2">
                 {error()}
               </p>
             </Show>

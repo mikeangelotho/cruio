@@ -1,5 +1,6 @@
 import { createEffect, onCleanup, onMount } from "solid-js";
 import type { Camera } from "./camera";
+import { theme } from "../theme";
 
 /**
  * The infinite dot-grid background. Pure rendering — pointer input is handled
@@ -18,7 +19,10 @@ export function DotGrid(props: { camera: Camera }) {
     const radius = 1.25;
 
     ctx.clearRect(0, 0, width, height);
-    ctx.fillStyle = "#e2e1e1";
+    // read from the stylesheet rather than hardcoding, so the grid follows the
+    // theme (a light-grey dot is blinding on the dark canvas)
+    ctx.fillStyle =
+      getComputedStyle(document.documentElement).getPropertyValue("--color-dot").trim() || "#e2e1e1";
 
     // fade the grid out when zoomed far in/out so it never dominates
     const alpha = Math.max(0, Math.min(1, 1.2 - Math.abs(Math.log2(cam.zoom)) * 0.35));
@@ -65,6 +69,8 @@ export function DotGrid(props: { camera: Camera }) {
       void props.camera.cam.x;
       void props.camera.cam.y;
       void props.camera.cam.zoom;
+      // ...and the theme, so toggling repaints the dots without needing a pan
+      void theme();
       draw();
     });
   });

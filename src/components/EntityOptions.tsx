@@ -41,7 +41,7 @@ function ArchivedProjects(props: { entityId: string | null; onChanged?: () => vo
                     {p.name}
                   </span>
                   <button
-                    class="shrink-0 text-[11px] text-sky-700 border border-sky-200 bg-sky-50 rounded px-2 py-0.5 hover:bg-sky-100 cursor-pointer"
+                    class="shrink-0 text-[11px] text-on-accent-sky border border-accent-sky-line bg-accent-sky rounded px-2 py-0.5 hover:bg-accent-sky-hover cursor-pointer"
                     onClick={() => void restore(p.id)}
                   >
                     Restore
@@ -160,7 +160,7 @@ export function EntityOptions(props: {
           <Show when={props.entity && props.isAdmin && has("delete")}>
             <div class="border-t border-neutral-100 mt-1 pt-1 px-1">
               <button
-                class="w-full flex items-center gap-2 px-2 py-1.5 rounded text-left text-xs text-rose-600 hover:bg-rose-50 cursor-pointer"
+                class="w-full flex items-center gap-2 px-2 py-1.5 rounded text-left text-xs text-rose-600 hover:bg-accent-rose cursor-pointer"
                 onClick={() => {
                   close();
                   void remove();

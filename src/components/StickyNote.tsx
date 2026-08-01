@@ -1,11 +1,14 @@
 import { For, Show, createSignal } from "solid-js";
 import type { CanvasObject, NoteColor } from "../lib/types";
 
+/** Note fills are theme-aware tokens, not frozen Tailwind tints — a note's ink
+ *  (`text-on-note`) has to stay readable against its own fill in both themes.
+ *  The swatches stay saturated -300s: they're picker chips, not surfaces. */
 export const NOTE_COLORS: Record<NoteColor, { bg: string; border: string; swatch: string }> = {
-  yellow: { bg: "bg-amber-100", border: "border-amber-200", swatch: "bg-amber-300" },
-  pink: { bg: "bg-pink-100", border: "border-pink-200", swatch: "bg-pink-300" },
-  blue: { bg: "bg-sky-100", border: "border-sky-200", swatch: "bg-sky-300" },
-  green: { bg: "bg-emerald-100", border: "border-emerald-200", swatch: "bg-emerald-300" },
+  yellow: { bg: "bg-note-yellow", border: "border-note-yellow-line", swatch: "bg-amber-300" },
+  pink: { bg: "bg-note-pink", border: "border-note-pink-line", swatch: "bg-pink-300" },
+  blue: { bg: "bg-note-blue", border: "border-note-blue-line", swatch: "bg-sky-300" },
+  green: { bg: "bg-note-green", border: "border-note-green-line", swatch: "bg-emerald-300" },
 };
 
 export const NOTE_W = 180;
@@ -71,7 +74,7 @@ export function StickyNote(props: {
   return (
     <div
       data-note={props.o.id}
-      class={`absolute select-none rounded-md border shadow-[0_2px_8px_rgba(0,0,0,0.08)] cursor-default ${palette().bg} ${palette().border}`}
+      class={`absolute select-none rounded-md border shadow-[var(--shadow-note)] cursor-default ${palette().bg} ${palette().border}`}
       style={{
         left: `${props.x}px`,
         top: `${props.y}px`,
@@ -93,7 +96,7 @@ export function StickyNote(props: {
         when={!editing()}
         fallback={
           <textarea
-            class="w-full min-h-16 text-xs text-neutral-800 bg-transparent outline-none resize-none p-2.5 select-text"
+            class="w-full min-h-16 text-xs text-on-note bg-transparent outline-none resize-none p-2.5 select-text"
             value={props.o.content}
             ref={el => queueMicrotask(() => { el.focus(); el.select(); })}
             onPointerDown={e => e.stopPropagation()}
@@ -113,8 +116,8 @@ export function StickyNote(props: {
         }
       >
         <p
-          class="text-xs text-neutral-800 whitespace-pre-wrap break-words p-2.5 pb-1"
-          classList={{ "text-neutral-400 italic": !props.o.content }}
+          class="text-xs text-on-note whitespace-pre-wrap break-words p-2.5 pb-1"
+          classList={{ "text-on-note-dim italic": !props.o.content }}
           title={props.readOnly ? undefined : "Double-click to edit"}
         >
           {props.o.content || "Empty note — double-click to write"}
@@ -123,12 +126,12 @@ export function StickyNote(props: {
           <div class="px-2.5 pb-1 flex flex-wrap gap-1">
             <For each={props.o.tags}>
               {t => (
-                <span class="text-[9px] text-neutral-600 bg-panel/60 rounded px-1 py-px">{t}</span>
+                <span class="text-[9px] text-on-note bg-panel/60 rounded px-1 py-px">{t}</span>
               )}
             </For>
           </div>
         </Show>
-        <p class="px-2.5 pb-1.5 text-[9px] text-neutral-500 truncate">
+        <p class="px-2.5 pb-1.5 text-[9px] text-on-note-dim truncate">
           {props.o.createdByName || "Someone"}
         </p>
       </Show>

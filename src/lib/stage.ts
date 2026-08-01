@@ -9,12 +9,14 @@ import type { Deliverable, Task } from "./types";
  */
 export type Stage = "to_do" | "in_progress" | "in_review" | "done";
 
-/** Colored dot + chip classes per stage (mirrors DeliverableCard's STATUS_META shape). */
+/** Colored dot + chip classes per stage (mirrors DeliverableCard's STATUS_META shape).
+ *  Chips use the accent surface/ink pair so they follow the theme; the dots stay
+ *  saturated -500s, which read on both a light and a dark ground. */
 export const STAGE_META: Record<Stage, { label: string; chip: string; dot: string }> = {
-  to_do: { label: "To do", chip: "bg-neutral-100 text-neutral-500", dot: "bg-neutral-400" },
-  in_progress: { label: "In progress", chip: "bg-sky-50 text-sky-700", dot: "bg-sky-500" },
-  in_review: { label: "In review", chip: "bg-violet-50 text-violet-700", dot: "bg-violet-500" },
-  done: { label: "Done", chip: "bg-emerald-50 text-emerald-700", dot: "bg-emerald-500" },
+  to_do: { label: "To do", chip: "bg-accent-neutral text-on-accent-neutral", dot: "bg-neutral-400" },
+  in_progress: { label: "In progress", chip: "bg-accent-sky text-on-accent-sky", dot: "bg-sky-500" },
+  in_review: { label: "In review", chip: "bg-accent-violet text-on-accent-violet", dot: "bg-violet-500" },
+  done: { label: "Done", chip: "bg-accent-emerald text-on-accent-emerald", dot: "bg-emerald-500" },
 };
 
 /**

@@ -83,7 +83,7 @@ export function NotesPanel(props: {
                 </button>
                 <Show when={props.canDelete}>
                   <button
-                    class="shrink-0 p-1 rounded text-neutral-300 opacity-0 group-hover:opacity-100 hover:text-rose-600 hover:bg-rose-50 cursor-pointer"
+                    class="shrink-0 p-1 rounded text-neutral-300 opacity-0 group-hover:opacity-100 hover:text-rose-600 hover:bg-accent-rose cursor-pointer"
                     title="Delete note"
                     onClick={() => props.onDelete(n)}
                   >

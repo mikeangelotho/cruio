@@ -67,7 +67,7 @@ export function ThreadSidebar(props: {
               return (
                 <div
                   class="border-b border-neutral-100 cursor-pointer"
-                  classList={{ "bg-sky-50/50": selected() }}
+                  classList={{ "bg-accent-sky/50": selected() }}
                   onClick={() => props.onSelect(selected() ? null : a.id)}
                 >
                   <div class="px-3 py-2 flex items-start gap-2">
@@ -146,14 +146,14 @@ export function ThreadSidebar(props: {
                           <Show when={a.status === "open"}>
                             <div class="flex gap-1.5">
                               <button
-                                class="flex-1 flex items-center justify-center gap-1 text-[11px] rounded border border-emerald-200 bg-emerald-50 text-emerald-700 py-1 hover:bg-emerald-100 cursor-pointer"
+                                class="flex-1 flex items-center justify-center gap-1 text-[11px] rounded border border-accent-emerald-line bg-accent-emerald text-on-accent-emerald py-1 hover:bg-accent-emerald-hover cursor-pointer"
                                 title="Resolve — approved"
                                 onClick={() => props.onResolve(a.id, "resolved_approved")}
                               >
                                 <Icon icon="iconoir:check" width="12" /> Approved
                               </button>
                               <button
-                                class="flex-1 flex items-center justify-center gap-1 text-[11px] rounded border border-amber-200 bg-amber-50 text-amber-700 py-1 hover:bg-amber-100 cursor-pointer"
+                                class="flex-1 flex items-center justify-center gap-1 text-[11px] rounded border border-accent-amber-line bg-accent-amber text-on-accent-amber py-1 hover:bg-accent-amber-hover cursor-pointer"
                                 title="Resolve — needs revision"
                                 onClick={() => props.onResolve(a.id, "resolved_revision")}
                               >

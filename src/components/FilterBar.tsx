@@ -137,7 +137,7 @@ export function FilterBar(props: {
           <button
             class={`text-[11px] rounded-md px-2 py-1.5 cursor-pointer ${
               t.active
-                ? (t.activeClass ?? "bg-sky-100 text-sky-700")
+                ? (t.activeClass ?? "bg-accent-sky text-on-accent-sky")
                 : "text-neutral-500 hover:bg-neutral-100"
             }`}
             onClick={t.onToggle}
