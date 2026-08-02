@@ -2,7 +2,7 @@ import { Show, createSignal } from "solid-js";
 import { Icon } from "@iconify-icon/solid";
 import type { Deliverable } from "../lib/types";
 import { fileUrl } from "../lib/types";
-import { CARD_W, thumbHeight } from "../lib/canvas/geometry";
+import { CARD_W, CARD_HEADER_H, thumbHeight } from "../lib/canvas/geometry";
 import { STAGE_META, type Stage } from "../lib/stage";
 import { TagChips } from "./TagChips";
 
@@ -102,6 +102,10 @@ export function DeliverableCard(props: {
         top: `${props.y}px`,
         width: `${CARD_W}px`,
         display: props.hidden ? "none" : undefined,
+        // Skip rendering + raster of off-screen cards; the intrinsic size keeps
+        // canvas geometry stable while a card is culled.
+        "content-visibility": "auto",
+        "contain-intrinsic-size": `${CARD_W}px ${thumbHeight(props.d) + CARD_HEADER_H}px`,
       }}
       tabindex="0"
       onPointerDown={onPointerDown}
@@ -189,8 +193,14 @@ export function DeliverableCard(props: {
             <img
               src={fileUrl(v().fileName)}
               alt={props.d.name}
+              // Intrinsic dims from the stored version give the decoder the real
+              // aspect up front; CSS still sizes it to the card.
+              width={v().width || undefined}
+              height={v().height || undefined}
               class="w-full h-full object-contain pointer-events-none"
               draggable={false}
+              decoding="async"
+              loading="lazy"
             />
           )}
         </Show>

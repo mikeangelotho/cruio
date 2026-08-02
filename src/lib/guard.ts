@@ -3,6 +3,7 @@ import { getRequestEvent } from "solid-js/web";
 import { randomUUID } from "node:crypto";
 import { and, asc, eq, isNull } from "drizzle-orm";
 import { auth } from "./auth";
+import { getActor } from "./actor";
 import { getDb } from "~/db";
 import {
   annotations,
@@ -29,10 +30,26 @@ export type SessionInfo = {
   activeOrganizationId: string | null;
 };
 
-/** Headers can be passed explicitly by raw Nitro routes (upload/files). */
+/**
+ * Headers can be passed explicitly by raw Nitro routes (upload/files).
+ * Otherwise an ambient actor wins over the request event: an MCP call runs
+ * inside a real request, but that request carries a bearer token rather than
+ * a session cookie, so better-auth would find nothing to read.
+ */
 export async function getSession(
   headers?: Headers,
 ): Promise<SessionInfo | null> {
+  if (!headers) {
+    const actor = getActor();
+    if (actor) {
+      return {
+        userId: actor.userId,
+        name: actor.name,
+        email: actor.email,
+        activeOrganizationId: actor.organizationId,
+      };
+    }
+  }
   const h = headers ?? getRequestEvent()?.request.headers;
   if (!h) return null;
   const res = await auth.api.getSession({ headers: h });

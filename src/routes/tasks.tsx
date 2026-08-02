@@ -36,6 +36,7 @@ import { myOrgsQuery, requireUserQuery } from "../lib/org-api";
 import { newId } from "../lib/id";
 import { PRIORITIES, priorityMeta } from "../lib/priority";
 import { useViewerRole } from "../lib/viewer";
+import { onAiInvalidate } from "../lib/ai/invalidate";
 import type { Project, Task, TaskLink, TaskLinkType, TaskPriority, TaskStatus } from "../lib/types";
 
 export const route = {
@@ -100,6 +101,7 @@ export default function TasksPage() {
     () => ({ org: user()?.activeOrganizationId, entity: scope.entity()?.id ?? null }),
     ({ entity }) => listTasks(entity),
   );
+  onAiInvalidate(() => void refetch());
   const [assignees] = createResource(
     () => user()?.activeOrganizationId,
     () => listAssignees(),
@@ -846,7 +848,7 @@ export default function TasksPage() {
   );
 
   return (
-    <div class="p-1 h-screen bg-canvas">
+    <div class="p-1 h-full bg-canvas">
       <div class="rounded-lg overflow-clip w-full flex flex-col h-full border border-line">
         <AppNav onOrgSwitch={() => void refetch()} />
 

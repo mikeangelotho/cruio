@@ -6,6 +6,7 @@ import { authClient } from "../lib/auth-client";
 import { useViewerRole } from "../lib/viewer";
 import { Avatar } from "./Avatar";
 import { NavMenu } from "./NavMenu";
+import { AiTrigger } from "./ai/AiTrigger";
 import { theme, toggleTheme } from "../lib/theme";
 
 /**
@@ -21,7 +22,7 @@ export function AppFooter(props: { start?: JSX.Element; children?: JSX.Element }
   const navigate = useNavigate();
   const user = createAsync(() => requireUserQuery());
   const orgs = createAsync(() => myOrgsQuery());
-  const { activeOrg, myRole } = useViewerRole(user, orgs);
+  const { activeOrg, myRole, isGuest } = useViewerRole(user, orgs);
 
   async function signOut() {
     await authClient.signOut();
@@ -99,7 +100,12 @@ export function AppFooter(props: { start?: JSX.Element; children?: JSX.Element }
       >
         <img class="dark:invert" style="height: 16px;" src="/CRIO_Logo-2026.svg" />
       </a>
-      <div class="flex items-center gap-2.5 shrink-0 justify-end">{props.children}</div>
+      <div class="flex items-center gap-2.5 shrink-0 justify-end">
+        {props.children}
+        <Show when={!isGuest()}>
+          <AiTrigger />
+        </Show>
+      </div>
     </footer>
   );
 }

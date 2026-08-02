@@ -81,7 +81,7 @@ export function ReviewPlane(props: {
       <For each={props.annotations}>
         {(a, i) => (
           <button
-            class={`absolute flex items-center justify-center rounded-full rounded-bl-none border text-white text-[11px] font-semibold shadow-md cursor-pointer transition-transform ${pinColor(a)}`}
+            class={`absolute flex items-center justify-center rounded-full rounded-bl-none border text-white text-[11px] font-semibold shadow-md cursor-pointer ${pinColor(a)}`}
             style={{
               left: `${a.x * props.rect.w}px`,
               top: `${a.y * props.rect.h}px`,

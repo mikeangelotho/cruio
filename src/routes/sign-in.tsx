@@ -36,7 +36,7 @@ export default function SignIn() {
   }
 
   return (
-    <div class="p-1 h-screen bg-canvas">
+    <div class="p-1 h-full bg-canvas">
       {redirectIfAuthed()}
       <div class="rounded-lg w-full h-full border border-line flex items-center justify-center">
         <div class="w-[340px] max-w-[90vw]">

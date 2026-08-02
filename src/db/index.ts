@@ -299,6 +299,44 @@ CREATE TABLE IF NOT EXISTS library_files (
 CREATE INDEX IF NOT EXISTS idx_library_files_file_name ON library_files(file_name);
 CREATE INDEX IF NOT EXISTS idx_library_files_folder ON library_files(folder_id);
 CREATE UNIQUE INDEX IF NOT EXISTS uidx_library_files_version ON library_files(version_id);
+
+CREATE TABLE IF NOT EXISTS ai_conversations (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL REFERENCES organization(id),
+  user_id TEXT NOT NULL REFERENCES user(id),
+  title TEXT NOT NULL DEFAULT '',
+  project_id TEXT REFERENCES projects(id),
+  state TEXT NOT NULL DEFAULT 'idle',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_conversations_user ON ai_conversations(user_id, updated_at);
+
+-- content is the raw Anthropic content-block array, stored verbatim: thinking
+-- and tool_use blocks must be echoed back unchanged or the next request 400s.
+CREATE TABLE IF NOT EXISTS ai_messages (
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL REFERENCES ai_conversations(id),
+  seq INTEGER NOT NULL,
+  role TEXT NOT NULL,
+  content TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_messages_conversation ON ai_messages(conversation_id, seq);
+
+CREATE TABLE IF NOT EXISTS ai_usage (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL REFERENCES organization(id),
+  user_id TEXT NOT NULL REFERENCES user(id),
+  conversation_id TEXT REFERENCES ai_conversations(id),
+  model TEXT NOT NULL,
+  input_tokens INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_usage_org ON ai_usage(organization_id, created_at);
 `;
 
 async function tableExists(name: string) {

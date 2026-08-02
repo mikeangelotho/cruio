@@ -2,6 +2,7 @@ import { For, Show, createEffect, createMemo, createResource, createSignal, on, 
 import { createAsync, useNavigate, useSearchParams } from "@solidjs/router";
 import { Icon } from "@iconify-icon/solid";
 import { useViewerRole } from "../lib/viewer";
+import { onAiInvalidate } from "../lib/ai/invalidate";
 import { AppNav } from "../components/AppNav";
 import { AppFooter } from "../components/AppFooter";
 import { useScope } from "../components/ScopeProvider";
@@ -38,6 +39,7 @@ export default function LibraryPage() {
     () => ({ org: user()?.activeOrganizationId, entity: scope.entity()?.id ?? null }),
     ({ entity }) => listLibrary(entity),
   );
+  onAiInvalidate(() => void refetch());
 
   const [selectedFolder, setSelectedFolder] = createSignal<string | null>(null);
   const [ctxMenu, setCtxMenu] = createSignal<MenuState | null>(null);
@@ -290,7 +292,7 @@ export default function LibraryPage() {
     (listing()?.folders ?? []).find(f => f.id === file.folderId)?.entityName ?? null;
 
   return (
-    <div class="p-1 h-screen bg-canvas">
+    <div class="p-1 h-full bg-canvas">
       <div class="rounded-lg overflow-clip w-full flex flex-col h-full border border-line">
         <AppNav onOrgSwitch={() => void refetch()} />
 

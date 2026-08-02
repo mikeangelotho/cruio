@@ -20,6 +20,7 @@ import {
 } from "../lib/org-api";
 import { authClient } from "../lib/auth-client";
 import { useViewerRole } from "../lib/viewer";
+import { onAiInvalidate } from "../lib/ai/invalidate";
 import { newId } from "../lib/id";
 import { EntityAvatar } from "../components/Avatar";
 import { AppNav } from "../components/AppNav";
@@ -53,6 +54,11 @@ export default function Home() {
     () => user()?.activeOrganizationId ?? null,
     () => listTags(),
   );
+  onAiInvalidate(() => {
+    void refetch();
+    void refetchEntities();
+    void refetchTags();
+  });
   // Optimistic overlay so toggling a project's tags stays responsive without a
   // full project refetch (which would remount the card and close the picker).
   const [tagOverrides, setTagOverrides] = createSignal<Record<string, Tag[]>>({});
@@ -302,7 +308,7 @@ export default function Home() {
   }
 
   return (
-    <div class="p-1 h-screen bg-canvas">
+    <div class="p-1 h-full bg-canvas">
       <div class="rounded-lg overflow-clip w-full flex flex-col h-full border border-line">
         <AppNav
           onOrgSwitch={() => {

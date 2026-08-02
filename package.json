@@ -8,12 +8,15 @@
     "preview": "vite preview"
   },
   "dependencies": {
+    "@anthropic-ai/sdk": "^0.115.0",
     "@iconify-icon/solid": "^3.0.3",
     "@iconify-json/iconoir": "^1.2.11",
     "@libsql/client": "^0.17.4",
+    "@modelcontextprotocol/sdk": "^1.30.0",
     "@solidjs/router": "^0.15.0",
     "@solidjs/start": "2.0.0-alpha.2",
     "@solidjs/vite-plugin-nitro-2": "^0.1.0",
+    "@valibot/to-json-schema": "^1.7.1",
     "better-auth": "^1.6.23",
     "drizzle-orm": "^0.45.2",
     "iconoir": "^7.11.1",

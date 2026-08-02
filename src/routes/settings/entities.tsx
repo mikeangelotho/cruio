@@ -75,7 +75,7 @@ export default function EntitiesPage() {
   }
 
   return (
-    <div class="p-1 h-screen bg-canvas">
+    <div class="p-1 h-full bg-canvas">
       <div class="rounded-lg overflow-clip w-full flex flex-col h-full border border-line">
         <SettingsNav
           title="Entities"
