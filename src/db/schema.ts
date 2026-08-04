@@ -28,7 +28,7 @@ export const projects = sqliteTable("projects", {
     .references(() => organization.id),
   name: text("name").notNull(),
   entityId: text("entity_id").references(() => entities.id),
-  phase: text("phase").notNull().default("pre_production"),
+  status: text("status").notNull().default("todo"),
   createdBy: text("created_by")
     .notNull()
     .references(() => user.id),
@@ -48,6 +48,12 @@ export const deliverableGroups = sqliteTable("deliverable_groups", {
     .references(() => projects.id),
   label: text("label").notNull().default(""),
   parentGroupId: text("parent_group_id"),
+  // Own frame for a manually-created ("empty") group container. Null for groups
+  // created from cards, whose outline is derived from member bounds.
+  posX: real("pos_x"),
+  posY: real("pos_y"),
+  w: real("w"),
+  h: real("h"),
   createdAt: integer("created_at").notNull(),
 });
 
@@ -402,3 +408,52 @@ export const invitationGrants = sqliteTable(
     ),
   ],
 );
+
+// AI assistant. Conversations are per-user within a workspace; messages hold
+// the raw Anthropic content-block array so thinking/tool_use blocks can be
+// echoed back unchanged on the next turn.
+export const aiConversations = sqliteTable("ai_conversations", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id")
+    .notNull()
+    .references(() => organization.id),
+  userId: text("user_id")
+    .notNull()
+    .references(() => user.id),
+  title: text("title").notNull().default(""),
+  projectId: text("project_id").references(() => projects.id),
+  state: text("state").notNull().default("idle"),
+  createdAt: integer("created_at").notNull(),
+  updatedAt: integer("updated_at").notNull(),
+});
+
+export const aiMessages = sqliteTable("ai_messages", {
+  id: text("id").primaryKey(),
+  conversationId: text("conversation_id")
+    .notNull()
+    .references(() => aiConversations.id),
+  seq: integer("seq").notNull(),
+  role: text("role").notNull(),
+  /** JSON: the raw content-block array, stored verbatim. */
+  content: text("content").notNull(),
+  createdAt: integer("created_at").notNull(),
+});
+
+// Token ledger. Only the in-platform chat writes here — MCP runs the model on
+// the client side, so it costs the workspace nothing.
+export const aiUsage = sqliteTable("ai_usage", {
+  id: text("id").primaryKey(),
+  organizationId: text("organization_id")
+    .notNull()
+    .references(() => organization.id),
+  userId: text("user_id")
+    .notNull()
+    .references(() => user.id),
+  conversationId: text("conversation_id").references(() => aiConversations.id),
+  model: text("model").notNull(),
+  inputTokens: integer("input_tokens").notNull().default(0),
+  outputTokens: integer("output_tokens").notNull().default(0),
+  cacheReadTokens: integer("cache_read_tokens").notNull().default(0),
+  cacheWriteTokens: integer("cache_write_tokens").notNull().default(0),
+  createdAt: integer("created_at").notNull(),
+});

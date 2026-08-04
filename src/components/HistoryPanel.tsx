@@ -1,15 +1,8 @@
 import { For, Show, createResource, createSignal } from "solid-js";
 import type { HistoryEntry } from "../lib/types";
 import { listHistory, restoreDeliverable, restoreVersion } from "../lib/api";
+import { timeAgo } from "../lib/time";
 import { Avatar } from "./Avatar";
-
-function timeAgo(ts: number) {
-  const s = Math.floor((Date.now() - ts) / 1000);
-  if (s < 60) return "just now";
-  if (s < 3600) return `${Math.floor(s / 60)}m ago`;
-  if (s < 86400) return `${Math.floor(s / 3600)}h ago`;
-  return `${Math.floor(s / 86400)}d ago`;
-}
 
 export function HistoryPanel(props: {
   projectId: string;
@@ -39,7 +32,7 @@ export function HistoryPanel(props: {
   }
 
   return (
-    <aside class="w-80 shrink-0 h-full flex flex-col border-l border-neutral-200 bg-white/95 backdrop-blur-sm">
+    <aside class="w-80 shrink-0 h-full flex flex-col border-l border-neutral-200 bg-panel/95 backdrop-blur-sm">
       <div class="h-10 px-3 flex items-center justify-between border-b border-neutral-100">
         <span class="text-xs font-semibold text-neutral-700">History</span>
         <button
@@ -52,7 +45,7 @@ export function HistoryPanel(props: {
 
       <div class="flex-1 overflow-y-auto">
         <Show when={error()}>
-          <p class="m-3 text-xs text-rose-600 bg-rose-50 border border-rose-200 rounded px-2 py-1.5">
+          <p class="m-3 text-xs text-on-accent-rose bg-accent-rose border border-accent-rose-line rounded px-2 py-1.5">
             {error()}
           </p>
         </Show>
@@ -75,7 +68,7 @@ export function HistoryPanel(props: {
                   <p class="text-[10px] text-neutral-400 mt-0.5">{timeAgo(e.createdAt)}</p>
                   <Show when={e.restorable && props.canRestore}>
                     <button
-                      class="mt-1 text-[11px] text-sky-700 border border-sky-200 bg-sky-50 rounded px-2 py-0.5 hover:bg-sky-100 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                      class="mt-1 text-[11px] text-on-accent-sky border border-accent-sky-line bg-accent-sky rounded px-2 py-0.5 hover:bg-accent-sky-hover cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                       disabled={busyId() === e.id}
                       onClick={() => void restore(e)}
                     >

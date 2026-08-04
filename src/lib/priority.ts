@@ -11,10 +11,10 @@ export const PRIORITIES: {
   border: string;
   bg: string;
 }[] = [
-  { value: "urgent", label: "Urgent", icon: "iconoir:warning-triangle", color: "text-rose-600", border: "border-l-rose-500", bg: "bg-rose-50/60" },
-  { value: "high", label: "High", icon: "iconoir:flag-outline", color: "text-orange-500", border: "border-l-orange-400", bg: "bg-orange-50/50" },
-  { value: "medium", label: "Medium", icon: "iconoir:flag-outline", color: "text-amber-500", border: "border-l-amber-400", bg: "bg-amber-50/50" },
-  { value: "low", label: "Low", icon: "iconoir:flag-outline", color: "text-sky-500", border: "border-l-sky-400", bg: "bg-sky-50/50" },
+  { value: "urgent", label: "Urgent", icon: "iconoir:warning-triangle", color: "text-rose-600", border: "border-l-rose-500", bg: "bg-accent-rose/60" },
+  { value: "high", label: "High", icon: "iconoir:flag-outline", color: "text-orange-500", border: "border-l-orange-400", bg: "bg-accent-orange/50" },
+  { value: "medium", label: "Medium", icon: "iconoir:flag-outline", color: "text-amber-500", border: "border-l-amber-400", bg: "bg-accent-amber/50" },
+  { value: "low", label: "Low", icon: "iconoir:flag-outline", color: "text-sky-500", border: "border-l-sky-400", bg: "bg-accent-sky/50" },
   { value: "none", label: "No priority", icon: "iconoir:flag-outline", color: "text-neutral-300", border: "border-l-transparent", bg: "" },
 ];
 

@@ -1,4 +1,4 @@
-export type Phase = "pre_production" | "iterations" | "publishing";
+import type { ProjectStatus, TaskCounts } from "./project-status";
 
 export type DeliverableStatus =
   | "draft"
@@ -41,7 +41,8 @@ export interface Project {
   entityId: string | null;
   /** joined from the entities table for display */
   entityName: string | null;
-  phase: Phase;
+  /** overall project status — moved manually, gated by tasks (see project-status.ts) */
+  status: ProjectStatus;
   createdBy: string;
   createdAt: number;
   archivedAt?: number | null;
@@ -51,6 +52,8 @@ export interface Project {
   cover?: string | null;
   /** counts of deliverables in each non-draft review status, for the card rollup */
   statusCounts?: { in_review: number; revisions_requested: number; approved: number };
+  /** counts of the project's tasks by status — powers the status pill's gate */
+  taskCounts?: TaskCounts;
 }
 
 /** The signed-in user as seen by the project graph; drives role-adaptive UI. */
@@ -127,6 +130,11 @@ export interface DeliverableGroup {
   id: string;
   label: string;
   parentGroupId: string | null;
+  /** own frame for a manually-created empty container; null when derived from members */
+  posX: number | null;
+  posY: number | null;
+  w: number | null;
+  h: number | null;
 }
 
 export type CanvasObjectKind = "note";
@@ -171,6 +179,7 @@ export type HistoryType =
   | "project_created"
   | "project_archived"
   | "project_restored"
+  | "project_status_changed"
   | "deliverable_created"
   | "deliverable_renamed"
   | "deliverable_deleted"

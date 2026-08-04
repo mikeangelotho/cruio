@@ -12,14 +12,14 @@ export function SettingsNav(props: {
   crossLink: { href: string; label: string; icon: string };
 }) {
   return (
-    <nav class="min-h-12 px-4 flex items-center justify-between bg-[#f8f7f7] border-b border-[#f0eeee]">
+    <nav class="min-h-12 px-4 flex items-center justify-between bg-surface border-b border-hairline">
       <div class="flex items-center gap-2 text-sm">
         <A href="/" class="flex items-center text-neutral-500 hover:text-neutral-800 p-1">
           <Icon icon="iconoir:arrow-left" width="16" />
         </A>
         <span class="font-medium text-neutral-800">{props.title}</span>
         <Show when={props.orgName}>
-          <span class="bg-[#efeded] text-neutral-500 text-xs py-0.5 px-1.5 rounded">
+          <span class="bg-muted text-neutral-500 text-xs py-0.5 px-1.5 rounded">
             {props.orgName}
           </span>
         </Show>

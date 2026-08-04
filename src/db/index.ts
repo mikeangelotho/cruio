@@ -104,7 +104,7 @@ CREATE TABLE IF NOT EXISTS projects (
   organization_id TEXT NOT NULL REFERENCES organization(id),
   name TEXT NOT NULL,
   entity_id TEXT REFERENCES entities(id),
-  phase TEXT NOT NULL DEFAULT 'pre_production',
+  status TEXT NOT NULL DEFAULT 'todo',
   created_by TEXT NOT NULL REFERENCES user(id),
   created_at INTEGER NOT NULL,
   archived_at INTEGER,
@@ -115,6 +115,10 @@ CREATE TABLE IF NOT EXISTS deliverable_groups (
   project_id TEXT NOT NULL REFERENCES projects(id),
   label TEXT NOT NULL DEFAULT '',
   parent_group_id TEXT,
+  pos_x REAL,
+  pos_y REAL,
+  w REAL,
+  h REAL,
   created_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS deliverables (
@@ -299,6 +303,44 @@ CREATE TABLE IF NOT EXISTS library_files (
 CREATE INDEX IF NOT EXISTS idx_library_files_file_name ON library_files(file_name);
 CREATE INDEX IF NOT EXISTS idx_library_files_folder ON library_files(folder_id);
 CREATE UNIQUE INDEX IF NOT EXISTS uidx_library_files_version ON library_files(version_id);
+
+CREATE TABLE IF NOT EXISTS ai_conversations (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL REFERENCES organization(id),
+  user_id TEXT NOT NULL REFERENCES user(id),
+  title TEXT NOT NULL DEFAULT '',
+  project_id TEXT REFERENCES projects(id),
+  state TEXT NOT NULL DEFAULT 'idle',
+  created_at INTEGER NOT NULL,
+  updated_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_conversations_user ON ai_conversations(user_id, updated_at);
+
+-- content is the raw Anthropic content-block array, stored verbatim: thinking
+-- and tool_use blocks must be echoed back unchanged or the next request 400s.
+CREATE TABLE IF NOT EXISTS ai_messages (
+  id TEXT PRIMARY KEY,
+  conversation_id TEXT NOT NULL REFERENCES ai_conversations(id),
+  seq INTEGER NOT NULL,
+  role TEXT NOT NULL,
+  content TEXT NOT NULL,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_messages_conversation ON ai_messages(conversation_id, seq);
+
+CREATE TABLE IF NOT EXISTS ai_usage (
+  id TEXT PRIMARY KEY,
+  organization_id TEXT NOT NULL REFERENCES organization(id),
+  user_id TEXT NOT NULL REFERENCES user(id),
+  conversation_id TEXT REFERENCES ai_conversations(id),
+  model TEXT NOT NULL,
+  input_tokens INTEGER NOT NULL DEFAULT 0,
+  output_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_read_tokens INTEGER NOT NULL DEFAULT 0,
+  cache_write_tokens INTEGER NOT NULL DEFAULT 0,
+  created_at INTEGER NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_usage_org ON ai_usage(organization_id, created_at);
 `;
 
 async function tableExists(name: string) {
@@ -358,6 +400,12 @@ async function migrate() {
     if (!cols.includes("parent_group_id")) {
       await client.execute("ALTER TABLE deliverable_groups ADD COLUMN parent_group_id TEXT");
     }
+    if (!cols.includes("pos_x")) {
+      await client.execute("ALTER TABLE deliverable_groups ADD COLUMN pos_x REAL");
+      await client.execute("ALTER TABLE deliverable_groups ADD COLUMN pos_y REAL");
+      await client.execute("ALTER TABLE deliverable_groups ADD COLUMN w REAL");
+      await client.execute("ALTER TABLE deliverable_groups ADD COLUMN h REAL");
+    }
   }
 
   if (await tableExists("canvas_objects")) {
@@ -382,6 +430,19 @@ async function migrate() {
     if (!cols.includes("archived_at")) {
       await client.execute("ALTER TABLE projects ADD COLUMN archived_at INTEGER");
       await client.execute("ALTER TABLE projects ADD COLUMN archived_by TEXT");
+    }
+    // legacy `phase` (pre_production/iterations/publishing) → task-aligned
+    // `status` (todo/in_progress/done). The phase concept is retired; project
+    // status is now moved manually and gated by tasks.
+    if (cols.includes("phase") && !cols.includes("status")) {
+      await client.execute("ALTER TABLE projects RENAME COLUMN phase TO status");
+      await client.execute(
+        "UPDATE projects SET status = CASE status " +
+          "WHEN 'pre_production' THEN 'todo' " +
+          "WHEN 'iterations' THEN 'in_progress' " +
+          "WHEN 'publishing' THEN 'done' " +
+          "ELSE 'todo' END",
+      );
     }
     if (cols.includes("client_id") && !cols.includes("entity_id")) {
       await client.execute("ALTER TABLE projects RENAME COLUMN client_id TO entity_id");

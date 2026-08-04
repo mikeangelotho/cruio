@@ -22,11 +22,76 @@ const easeInOutCubic = (t: number) =>
 export function createCamera(initial?: Partial<CameraState>) {
   const [cam, setCam] = createStore<CameraState>({ x: 0, y: 0, zoom: 1, ...initial });
 
-  let raf: number | null = null;
+  // Two independent rAF handles. `animRaf` drives flyTo; `inputRaf` drives the
+  // per-frame coalescing of pointer/wheel input. Keeping them separate lets a
+  // pan cancel an in-flight fly (animRaf) without cancelling its own queued
+  // commit, and lets an explicit jump/fly cancel everything.
+  let animRaf: number | null = null;
+  let inputRaf: number | null = null;
 
+  // Accumulated, uncommitted input for the current frame. panBy/zoomAt fire once
+  // per raw event (a trackpad emits many per displayed frame); we sum them here
+  // and apply the net result in a single setCam on the next animation frame, so
+  // the world transform and the dot grid each repaint at most once per frame.
+  const DEFAULT_MIN = 0.1;
+  const DEFAULT_MAX = 64;
+  let pDx = 0;
+  let pDy = 0;
+  let pZoom = 1;
+  let pAnchorX = 0;
+  let pAnchorY = 0;
+  let pMin = DEFAULT_MIN;
+  let pMax = DEFAULT_MAX;
+
+  function resetPending() {
+    pDx = 0;
+    pDy = 0;
+    pZoom = 1;
+    pMin = DEFAULT_MIN;
+    pMax = DEFAULT_MAX;
+  }
+
+  function cancelAnim() {
+    if (animRaf !== null) cancelAnimationFrame(animRaf);
+    animRaf = null;
+  }
+
+  function cancelInput() {
+    if (inputRaf !== null) cancelAnimationFrame(inputRaf);
+    inputRaf = null;
+    resetPending();
+  }
+
+  /** Public: halt any motion (animation or queued input) immediately. */
   function stop() {
-    if (raf !== null) cancelAnimationFrame(raf);
-    raf = null;
+    cancelAnim();
+    cancelInput();
+  }
+
+  function flush() {
+    inputRaf = null;
+    let { x, y, zoom } = cam;
+
+    // Zoom first, anchored to the pointer, then translate — matches how the two
+    // gestures compose when they land in the same frame (rare, but correct).
+    if (pZoom !== 1) {
+      const worldX = pAnchorX / zoom + x;
+      const worldY = pAnchorY / zoom + y;
+      zoom = Math.max(pMin, Math.min(zoom * pZoom, pMax));
+      x = worldX - pAnchorX / zoom;
+      y = worldY - pAnchorY / zoom;
+    }
+    if (pDx !== 0 || pDy !== 0) {
+      x -= pDx / zoom;
+      y -= pDy / zoom;
+    }
+
+    resetPending();
+    setCam({ x, y, zoom });
+  }
+
+  function scheduleFlush() {
+    if (inputRaf === null) inputRaf = requestAnimationFrame(flush);
   }
 
   const screenToWorld = (sx: number, sy: number) => ({
@@ -40,16 +105,20 @@ export function createCamera(initial?: Partial<CameraState>) {
   });
 
   function panBy(dxScreen: number, dyScreen: number) {
-    stop();
-    setCam({ x: cam.x - dxScreen / cam.zoom, y: cam.y - dyScreen / cam.zoom });
+    cancelAnim(); // the user is driving now — abandon any fly, keep queued input
+    pDx += dxScreen;
+    pDy += dyScreen;
+    scheduleFlush();
   }
 
-  function zoomAt(sx: number, sy: number, factor: number, min = 0.1, max = 64) {
-    stop();
-    const world = screenToWorld(sx, sy);
-    const zoom = Math.max(min, Math.min(cam.zoom * factor, max));
-    // keep the pointer over the same world point
-    setCam({ zoom, x: world.x - sx / zoom, y: world.y - sy / zoom });
+  function zoomAt(sx: number, sy: number, factor: number, min = DEFAULT_MIN, max = DEFAULT_MAX) {
+    cancelAnim();
+    pZoom *= factor;
+    pAnchorX = sx; // keep the latest anchor; within one frame it barely moves
+    pAnchorY = sy;
+    pMin = min;
+    pMax = max;
+    scheduleFlush();
   }
 
   /** Camera state that fits `rect` (world coords) in a viewport with padding. */
@@ -66,7 +135,7 @@ export function createCamera(initial?: Partial<CameraState>) {
   }
 
   function jumpTo(target: CameraTarget) {
-    stop();
+    stop(); // explicit move wins over any queued input
     setCam({ ...target });
   }
 
@@ -90,13 +159,13 @@ export function createCamera(initial?: Partial<CameraState>) {
           y: from.y + (target.y - from.y) * e,
         });
         if (t < 1) {
-          raf = requestAnimationFrame(tick);
+          animRaf = requestAnimationFrame(tick);
         } else {
-          raf = null;
+          animRaf = null;
           resolve();
         }
       };
-      raf = requestAnimationFrame(tick);
+      animRaf = requestAnimationFrame(tick);
     });
   }
 

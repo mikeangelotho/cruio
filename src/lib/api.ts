@@ -15,6 +15,7 @@ import {
   projectShares,
   projectTags,
   tags,
+  tasks,
   versions,
 } from "../db/schema";
 import type {
@@ -27,11 +28,16 @@ import type {
   HistoryEntry,
   NoteColor,
   PersonalPosition,
-  Phase,
   Project,
   ProjectGraph,
   TagColor,
 } from "./types";
+import {
+  canSetStatus,
+  PROJECT_STATUS_META,
+  type ProjectStatus,
+  type TaskCounts,
+} from "./project-status";
 import {
   authorize,
   recomputeStatus,
@@ -57,6 +63,7 @@ import {
   Norm01,
   NoteColorSchema,
   PersonalPositionKindSchema,
+  ProjectStatusSchema,
   ShortText,
   TagList,
   parseOrThrow,
@@ -133,12 +140,25 @@ export async function listProjects(entityId?: string | null): Promise<Project[]>
         .innerJoin(tags, eq(tags.id, projectTags.tagId))
         .where(inArray(projectTags.projectId, ids))
     : [];
+  // Per-project task counts by status — drives the card's status pill + its gate.
+  const taskRows = ids.length
+    ? await db
+        .select({ projectId: tasks.projectId, status: tasks.status })
+        .from(tasks)
+        .where(and(inArray(tasks.projectId, ids), isNull(tasks.deletedAt)))
+    : [];
   return rows.map((r) => {
     const projectDeliverables = counts.filter((c) => c.projectId === r.p.id);
+    const projectTaskRows = taskRows.filter((t) => t.projectId === r.p.id);
+    const taskCounts: TaskCounts = {
+      todo: projectTaskRows.filter((t) => t.status === "todo").length,
+      in_progress: projectTaskRows.filter((t) => t.status === "in_progress").length,
+      done: projectTaskRows.filter((t) => t.status === "done").length,
+    };
     return {
       ...(r.p as unknown as Project),
       entityName: r.entityName ?? null,
-      phase: r.p.phase as Phase,
+      status: r.p.status as ProjectStatus,
       deliverableCount: projectDeliverables.length,
       cover: coverRows.find((c) => c.projectId === r.p.id)?.fileName ?? null,
       statusCounts: {
@@ -148,6 +168,7 @@ export async function listProjects(entityId?: string | null): Promise<Project[]>
         ).length,
         approved: projectDeliverables.filter((c) => c.status === "approved").length,
       },
+      taskCounts,
       tags: tagRows
         .filter((t) => t.projectId === r.p.id)
         .map((t) => ({ id: t.id, name: t.name, color: t.color as TagColor })),
@@ -283,7 +304,7 @@ export async function getProjectGraph(
     project: {
       ...(project as unknown as Project),
       entityName,
-      phase: project.phase as Phase,
+      status: project.status as ProjectStatus,
       tags: pTagRows.map(t => ({ id: t.id, name: t.name, color: t.color as TagColor })),
     },
     viewer: { userId: session.userId, name: session.name, role },
@@ -291,6 +312,10 @@ export async function getProjectGraph(
       id: g.id,
       label: g.label,
       parentGroupId: g.parentGroupId ?? null,
+      posX: g.posX ?? null,
+      posY: g.posY ?? null,
+      w: g.w ?? null,
+      h: g.h ?? null,
     })),
     canvasObjects: coRows.map(o => ({
       ...(o as unknown as CanvasObject),
@@ -332,7 +357,8 @@ export async function createDeliverable(
   name: string,
   posX: number,
   posY: number,
-  spec = ""
+  spec = "",
+  groupId: string | null = null,
 ): Promise<void> {
   "use server";
   id = parseOrThrow(Id, id);
@@ -341,9 +367,17 @@ export async function createDeliverable(
   posX = parseOrThrow(FiniteNumber, posX);
   posY = parseOrThrow(FiniteNumber, posY);
   spec = parseOrThrow(LongText, spec);
+  groupId = groupId ? parseOrThrow(Id, groupId) : null;
   const { session } = await requireProjectAccess(projectId, { resource: "deliverable", action: "create" });
   const db = await getDb();
-  await db.insert(deliverables).values({ id, projectId, name, spec, posX, posY, createdAt: Date.now() });
+  if (groupId) {
+    const [g] = await db
+      .select({ projectId: deliverableGroups.projectId })
+      .from(deliverableGroups)
+      .where(eq(deliverableGroups.id, groupId));
+    if (!g || g.projectId !== projectId) throw new Error("Unknown group");
+  }
+  await db.insert(deliverables).values({ id, projectId, name, spec, posX, posY, groupId, createdAt: Date.now() });
   await recordHistory(db, {
     projectId,
     deliverableId: id,
@@ -392,17 +426,32 @@ export async function renameDeliverable(id: string, name: string): Promise<void>
  * Group deliverables as size/format variants under one label. Always creates
  * a fresh group for the selection, overwriting any prior groupId on the
  * given deliverables (simplest v1 semantics — no merge-with-existing-group).
+ * When `parentGroupId` is given the new group is nested under it (a sub-group
+ * created from cards that already share a parent group).
  */
-export async function groupDeliverables(deliverableIds: string[], label: string): Promise<string> {
+export async function groupDeliverables(
+  groupId: string,
+  deliverableIds: string[],
+  label: string,
+  parentGroupId: string | null = null,
+): Promise<string> {
   "use server";
-  if (deliverableIds.length < 2) throw new Error("Select at least two deliverables to group");
+  if (deliverableIds.length < 1) throw new Error("Select at least one deliverable to group");
+  groupId = parseOrThrow(Id, groupId);
   const ids = deliverableIds.map(id => parseOrThrow(Id, id));
   label = parseOrThrow(ShortText, label);
+  parentGroupId = parentGroupId ? parseOrThrow(Id, parentGroupId) : null;
   const projectId = await resolveDeliverableProject(ids[0]);
   const { session } = await requireProjectAccess(projectId, { resource: "deliverable", action: "update" });
   const db = await getDb();
-  const groupId = crypto.randomUUID();
-  await db.insert(deliverableGroups).values({ id: groupId, projectId, label, createdAt: Date.now() });
+  if (parentGroupId) {
+    const [p] = await db
+      .select({ projectId: deliverableGroups.projectId })
+      .from(deliverableGroups)
+      .where(eq(deliverableGroups.id, parentGroupId));
+    if (!p || p.projectId !== projectId) throw new Error("Unknown parent group");
+  }
+  await db.insert(deliverableGroups).values({ id: groupId, projectId, label, parentGroupId, createdAt: Date.now() });
   await db.update(deliverables).set({ groupId }).where(inArray(deliverables.id, ids));
   await recordHistory(db, {
     projectId,
@@ -412,6 +461,74 @@ export async function groupDeliverables(deliverableIds: string[], label: string)
     detail: `grouped ${ids.length} deliverables as “${label}”`,
   });
   return groupId;
+}
+
+/**
+ * Create an empty group *container* with its own frame (position + size). Unlike
+ * groupDeliverables this has no members — its outline is drawn from the stored
+ * frame so it's visible and draggable before anything is dropped in. Client-
+ * generated id (for undo/redo symmetry).
+ */
+export async function createGroup(
+  id: string,
+  projectId: string,
+  label: string,
+  posX: number,
+  posY: number,
+  w: number,
+  h: number,
+  parentGroupId: string | null = null,
+): Promise<void> {
+  "use server";
+  id = parseOrThrow(Id, id);
+  projectId = parseOrThrow(Id, projectId);
+  label = parseOrThrow(ShortText, label);
+  posX = parseOrThrow(FiniteNumber, posX);
+  posY = parseOrThrow(FiniteNumber, posY);
+  w = parseOrThrow(FiniteNumber, w);
+  h = parseOrThrow(FiniteNumber, h);
+  parentGroupId = parentGroupId ? parseOrThrow(Id, parentGroupId) : null;
+  const { session } = await requireProjectAccess(projectId, { resource: "deliverable", action: "update" });
+  const db = await getDb();
+  if (parentGroupId) {
+    const [p] = await db
+      .select({ projectId: deliverableGroups.projectId })
+      .from(deliverableGroups)
+      .where(eq(deliverableGroups.id, parentGroupId));
+    if (!p || p.projectId !== projectId) throw new Error("Unknown parent group");
+  }
+  await db.insert(deliverableGroups).values({ id, projectId, label, parentGroupId, posX, posY, w, h, createdAt: Date.now() });
+  await recordHistory(db, {
+    projectId,
+    userId: session.userId,
+    actorName: session.name,
+    type: "deliverable_renamed",
+    detail: `created group “${label}”`,
+  });
+}
+
+/** Persist a group container's frame (move / resize). */
+export async function setGroupFrame(
+  groupId: string,
+  posX: number,
+  posY: number,
+  w: number,
+  h: number,
+): Promise<void> {
+  "use server";
+  groupId = parseOrThrow(Id, groupId);
+  posX = parseOrThrow(FiniteNumber, posX);
+  posY = parseOrThrow(FiniteNumber, posY);
+  w = parseOrThrow(FiniteNumber, w);
+  h = parseOrThrow(FiniteNumber, h);
+  const db = await getDb();
+  const [g] = await db
+    .select({ projectId: deliverableGroups.projectId })
+    .from(deliverableGroups)
+    .where(eq(deliverableGroups.id, groupId));
+  if (!g) throw new Error("Not found");
+  await requireProjectAccess(g.projectId, { resource: "deliverable", action: "update" });
+  await db.update(deliverableGroups).set({ posX, posY, w, h }).where(eq(deliverableGroups.id, groupId));
 }
 
 export async function ungroupDeliverable(id: string): Promise<void> {
@@ -426,7 +543,15 @@ export async function ungroupDeliverable(id: string): Promise<void> {
   await db.update(deliverables).set({ groupId: null }).where(eq(deliverables.id, id));
   const remaining = await db.select({ id: deliverables.id }).from(deliverables).where(eq(deliverables.groupId, groupId));
   if (remaining.length === 0) {
-    await db.delete(deliverableGroups).where(eq(deliverableGroups.id, groupId));
+    // Only auto-delete derived groups. A container with its own frame persists
+    // as an empty group you can keep dropping items into.
+    const [g] = await db
+      .select({ posX: deliverableGroups.posX })
+      .from(deliverableGroups)
+      .where(eq(deliverableGroups.id, groupId));
+    if (g && g.posX === null) {
+      await db.delete(deliverableGroups).where(eq(deliverableGroups.id, groupId));
+    }
   }
 }
 
@@ -467,9 +592,10 @@ export async function renameGroup(groupId: string, label: string): Promise<void>
 }
 
 /** Nest existing groups under a new labeled parent group. */
-export async function groupGroups(childGroupIds: string[], label: string): Promise<string> {
+export async function groupGroups(parentId: string, childGroupIds: string[], label: string): Promise<string> {
   "use server";
   if (childGroupIds.length < 2) throw new Error("Select at least two groups to group");
+  parentId = parseOrThrow(Id, parentId);
   const ids = childGroupIds.map(id => parseOrThrow(Id, id));
   label = parseOrThrow(ShortText, label);
   const db = await getDb();
@@ -481,7 +607,6 @@ export async function groupGroups(childGroupIds: string[], label: string): Promi
   const projectId = children[0].projectId;
   if (children.some(c => c.projectId !== projectId)) throw new Error("Groups must belong to one project");
   const { session } = await requireProjectAccess(projectId, { resource: "deliverable", action: "update" });
-  const parentId = crypto.randomUUID();
   await db.insert(deliverableGroups).values({ id: parentId, projectId, label, createdAt: Date.now() });
   await db.update(deliverableGroups).set({ parentGroupId: parentId }).where(inArray(deliverableGroups.id, ids));
   await recordHistory(db, {
@@ -492,6 +617,50 @@ export async function groupGroups(childGroupIds: string[], label: string): Promi
     detail: `grouped ${ids.length} groups as “${label}”`,
   });
   return parentId;
+}
+
+/**
+ * Reparent an existing group under another group, or to the top level when
+ * `parentGroupId` is null. Powers drag-a-group-into-a-group and the nesting
+ * menu. Guards against cycles — a group can't become its own descendant.
+ */
+export async function setGroupParent(
+  childGroupId: string,
+  parentGroupId: string | null,
+): Promise<void> {
+  "use server";
+  childGroupId = parseOrThrow(Id, childGroupId);
+  parentGroupId = parentGroupId ? parseOrThrow(Id, parentGroupId) : null;
+  if (childGroupId === parentGroupId) throw new Error("A group can't contain itself");
+  const db = await getDb();
+  const [child] = await db
+    .select({ projectId: deliverableGroups.projectId })
+    .from(deliverableGroups)
+    .where(eq(deliverableGroups.id, childGroupId));
+  if (!child) throw new Error("Unknown group");
+  const { session } = await requireProjectAccess(child.projectId, { resource: "deliverable", action: "update" });
+  if (parentGroupId) {
+    const all = await db
+      .select({ id: deliverableGroups.id, parentGroupId: deliverableGroups.parentGroupId })
+      .from(deliverableGroups)
+      .where(eq(deliverableGroups.projectId, child.projectId));
+    const byId = new Map(all.map(g => [g.id, g.parentGroupId as string | null]));
+    if (!byId.has(parentGroupId)) throw new Error("Unknown parent group");
+    // walk up from the proposed parent; reaching the child means a cycle
+    let cur: string | null = parentGroupId;
+    for (let i = 0; i < 64 && cur; i++) {
+      if (cur === childGroupId) throw new Error("That would nest a group inside itself");
+      cur = byId.get(cur) ?? null;
+    }
+  }
+  await db.update(deliverableGroups).set({ parentGroupId }).where(eq(deliverableGroups.id, childGroupId));
+  await recordHistory(db, {
+    projectId: child.projectId,
+    userId: session.userId,
+    actorName: session.name,
+    type: "deliverable_renamed",
+    detail: parentGroupId ? "nested a group" : "moved a group to the top level",
+  });
 }
 
 /**
@@ -1029,6 +1198,46 @@ export async function listHistory(projectId: string): Promise<HistoryEntry[]> {
   }));
 }
 
+/**
+ * Move a project to a new status (admin/owner). Gated by tasks: advancing is
+ * only allowed once every task has reached the target status or beyond; moving
+ * backward is always allowed, and a project with no tasks moves freely.
+ */
+export async function setProjectStatus(id: string, status: string): Promise<void> {
+  "use server";
+  id = parseOrThrow(Id, id);
+  const target = parseOrThrow(ProjectStatusSchema, status) as ProjectStatus;
+  const session = await requireSession();
+  const db = await getDb();
+  const [p] = await db.select().from(projects).where(eq(projects.id, id));
+  if (!p || p.archivedAt) throw new Error("Not found");
+  const { role } = await requireMember(p.organizationId);
+  authorize(role, "project", "update");
+
+  const taskRows = await db
+    .select({ status: tasks.status })
+    .from(tasks)
+    .where(and(eq(tasks.projectId, id), isNull(tasks.deletedAt)));
+  const counts: TaskCounts = {
+    todo: taskRows.filter((t) => t.status === "todo").length,
+    in_progress: taskRows.filter((t) => t.status === "in_progress").length,
+    done: taskRows.filter((t) => t.status === "done").length,
+  };
+  if (!canSetStatus(p.status as ProjectStatus, target, counts)) {
+    throw new Error("All tasks must reach this status first");
+  }
+  if (target === (p.status as ProjectStatus)) return;
+
+  await db.update(projects).set({ status: target }).where(eq(projects.id, id));
+  await recordHistory(db, {
+    projectId: id,
+    userId: session.userId,
+    actorName: session.name,
+    type: "project_status_changed",
+    detail: `moved the project to ${PROJECT_STATUS_META[target].label}`,
+  });
+}
+
 /** Archive a project (admin+). It leaves all lists but is restorable. */
 export async function archiveProject(id: string): Promise<void> {
   "use server";
@@ -1099,6 +1308,6 @@ export async function listArchivedProjects(entityId?: string | null): Promise<Pr
     .map(r => ({
       ...(r.p as unknown as Project),
       entityName: r.entityName ?? null,
-      phase: r.p.phase as Phase,
+      status: r.p.status as ProjectStatus,
     }));
 }

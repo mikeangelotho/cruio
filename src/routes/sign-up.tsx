@@ -37,9 +37,9 @@ export default function SignUp() {
   }
 
   return (
-    <div class="p-1 h-screen bg-[#fffefe]">
+    <div class="p-1 h-full bg-canvas">
       {redirectIfAuthed()}
-      <div class="rounded-lg w-full h-full border border-[#eceaea] flex items-center justify-center">
+      <div class="rounded-lg w-full h-full border border-line flex items-center justify-center">
         <div class="w-[340px] max-w-[90vw]">
           <div class="mb-6 text-center">
             <span class="text-sm font-semibold tracking-tight text-neutral-800">cruio</span>
@@ -47,7 +47,7 @@ export default function SignUp() {
           </div>
           <form
             onSubmit={submit}
-            class="p-5 border border-neutral-200 rounded-lg bg-white flex flex-col gap-3"
+            class="p-5 border border-neutral-200 rounded-lg bg-panel flex flex-col gap-3"
           >
             <h1 class="text-sm font-semibold text-neutral-800">Create your account</h1>
             <label class="text-xs text-neutral-500">
@@ -57,7 +57,7 @@ export default function SignUp() {
                 required
                 autocomplete="name"
                 class="mt-1 w-full text-sm border border-neutral-200 rounded px-2 py-1.5 outline-none focus:border-sky-400"
-                placeholder="Mike Angelo"
+                placeholder="Jane Doe"
                 ref={el => queueMicrotask(() => el.focus())}
               />
             </label>
@@ -90,7 +90,7 @@ export default function SignUp() {
             <button
               type="submit"
               disabled={busy()}
-              class="mt-1 flex items-center justify-center gap-1 text-xs bg-neutral-900 text-white rounded px-3 py-2 hover:bg-neutral-700 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+              class="mt-1 flex items-center justify-center gap-1 text-xs bg-brand text-on-brand rounded px-3 py-2 hover:bg-neutral-700 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
             >
               <Show when={busy()} fallback={<>Create account</>}>
                 <Icon icon="iconoir:refresh" width="12" class="animate-spin" /> Creating…

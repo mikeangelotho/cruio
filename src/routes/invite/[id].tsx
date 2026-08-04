@@ -91,8 +91,8 @@ export default function InvitePage() {
   }
 
   return (
-    <div class="p-1 h-screen bg-[#fffefe]">
-      <div class="rounded-lg w-full h-full border border-[#eceaea] flex items-center justify-center">
+    <div class="p-1 h-full bg-canvas">
+      <div class="rounded-lg w-full h-full border border-line flex items-center justify-center">
         <div class="w-[380px] max-w-[90vw]">
           <div class="mb-6 text-center">
             <span class="text-sm font-semibold tracking-tight text-neutral-800">cruio</span>
@@ -105,7 +105,7 @@ export default function InvitePage() {
             </Match>
 
             <Match when={!inv()}>
-              <div class="p-5 border border-neutral-200 rounded-lg bg-white text-center">
+              <div class="p-5 border border-neutral-200 rounded-lg bg-panel text-center">
                 <Icon icon="iconoir:warning-triangle" width="24" class="text-neutral-300" />
                 <p class="mt-2 text-sm font-medium text-neutral-700">Invitation not found</p>
                 <p class="mt-1 text-xs text-neutral-400">
@@ -115,7 +115,7 @@ export default function InvitePage() {
             </Match>
 
             <Match when={inv()!.status !== "pending" || expired()}>
-              <div class="p-5 border border-neutral-200 rounded-lg bg-white text-center">
+              <div class="p-5 border border-neutral-200 rounded-lg bg-panel text-center">
                 <Icon icon="iconoir:clock" width="24" class="text-neutral-300" />
                 <p class="mt-2 text-sm font-medium text-neutral-700">
                   {inv()!.status === "accepted"
@@ -132,7 +132,7 @@ export default function InvitePage() {
 
             <Match when={inv()}>
               {i => (
-                <div class="p-5 border border-neutral-200 rounded-lg bg-white flex flex-col gap-3">
+                <div class="p-5 border border-neutral-200 rounded-lg bg-panel flex flex-col gap-3">
                   <div>
                     <h1 class="text-sm font-semibold text-neutral-800">
                       Join {i().organizationName}
@@ -152,7 +152,7 @@ export default function InvitePage() {
                       </Show>
                       <button
                         disabled={busy()}
-                        class="flex items-center justify-center gap-1 text-xs bg-neutral-900 text-white rounded px-3 py-2 hover:bg-neutral-700 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                        class="flex items-center justify-center gap-1 text-xs bg-brand text-on-brand rounded px-3 py-2 hover:bg-neutral-700 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                         onClick={() => void accept()}
                       >
                         <Show when={busy()} fallback={<>Accept invitation</>}>
@@ -163,7 +163,7 @@ export default function InvitePage() {
 
                     {/* signed in with a different account */}
                     <Match when={session()}>
-                      <p class="text-xs text-amber-700 bg-amber-50 border border-amber-200 rounded px-2 py-1.5">
+                      <p class="text-xs text-on-accent-amber bg-accent-amber border border-accent-amber-line rounded px-2 py-1.5">
                         You're signed in as {session()!.email}, but this invite is for{" "}
                         {i().email}.
                       </p>
@@ -218,7 +218,7 @@ export default function InvitePage() {
                         <button
                           type="submit"
                           disabled={busy()}
-                          class="flex items-center justify-center gap-1 text-xs bg-neutral-900 text-white rounded px-3 py-2 hover:bg-neutral-700 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                          class="flex items-center justify-center gap-1 text-xs bg-brand text-on-brand rounded px-3 py-2 hover:bg-neutral-700 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                         >
                           <Show when={busy()} fallback={<>{mode() === "sign-up" ? "Create account & join" : "Sign in & join"}</>}>
                             <Icon icon="iconoir:refresh" width="12" class="animate-spin" /> Joining…

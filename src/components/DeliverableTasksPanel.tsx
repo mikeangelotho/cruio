@@ -54,7 +54,7 @@ export function DeliverableTasksPanel(props: {
   }
 
   return (
-    <aside class="w-80 shrink-0 h-full flex flex-col border-l border-neutral-200 bg-white/95 backdrop-blur-sm">
+    <aside class="w-80 shrink-0 h-full flex flex-col border-l border-neutral-200 bg-panel/95 backdrop-blur-sm">
       <div class="h-10 px-3 flex items-center justify-between border-b border-neutral-100">
         <span class="text-xs font-semibold text-neutral-700">
           {props.projectScope ? "Project tasks" : "Tasks"}
@@ -97,7 +97,7 @@ export function DeliverableTasksPanel(props: {
             />
             <Show when={draft().trim()}>
               <button
-                class="shrink-0 text-[10px] text-white bg-neutral-800 hover:bg-neutral-700 rounded px-2 py-1 cursor-pointer"
+                class="shrink-0 text-[10px] text-on-brand bg-brand hover:bg-brand-hover rounded px-2 py-1 cursor-pointer"
                 onClick={submit}
               >
                 Add

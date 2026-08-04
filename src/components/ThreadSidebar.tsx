@@ -1,4 +1,4 @@
-import { For, Show, createEffect } from "solid-js";
+import { For, Show, createEffect, createSignal } from "solid-js";
 import { Icon } from "@iconify-icon/solid";
 import type { Annotation, AnnotationStatus } from "../lib/types";
 import { Avatar } from "./Avatar";
@@ -35,7 +35,7 @@ export function ThreadSidebar(props: {
   }
 
   return (
-    <aside class="w-80 shrink-0 h-full flex flex-col border-l border-neutral-200 bg-white/95 backdrop-blur-sm">
+    <aside class="w-80 shrink-0 h-full flex flex-col border-l border-neutral-200 bg-panel/95 backdrop-blur-sm">
       <div class="h-10 px-3 flex items-center justify-between border-b border-neutral-100">
         <span class="text-xs font-semibold text-neutral-700">
           Threads
@@ -67,7 +67,7 @@ export function ThreadSidebar(props: {
               return (
                 <div
                   class="border-b border-neutral-100 cursor-pointer"
-                  classList={{ "bg-sky-50/50": selected() }}
+                  classList={{ "bg-accent-sky/50": selected() }}
                   onClick={() => props.onSelect(selected() ? null : a.id)}
                 >
                   <div class="px-3 py-2 flex items-start gap-2">
@@ -124,52 +124,86 @@ export function ThreadSidebar(props: {
                         </div>
                       </Show>
 
-                      <div class="ml-7 flex flex-col gap-1.5">
-                          <textarea
-                            ref={el => {
-                              if (selected()) composerRef = el;
-                            }}
-                            rows="2"
-                            class="w-full text-xs border border-neutral-200 rounded px-2 py-1.5 outline-none focus:border-sky-400 resize-none"
-                            placeholder={
-                              a.comments.length === 0 ? "Describe the issue or note…" : "Reply…"
-                            }
-                            onKeyDown={e => {
-                              e.stopPropagation();
-                              if (e.key === "Enter" && !e.shiftKey) {
-                                e.preventDefault();
-                                submit(a, e.currentTarget as HTMLTextAreaElement);
+                      {(() => {
+                        let ta: HTMLTextAreaElement | undefined;
+                        const [draft, setDraft] = createSignal("");
+                        return (
+                          <div class="ml-7 flex flex-col gap-1.5">
+                            <textarea
+                              ref={el => {
+                                ta = el;
+                                if (selected()) composerRef = el;
+                              }}
+                              rows="2"
+                              class="w-full text-xs border border-neutral-200 rounded px-2 py-1.5 outline-none focus:border-sky-400 resize-none"
+                              placeholder={
+                                a.comments.length === 0 ? "Describe the issue or note…" : "Reply…"
                               }
-                              if (e.key === "Escape") props.onSelect(null);
-                            }}
-                          />
-                          <Show when={a.status === "open"}>
-                            <div class="flex gap-1.5">
+                              onInput={e => setDraft(e.currentTarget.value)}
+                              onKeyDown={e => {
+                                e.stopPropagation();
+                                if (e.key === "Enter" && !e.shiftKey) {
+                                  e.preventDefault();
+                                  submit(a, e.currentTarget as HTMLTextAreaElement);
+                                  setDraft("");
+                                }
+                                if (e.key === "Escape") props.onSelect(null);
+                              }}
+                            />
+                            <div class="flex items-center justify-between gap-2">
+                              <span class="text-[10px] text-neutral-400">
+                                Enter to send · Shift+Enter for a new line
+                              </span>
                               <button
-                                class="flex-1 flex items-center justify-center gap-1 text-[11px] rounded border border-emerald-200 bg-emerald-50 text-emerald-700 py-1 hover:bg-emerald-100 cursor-pointer"
-                                title="Resolve — approved"
-                                onClick={() => props.onResolve(a.id, "resolved_approved")}
+                                class="flex items-center gap-1 text-[11px] text-on-brand bg-brand rounded px-2.5 py-1 hover:bg-brand-hover cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                                disabled={draft().trim().length === 0}
+                                title="Post comment"
+                                onClick={() => {
+                                  if (ta) {
+                                    submit(a, ta);
+                                    setDraft("");
+                                    ta.focus();
+                                  }
+                                }}
                               >
-                                <Icon icon="iconoir:check" width="12" /> Approved
-                              </button>
-                              <button
-                                class="flex-1 flex items-center justify-center gap-1 text-[11px] rounded border border-amber-200 bg-amber-50 text-amber-700 py-1 hover:bg-amber-100 cursor-pointer"
-                                title="Resolve — needs revision"
-                                onClick={() => props.onResolve(a.id, "resolved_revision")}
-                              >
-                                <Icon icon="iconoir:refresh" width="12" /> Needs revision
+                                <Icon icon="iconoir:send-diagonal" width="12" /> Comment
                               </button>
                             </div>
-                          </Show>
-                          <Show when={a.status !== "open"}>
-                            <button
-                              class="text-[11px] text-neutral-500 hover:text-neutral-700 self-start cursor-pointer"
-                              onClick={() => props.onResolve(a.id, "open")}
-                            >
-                              Reopen thread
-                            </button>
-                          </Show>
-                        </div>
+
+                            <Show when={a.status === "open"}>
+                              <div class="mt-1 pt-2 border-t border-neutral-100">
+                                <p class="mb-1.5 text-[10px] uppercase tracking-wide text-neutral-400">
+                                  Resolve thread
+                                </p>
+                                <div class="flex gap-1.5">
+                                  <button
+                                    class="flex-1 flex items-center justify-center gap-1 text-[11px] rounded border border-accent-emerald-line bg-accent-emerald text-on-accent-emerald py-1 hover:bg-accent-emerald-hover cursor-pointer"
+                                    title="Resolve — approved"
+                                    onClick={() => props.onResolve(a.id, "resolved_approved")}
+                                  >
+                                    <Icon icon="iconoir:check" width="12" /> Approved
+                                  </button>
+                                  <button
+                                    class="flex-1 flex items-center justify-center gap-1 text-[11px] rounded border border-accent-amber-line bg-accent-amber text-on-accent-amber py-1 hover:bg-accent-amber-hover cursor-pointer"
+                                    title="Resolve — needs revision"
+                                    onClick={() => props.onResolve(a.id, "resolved_revision")}
+                                  >
+                                    <Icon icon="iconoir:refresh" width="12" /> Needs revision
+                                  </button>
+                                </div>
+                              </div>
+                            </Show>
+                            <Show when={a.status !== "open"}>
+                              <button
+                                class="text-[11px] text-neutral-500 hover:text-neutral-700 self-start cursor-pointer"
+                                onClick={() => props.onResolve(a.id, "open")}
+                              >
+                                Reopen thread
+                              </button>
+                            </Show>
+                          </div>
+                        );
+                      })()}
                     </div>
                   </Show>
                 </div>

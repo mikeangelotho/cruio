@@ -1,4 +1,16 @@
-import { For, Show, batch, createEffect, createMemo, createResource, createSignal, on, onCleanup, onMount, untrack } from "solid-js";
+import {
+  For,
+  Show,
+  batch,
+  createEffect,
+  createMemo,
+  createResource,
+  createSignal,
+  on,
+  onCleanup,
+  onMount,
+  untrack,
+} from "solid-js";
 import { useNavigate, useParams, A } from "@solidjs/router";
 import { Icon } from "@iconify-icon/solid";
 import { createCamera } from "../lib/canvas/camera";
@@ -16,6 +28,7 @@ import {
   type SnapGuide,
 } from "../lib/canvas/geometry";
 import { useProject, uploadVersion } from "../lib/store";
+import { downloadFile, downloadZip } from "../lib/download";
 import { fileUrl } from "../lib/types";
 import type { Tag, TagColor } from "../lib/types";
 import { createTag, listTags } from "../lib/tag-api";
@@ -24,7 +37,16 @@ import { listProjectFiles } from "../lib/library-api";
 import { deliverableStage } from "../lib/stage";
 import { newId } from "../lib/id";
 import type { Rect } from "../lib/canvas/camera";
-import type { Annotation, CanvasObject, Decision, Deliverable, NoteColor, Task, TaskStatus, Version } from "../lib/types";
+import type {
+  Annotation,
+  CanvasObject,
+  Decision,
+  Deliverable,
+  NoteColor,
+  Task,
+  TaskStatus,
+  Version,
+} from "../lib/types";
 import { ContextMenu, type MenuEntry, type MenuState } from "./ContextMenu";
 import { DeliverableCard, STATUS_META } from "./DeliverableCard";
 import { NOTE_COLORS, NOTE_W, StickyNote } from "./StickyNote";
@@ -40,6 +62,9 @@ import { Callout } from "./Callout";
 import { AppFooter } from "./AppFooter";
 import { CommandPalette } from "./CommandPalette";
 import { GlobalSearch } from "./GlobalSearch";
+import { createUndoStack } from "../lib/undo";
+import { pushToast } from "../lib/toast";
+import { AiTrigger } from "./ai/AiTrigger";
 
 export function ProjectCanvas() {
   const store = useProject();
@@ -71,7 +96,7 @@ export function ProjectCanvas() {
     if (rows) setTasks(rows);
   });
   const tasksFor = (deliverableId: string) =>
-    tasks().filter(t => t.deliverableId === deliverableId);
+    tasks().filter((t) => t.deliverableId === deliverableId);
   const stageOf = (d: Deliverable) => deliverableStage(d, tasksFor(d.id));
 
   function failTasks(err: unknown) {
@@ -103,8 +128,11 @@ export function ProjectCanvas() {
       createdAt: Date.now(),
       completedAt: null,
     };
-    setTasks(list => [optimistic, ...list]);
-    createTask(id, trimmed, { projectId: store.projectId, deliverableId }).catch(failTasks);
+    setTasks((list) => [optimistic, ...list]);
+    createTask(id, trimmed, {
+      projectId: store.projectId,
+      deliverableId,
+    }).catch(failTasks);
   }
   // The task panel shows the current deliverable's tasks in review mode, or all
   // project tasks when there's no deliverable in view (project scope).
@@ -112,10 +140,11 @@ export function ProjectCanvas() {
     const d = current();
     return d ? tasksFor(d.id) : tasks();
   };
-  const addPanelTask = (title: string) => addDeliverableTask(current()?.id ?? null, title);
+  const addPanelTask = (title: string) =>
+    addDeliverableTask(current()?.id ?? null, title);
   function setDeliverableTaskStatus(task: Task, status: TaskStatus) {
-    setTasks(list =>
-      list.map(t =>
+    setTasks((list) =>
+      list.map((t) =>
         t.id === task.id
           ? { ...t, status, completedAt: status === "done" ? Date.now() : null }
           : t,
@@ -128,7 +157,9 @@ export function ProjectCanvas() {
   let fileInput!: HTMLInputElement;
 
   const [selectedAnnId, setSelectedAnnId] = createSignal<string | null>(null);
-  const [versionOverride, setVersionOverride] = createSignal<string | null>(null);
+  const [versionOverride, setVersionOverride] = createSignal<string | null>(
+    null,
+  );
   const [compare, setCompare] = createSignal(false);
   const [historyOpen, setHistoryOpen] = createSignal(false);
   const [notesOpen, setNotesOpen] = createSignal(false);
@@ -170,8 +201,23 @@ export function ProjectCanvas() {
   const [paletteOpen, setPaletteOpen] = createSignal(false);
   const [searchOpen, setSearchOpen] = createSignal(false);
   const [panning, setPanning] = createSignal(false);
+  // True during an active pan/zoom gesture and for a short beat after. Drives
+  // compositor promotion of the world layer (will-change) and suppresses card
+  // hover while content is sliding — see the world overlay style below.
+  const [interacting, setInteracting] = createSignal(false);
+  let interactTimer: ReturnType<typeof setTimeout> | undefined;
+  function markInteracting() {
+    setInteracting(true);
+    if (interactTimer) clearTimeout(interactTimer);
+    interactTimer = setTimeout(() => setInteracting(false), 200);
+  }
+  onCleanup(() => {
+    if (interactTimer) clearTimeout(interactTimer);
+  });
   const [statusMsg, setStatusMsg] = createSignal("");
-  const [pendingDecision, setPendingDecision] = createSignal<Decision | null>(null);
+  const [pendingDecision, setPendingDecision] = createSignal<Decision | null>(
+    null,
+  );
   const [ctxMenu, setCtxMenu] = createSignal<MenuState | null>(null);
   const [navRenaming, setNavRenaming] = createSignal(false);
   const [selected, setSelected] = createSignal<Set<string>>(new Set());
@@ -200,12 +246,16 @@ export function ProjectCanvas() {
   function toggleSnapObjects() {
     const v = !snapObjects();
     setSnapObjects(v);
-    try { localStorage.setItem("cruio_snap_objects", v ? "1" : "0"); } catch {}
+    try {
+      localStorage.setItem("cruio_snap_objects", v ? "1" : "0");
+    } catch {}
   }
   function toggleSnapGrid() {
     const v = !snapGrid();
     setSnapGrid(v);
-    try { localStorage.setItem("cruio_snap_grid", v ? "1" : "0"); } catch {}
+    try {
+      localStorage.setItem("cruio_snap_grid", v ? "1" : "0");
+    } catch {}
   }
 
   // sync vs. personal layout: "sync" is the shared posX/posY every viewer
@@ -214,19 +264,28 @@ export function ProjectCanvas() {
   const [layoutMode, setLayoutMode] = createSignal<"sync" | "personal">("sync");
   onMount(() => {
     try {
-      const saved = localStorage.getItem(`cruio_layout_mode_${store.projectId}`);
+      const saved = localStorage.getItem(
+        `cruio_layout_mode_${store.projectId}`,
+      );
       if (saved === "sync" || saved === "personal") setLayoutMode(saved);
     } catch {}
   });
   function toggleLayoutMode() {
     const v = layoutMode() === "sync" ? "personal" : "sync";
     setLayoutMode(v);
-    try { localStorage.setItem(`cruio_layout_mode_${store.projectId}`, v); } catch {}
+    try {
+      localStorage.setItem(`cruio_layout_mode_${store.projectId}`, v);
+    } catch {}
   }
 
   /** Resolves a subject's on-screen position for the active layout mode,
    * falling back to the shared position when no personal override exists yet. */
-  function posOf(kind: "deliverable" | "note", subjectId: string, sharedX: number, sharedY: number): { x: number; y: number } {
+  function posOf(
+    kind: "deliverable" | "note",
+    subjectId: string,
+    sharedX: number,
+    sharedY: number,
+  ): { x: number; y: number } {
     if (layoutMode() === "personal") {
       const p = store.personalPosOf(kind, subjectId);
       if (p) return p;
@@ -242,13 +301,24 @@ export function ProjectCanvas() {
     return { x: p.x, y: p.y, w: NOTE_W, h: 80 };
   }
   /** Writes a deliverable's position to whichever layer is active. */
-  function commitDeliverablePosition(id: string, x: number, y: number, sync: boolean) {
-    if (layoutMode() === "personal") store.setPersonalPosition("deliverable", id, x, y, sync);
+  function commitDeliverablePosition(
+    id: string,
+    x: number,
+    y: number,
+    sync: boolean,
+  ) {
+    if (layoutMode() === "personal")
+      store.setPersonalPosition("deliverable", id, x, y, sync);
     else store.moveDeliverable(id, x, y, sync);
   }
   /** Applies the same delta to every id's *current effective* position — the
    * group-drag equivalent of commitDeliverablePosition. */
-  function commitGroupPositions(ids: string[], dx: number, dy: number, sync: boolean) {
+  function commitGroupPositions(
+    ids: string[],
+    dx: number,
+    dy: number,
+    sync: boolean,
+  ) {
     for (const id of ids) {
       const d = store.byId(id);
       if (!d) continue;
@@ -257,13 +327,208 @@ export function ProjectCanvas() {
     }
   }
   function commitNotePosition(id: string, x: number, y: number, sync: boolean) {
-    if (layoutMode() === "personal") store.setPersonalPosition("note", id, x, y, sync);
+    if (layoutMode() === "personal")
+      store.setPersonalPosition("note", id, x, y, sync);
     else store.moveNote(id, x, y, sync);
   }
 
-  const [selectedGroups, setSelectedGroups] = createSignal<Set<string>>(new Set());
+  const [selectedGroups, setSelectedGroups] = createSignal<Set<string>>(
+    new Set(),
+  );
   /** Marquee-select rect in screen space, while actively dragging on empty canvas. */
-  const [marquee, setMarquee] = createSignal<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
+  const [marquee, setMarquee] = createSignal<{
+    x0: number;
+    y0: number;
+    x1: number;
+    y1: number;
+  } | null>(null);
+
+  // ---- drag-to-group / eject state -----------------------------------------
+  // There is no shared "drag in progress" signal otherwise; these drive the
+  // dwell add-target highlight and the anchored-outline eject preview during a
+  // card or group-label drag.
+  type DragTarget = { kind: "card" | "group"; id: string; currentGroupId: string | null };
+  const [dragTarget, setDragTarget] = createSignal<DragTarget | null>(null);
+  const [hoverGroupId, setHoverGroupId] = createSignal<string | null>(null);
+  const [ejecting, setEjecting] = createSignal(false);
+  // Blender-style status-bar readout: what the cursor is currently over.
+  const [hovered, setHovered] = createSignal<{ kind: "deliverable" | "group"; name: string } | null>(null);
+  const DWELL_MS = 500;
+  let dwellTimer: ReturnType<typeof setTimeout> | null = null;
+  let dwellCandidate: string | null = null;
+
+  /** Area of the intersection of two world rects (0 when disjoint). */
+  const overlapArea = (a: Rect, b: Rect) => {
+    const ix = Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x));
+    const iy = Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y));
+    return ix * iy;
+  };
+
+  /** Deliverable ids that constitute the dragged item (one card, or every
+   *  member of a dragged group) — excluded when measuring the group it's
+   *  leaving. */
+  function draggedMemberIds(t: DragTarget): Set<string> {
+    return t.kind === "group" ? new Set(store.membersOfGroup(t.id)) : new Set([t.id]);
+  }
+
+  /** Group ids to exclude as drop targets: the item's current group and all of
+   *  its ancestors (an item is always geometrically inside its own ancestors, so
+   *  a dwell there must not re-home it), plus — for a dragged group — itself and
+   *  all its descendants, to prevent cycles. */
+  function excludedTargetGroups(t: DragTarget): Set<string> {
+    const out = new Set<string>();
+    // current group + ancestor chain
+    let cur = t.currentGroupId;
+    for (let i = 0; i < 64 && cur; i++) {
+      out.add(cur);
+      cur = store.groupById(cur)?.parentGroupId ?? null;
+    }
+    if (t.kind === "group") {
+      out.add(t.id);
+      let grew = true;
+      while (grew) {
+        grew = false;
+        for (const g of store.groups()) {
+          if (g.parentGroupId && out.has(g.parentGroupId) && !out.has(g.id)) {
+            out.add(g.id);
+            grew = true;
+          }
+        }
+      }
+    }
+    return out;
+  }
+
+  /** The legal drop-target group the dragged item most overlaps (at least half
+   *  of the smaller of the two rects). Overlap-based rather than center-in-rect
+   *  so dragging a large group onto a small one — or vice versa — lands
+   *  predictably instead of keying off a geometric centre. */
+  function targetGroupFor(itemRect: Rect, t: DragTarget): string | null {
+    const exclude = excludedTargetGroups(t);
+    const itemArea = itemRect.w * itemRect.h;
+    let best: { id: string; ratio: number } | null = null;
+    for (const g of store.groups()) {
+      if (exclude.has(g.id)) continue;
+      const r = groupOutlineRect(g.id);
+      if (!r) continue;
+      const inter = overlapArea(itemRect, r);
+      if (inter <= 0) continue;
+      const ratio = inter / Math.min(itemArea, r.w * r.h);
+      if (ratio >= 0.5 && (!best || ratio > best.ratio)) best = { id: g.id, ratio };
+    }
+    return best?.id ?? null;
+  }
+
+  function clearDwell() {
+    if (dwellTimer) {
+      clearTimeout(dwellTimer);
+      dwellTimer = null;
+    }
+    dwellCandidate = null;
+  }
+
+  /** Per-frame during a drag: (re)arm the dwell timer over a candidate group and
+   *  flag whether the item has crossed up/left past its current group's handle. */
+  function updateDragTargets(t: DragTarget, itemRect: Rect) {
+    const cand = targetGroupFor(itemRect, t);
+    if (cand !== dwellCandidate) {
+      clearDwell();
+      dwellCandidate = cand;
+      if (cand) dwellTimer = setTimeout(() => setHoverGroupId(cand), DWELL_MS);
+      else setHoverGroupId(null);
+    }
+    // directional eject: the item leaves once it's at least half past the top or
+    // left edge of the handle (the top-left of the current group's *other*
+    // members) — i.e. its centre crosses that edge.
+    if (t.currentGroupId) {
+      const excl = draggedMemberIds(t);
+      const others = store
+        .membersOfGroup(t.currentGroupId)
+        .filter((id) => !excl.has(id))
+        .map((id) => store.byId(id))
+        .filter((d): d is Deliverable => !!d)
+        .map(effCardRect);
+      if (others.length > 0) {
+        const anchor = boundsOf(others);
+        const cx = itemRect.x + itemRect.w / 2;
+        const cy = itemRect.y + itemRect.h / 2;
+        setEjecting(cx < anchor.x || cy < anchor.y);
+      } else {
+        setEjecting(false);
+      }
+    } else {
+      setEjecting(false);
+    }
+  }
+
+  function endDragTargets() {
+    clearDwell();
+    setDragTarget(null);
+    setHoverGroupId(null);
+    setEjecting(false);
+  }
+
+  // ---- collision push-away ---------------------------------------------------
+  // While something is dragged, neighbours it would overlap slide out of the
+  // way (local-only). Each is keyed to its *home* (pre-push) position so the
+  // decision is stable frame-to-frame: home overlaps the obstacle ⇒ push; home
+  // clears ⇒ restore. On drop the pushes are committed; if the drag never
+  // reaches them (or is cancelled) they return home.
+  const COLLIDE_GAP = 16;
+  const displacedHome = new Map<string, { x: number; y: number }>();
+
+  /** Shift `home` the least distance needed to clear `obstacle` (or null if it
+   *  already clears). */
+  function separate(home: Rect, obstacle: Rect): { x: number; y: number } | null {
+    if (overlapArea(home, obstacle) <= 0) return null;
+    const right = obstacle.x + obstacle.w + COLLIDE_GAP - home.x;
+    const left = home.x + home.w + COLLIDE_GAP - obstacle.x;
+    const down = obstacle.y + obstacle.h + COLLIDE_GAP - home.y;
+    const up = home.y + home.h + COLLIDE_GAP - obstacle.y;
+    const opts = [
+      { x: home.x + right, y: home.y, m: right },
+      { x: home.x - left, y: home.y, m: left },
+      { x: home.x, y: home.y + down, m: down },
+      { x: home.x, y: home.y - up, m: up },
+    ];
+    const best = opts.reduce((a, b) => (b.m < a.m ? b : a));
+    return { x: best.x, y: best.y };
+  }
+
+  /** Per drag frame: push neighbours out of `obstacle`, restore any that no
+   *  longer need to move. `movingIds` are excluded (they're being dragged). */
+  function resolveCollisions(movingIds: Set<string>, obstacle: Rect) {
+    for (const o of store.deliverables()) {
+      if (movingIds.has(o.id)) continue;
+      const cur = posOf("deliverable", o.id, o.posX, o.posY);
+      const home = displacedHome.get(o.id) ?? cur;
+      const homeRect: Rect = {
+        x: home.x,
+        y: home.y,
+        w: CARD_W,
+        h: thumbHeight(o) + CARD_HEADER_H,
+      };
+      const pushed = separate(homeRect, obstacle);
+      if (pushed) {
+        if (!displacedHome.has(o.id)) displacedHome.set(o.id, { x: home.x, y: home.y });
+        commitDeliverablePosition(o.id, pushed.x, pushed.y, false);
+      } else if (displacedHome.has(o.id)) {
+        commitDeliverablePosition(o.id, home.x, home.y, false);
+        displacedHome.delete(o.id);
+      }
+    }
+  }
+
+  /** Drop: bake the current (pushed) positions of displaced neighbours in.
+   *  Neighbours the drag moved away from were already sent home per-frame, so
+   *  only the ones still cleared aside remain here to persist. */
+  function lockDisplaced() {
+    for (const id of displacedHome.keys()) {
+      const cur = posOf("deliverable", id, store.byId(id)?.posX ?? 0, store.byId(id)?.posY ?? 0);
+      commitDeliverablePosition(id, cur.x, cur.y, true);
+    }
+    displacedHome.clear();
+  }
 
   /** Single-click highlight: one card, border only, no checkmark. Distinct
    * from the multi-select `selected` set (checkmarks). */
@@ -282,7 +547,7 @@ export function ProjectCanvas() {
    * folding the current highlight (if any) into the set first. */
   function extendSelection(id: string) {
     batch(() => {
-      setSelected(s => {
+      setSelected((s) => {
         const n = new Set(s);
         const a = activeId();
         if (a) n.add(a);
@@ -308,13 +573,13 @@ export function ProjectCanvas() {
       // a group selection supersedes any lingering single-card highlight —
       // otherwise the stale active card leaks into the info modal
       setActiveId(null);
-      setSelectedGroups(s => {
+      setSelectedGroups((s) => {
         const n = new Set(s);
         if (isSelected) n.delete(groupId);
         else n.add(groupId);
         return n;
       });
-      setSelected(s => {
+      setSelected((s) => {
         const n = new Set(s);
         for (const id of members) {
           if (isSelected) n.delete(id);
@@ -327,8 +592,10 @@ export function ProjectCanvas() {
 
   /** Nesting depth of a group (0 = leaf) — deeper groups get more outline padding. */
   function groupDepth(id: string): number {
-    const kids = store.groups().filter(g => g.parentGroupId === id);
-    return kids.length === 0 ? 0 : 1 + Math.max(...kids.map(k => groupDepth(k.id)));
+    const kids = store.groups().filter((g) => g.parentGroupId === id);
+    return kids.length === 0
+      ? 0
+      : 1 + Math.max(...kids.map((k) => groupDepth(k.id)));
   }
 
   /** World rect of one group's outline, or null while it has no live members.
@@ -337,18 +604,40 @@ export function ProjectCanvas() {
    * mapped array) is what keeps a label's DOM node alive across a drag; see
    * onGroupLabelPointerDown. */
   function groupOutlineRect(groupId: string): Rect | null {
-    const members = store.membersOfGroup(groupId)
-      .map(id => store.byId(id))
+    let memberIds = store.membersOfGroup(groupId);
+    // While an item is being dragged up/left out of this group, drop it from the
+    // bounds so the outline stays pinned at the handle (previews the removal and
+    // never chases the item up/left). Growing down/right stays automatic.
+    const t = dragTarget();
+    if (t && ejecting() && t.currentGroupId === groupId) {
+      const excl = draggedMemberIds(t);
+      memberIds = memberIds.filter((id) => !excl.has(id));
+    }
+    const members = memberIds
+      .map((id) => store.byId(id))
       .filter((d): d is Deliverable => !!d);
-    if (members.length === 0) return null;
+    const g = store.groupById(groupId);
+    const frame: Rect | null =
+      g && g.posX != null && g.posY != null && g.w != null && g.h != null
+        ? { x: g.posX, y: g.posY, w: g.w, h: g.h }
+        : null;
+    // A group with no members and no own frame is a legacy derived group with
+    // nothing to draw. A container (frame) stays visible while empty.
+    if (members.length === 0) return frame;
     const pad = 14 + 12 * groupDepth(groupId);
     const b = boundsOf(members.map(effCardRect));
-    return { x: b.x - pad, y: b.y - pad, w: b.w + pad * 2, h: b.h + pad * 2 };
+    const memberRect: Rect = { x: b.x - pad, y: b.y - pad, w: b.w + pad * 2, h: b.h + pad * 2 };
+    // Union the stored frame (if any) with the member bounds so a container
+    // grows to include what's dropped in but never shrinks below its frame.
+    return frame ? boundsOf([frame, memberRect]) : memberRect;
   }
   const [groupPromptOpen, setGroupPromptOpen] = createSignal(false);
-  const [renamingGroupId, setRenamingGroupId] = createSignal<string | null>(null);
+  const [renamingGroupId, setRenamingGroupId] = createSignal<string | null>(
+    null,
+  );
 
-  /** Drag the label to move the whole (root) group; a clean click selects it. */
+  /** Drag the label to move this group's members as a unit (a sub-group label
+   * moves just that sub-group); a clean click selects the group. */
   function onGroupLabelPointerDown(e: PointerEvent, groupId: string) {
     if (e.button !== 0 || renamingGroupId() === groupId) return;
     e.stopPropagation();
@@ -360,26 +649,111 @@ export function ProjectCanvas() {
     let lastX = startX;
     let lastY = startY;
     let dragged = false;
-    const memberIds = store.membersOfGroup(store.rootGroupOf(groupId));
+    // Move exactly this group's members — a sub-group's label moves just that
+    // sub-group, the outermost label moves the whole group.
+    const memberIds = store.membersOfGroup(groupId);
 
+    const t: DragTarget = {
+      kind: "group",
+      id: groupId,
+      currentGroupId: store.groupById(groupId)?.parentGroupId ?? null,
+    };
+    // A container group with its own frame moves the frame too (so an empty one
+    // — with no members to translate — still moves).
+    const moveFrameBy = (dx: number, dy: number, sync: boolean) => {
+      const g = store.groupById(groupId);
+      if (g && g.posX != null && g.posY != null && g.w != null && g.h != null) {
+        store.setGroupFrame(groupId, g.posX + dx, g.posY + dy, g.w, g.h, sync);
+      }
+    };
     const onMove = (ev: PointerEvent) => {
-      if (!dragged && Math.hypot(ev.clientX - startX, ev.clientY - startY) < 4) return;
+      if (!dragged && Math.hypot(ev.clientX - startX, ev.clientY - startY) < 4)
+        return;
+      if (!dragged) setDragTarget(t);
       dragged = true;
-      const wd = { x: (ev.clientX - lastX) / camera.cam.zoom, y: (ev.clientY - lastY) / camera.cam.zoom };
+      const wd = {
+        x: (ev.clientX - lastX) / camera.cam.zoom,
+        y: (ev.clientY - lastY) / camera.cam.zoom,
+      };
       commitGroupPositions(memberIds, wd.x, wd.y, false);
+      moveFrameBy(wd.x, wd.y, false);
       lastX = ev.clientX;
       lastY = ev.clientY;
+      const gr = groupOutlineRect(groupId);
+      if (gr) {
+        updateDragTargets(t, gr);
+        resolveCollisions(new Set(memberIds), gr);
+      }
     };
     const onUp = (ev: PointerEvent) => {
       el.removeEventListener("pointermove", onMove);
       el.removeEventListener("pointerup", onUp);
       el.releasePointerCapture(ev.pointerId);
       if (dragged) {
-        const wd = { x: (ev.clientX - lastX) / camera.cam.zoom, y: (ev.clientY - lastY) / camera.cam.zoom };
+        const wd = {
+          x: (ev.clientX - lastX) / camera.cam.zoom,
+          y: (ev.clientY - lastY) / camera.cam.zoom,
+        };
         commitGroupPositions(memberIds, wd.x, wd.y, true);
+        moveFrameBy(wd.x, wd.y, true);
+        const hg = hoverGroupId();
+        const priorParent = t.currentGroupId;
+        if (hg) {
+          store.setGroupParent(groupId, hg);
+          record(
+            "Nest group",
+            () => store.setGroupParent(groupId, priorParent),
+            () => store.setGroupParent(groupId, hg),
+          );
+        } else if (ejecting() && priorParent) {
+          store.setGroupParent(groupId, null);
+          record(
+            "Un-nest group",
+            () => store.setGroupParent(groupId, priorParent),
+            () => store.setGroupParent(groupId, null),
+          );
+        }
+        endDragTargets();
+        lockDisplaced();
       } else {
         toggleGroupSelect(groupId);
       }
+    };
+    el.addEventListener("pointermove", onMove);
+    el.addEventListener("pointerup", onUp);
+  }
+
+  /** Bottom-right resize of a container group's frame (framed groups only). */
+  function onGroupResizePointerDown(e: PointerEvent, groupId: string) {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    const g = store.groupById(groupId);
+    if (!g || g.posX == null || g.posY == null || g.w == null || g.h == null) return;
+    const el = e.currentTarget as HTMLElement;
+    el.setPointerCapture(e.pointerId);
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const startW = g.w;
+    const startH = g.h;
+    const MIN = 120;
+    const apply = (ev: PointerEvent, sync: boolean) => {
+      const dx = (ev.clientX - startX) / camera.cam.zoom;
+      const dy = (ev.clientY - startY) / camera.cam.zoom;
+      store.setGroupFrame(
+        groupId,
+        g.posX!,
+        g.posY!,
+        Math.max(MIN, startW + dx),
+        Math.max(MIN, startH + dy),
+        sync,
+      );
+    };
+    const onMove = (ev: PointerEvent) => apply(ev, false);
+    const onUp = (ev: PointerEvent) => {
+      el.removeEventListener("pointermove", onMove);
+      el.removeEventListener("pointerup", onUp);
+      el.releasePointerCapture(ev.pointerId);
+      apply(ev, true);
     };
     el.addEventListener("pointermove", onMove);
     el.addEventListener("pointerup", onUp);
@@ -389,39 +763,89 @@ export function ProjectCanvas() {
   function selectionIsWholeGroups(): boolean {
     const gids = [...selectedGroups()];
     if (gids.length === 0) return false;
-    const memberUnion = new Set(gids.flatMap(g => store.membersOfGroup(g)));
+    const memberUnion = new Set(gids.flatMap((g) => store.membersOfGroup(g)));
     const sel = selected();
-    return memberUnion.size === sel.size && [...sel].every(id => memberUnion.has(id));
+    return (
+      memberUnion.size === sel.size &&
+      [...sel].every((id) => memberUnion.has(id))
+    );
   }
 
-  /** "nest" (2+ whole groups picked via their labels) or "create" (2+
-   * ungrouped cards) — either way the toolbar's Group button opens the
-   * label prompt. Null when the raw card selection spans two *different*
-   * existing groups: mixing a grouped asset into a fresh group would
-   * silently orphan it from where it already lives, so that's blocked
-   * rather than guessed at — the fix is "Add to <group>", not "Group". */
+  /** "nest" (2+ whole groups picked via their labels) or "create" (1+ cards).
+   * The label prompt opens either way. "create" covers both a top-level group
+   * from ungrouped cards and a *sub-group* from cards that all already share
+   * one group (see createParentGroupId). Null when the selection mixes grouped
+   * and ungrouped cards or spans two different groups — the fix there is "Add
+   * to <group>", not "Group". A single card is allowed so a group can be
+   * started with one asset and grown later. */
   const groupButtonAction = createMemo<"nest" | "create" | null>(() => {
     if (selectedGroups().size >= 2 && selectionIsWholeGroups()) return "nest";
+    if (selectedGroups().size !== 0) return null; // a single whole group offers Ungroup, not Group
     const ids = [...selected()];
-    const groupIds = new Set(ids.map(id => store.byId(id)?.groupId).filter((g): g is string => !!g));
-    return groupIds.size === 0 && ids.length >= 2 ? "create" : null;
+    if (ids.length === 0) return null;
+    const groupIds = new Set(
+      ids.map((id) => store.byId(id)?.groupId).filter((g): g is string => !!g),
+    );
+    if (groupIds.size === 0) return "create"; // new top-level group
+    const anyUngrouped = ids.some((id) => !store.byId(id)?.groupId);
+    if (groupIds.size === 1 && !anyUngrouped) return "create"; // sub-group under the shared group
+    return null;
   });
+
+  /** The parent a "create" action nests under (null = top level): set only when
+   * every selected card already belongs to the same one group. */
+  const createParentGroupId = createMemo<string | null>(() => {
+    const ids = [...selected()];
+    const groupIds = new Set(
+      ids.map((id) => store.byId(id)?.groupId).filter((g): g is string => !!g),
+    );
+    const anyUngrouped = ids.some((id) => !store.byId(id)?.groupId);
+    return groupIds.size === 1 && !anyUngrouped ? [...groupIds][0] : null;
+  });
+
+  /** Selected deliverables that have a downloadable version, mapped to the ZIP
+   * payload (latest version file, named after the deliverable). */
+  const downloadableSelection = createMemo<{ name: string; displayName: string }[]>(() =>
+    [...selected()]
+      .map((id) => store.byId(id))
+      .filter((d): d is Deliverable => !!d && d.versions.length > 0)
+      .map((d) => {
+        const v = d.versions[d.versions.length - 1];
+        const dot = v.fileName.lastIndexOf(".");
+        const ext = dot >= 0 ? v.fileName.slice(dot) : "";
+        return { name: v.fileName, displayName: `${d.name}${ext}` };
+      }),
+  );
 
   /** When the selection mixes ungrouped cards with exactly one existing
    * group's members, offer to add the ungrouped ones into that group
    * instead of the (blocked) "create a new group" action. */
-  const addToExistingGroupAction = createMemo<{ groupId: string; label: string; ids: string[] } | null>(() => {
+  const addToExistingGroupAction = createMemo<{
+    groupId: string;
+    label: string;
+    ids: string[];
+  } | null>(() => {
     if (selectedGroups().size >= 2 && selectionIsWholeGroups()) return null; // nesting takes priority
     const ids = [...selected()];
-    const groupIds = new Set(ids.map(id => store.byId(id)?.groupId).filter((g): g is string => !!g));
+    const groupIds = new Set(
+      ids.map((id) => store.byId(id)?.groupId).filter((g): g is string => !!g),
+    );
     if (groupIds.size !== 1) return null;
     const [groupId] = groupIds;
-    const ungroupedIds = ids.filter(id => !store.byId(id)?.groupId);
+    const ungroupedIds = ids.filter((id) => !store.byId(id)?.groupId);
     if (ungroupedIds.length === 0) return null; // already all in this one group — nothing to do
-    return { groupId, label: store.groupById(groupId)?.label ?? "group", ids: ungroupedIds };
+    return {
+      groupId,
+      label: store.groupById(groupId)?.label ?? "group",
+      ids: ungroupedIds,
+    };
   });
 
-  function addSelectedToGroup(action: { groupId: string; label: string; ids: string[] }) {
+  function addSelectedToGroup(action: {
+    groupId: string;
+    label: string;
+    ids: string[];
+  }) {
     for (const id of action.ids) store.addToGroup(id, action.groupId);
     clearSelection();
     flash(`Added ${action.ids.length} to “${action.label}”`);
@@ -433,16 +857,23 @@ export function ProjectCanvas() {
     setGroupPromptOpen(false);
     const name = label.trim();
     if (!name) return;
-    if (selectedGroups().size >= 2 && selectionIsWholeGroups()) {
-      const gids = [...selectedGroups()];
-      await store.nestGroups(gids, name);
-      clearSelection();
-      flash(`Grouped ${gids.length} groups as “${name}”`);
-    } else {
-      const ids = [...selected()];
-      await store.groupSelected(ids, name);
-      clearSelection();
-      flash(`Grouped ${ids.length} deliverables as “${name}”`);
+    try {
+      if (selectedGroups().size >= 2 && selectionIsWholeGroups()) {
+        const gids = [...selectedGroups()];
+        await store.nestGroups(gids, name);
+        clearSelection();
+        flash(`Grouped ${gids.length} groups as “${name}”`);
+      } else {
+        const ids = [...selected()];
+        const parent = createParentGroupId();
+        await store.groupSelected(ids, name, parent);
+        clearSelection();
+        flash(
+          `${parent ? "Sub-grouped" : "Grouped"} ${ids.length} deliverable${ids.length === 1 ? "" : "s"} as “${name}”`,
+        );
+      }
+    } catch (err) {
+      flash(err instanceof Error ? err.message : "Couldn’t create group");
     }
   }
 
@@ -464,10 +895,48 @@ export function ProjectCanvas() {
     statusTimer = setTimeout(() => setStatusMsg(""), 4000);
   }
 
+  // ---- undo/redo (per-project canvas; resets on navigation) ----------------
+  const undoStack = createUndoStack();
+  /** Record an action whose effect has already been applied, and toast it. */
+  function record(label: string, undoFn: () => void, redoFn: () => void) {
+    undoStack.push({ label, undo: undoFn, redo: redoFn });
+    pushToast(label, { actionLabel: "Undo", onAction: doUndo });
+  }
+  function doUndo() {
+    const c = undoStack.undo();
+    if (c) pushToast(`Undid: ${c.label}`, { actionLabel: "Redo", onAction: doRedo });
+  }
+  function doRedo() {
+    const c = undoStack.redo();
+    if (c) pushToast(`Redid: ${c.label}`);
+  }
+  /** Rename a deliverable, recording an undo step (no-op when unchanged). */
+  function renameDeliverableU(id: string, prev: string, name: string) {
+    if (name === prev) return;
+    store.renameDeliverable(id, name);
+    record(
+      "Rename deliverable",
+      () => store.renameDeliverable(id, prev),
+      () => store.renameDeliverable(id, name),
+    );
+  }
+  /** Rename a group, recording an undo step (no-op when unchanged). */
+  function renameGroupU(id: string, prev: string, name: string) {
+    if (name === prev) return;
+    store.renameGroup(id, name);
+    record(
+      "Rename group",
+      () => store.renameGroup(id, prev),
+      () => store.renameGroup(id, name),
+    );
+  }
+
   // ---- derived state -------------------------------------------------------
 
   const reviewId = () => params.deliverableId as string | undefined;
-  const current = createMemo(() => (reviewId() ? store.byId(reviewId()!) : undefined));
+  const current = createMemo(() =>
+    reviewId() ? store.byId(reviewId()!) : undefined,
+  );
 
   // role-adaptive gating (server enforces the same matrix on every call)
   const canCreate = () => store.can("deliverable", "create");
@@ -487,7 +956,9 @@ export function ProjectCanvas() {
       createTask(newId(), title, {
         projectId: graph.project.id,
         deliverableId: d.id,
-      }).catch(err => window.alert(String(err instanceof Error ? err.message : err))),
+      }).catch((err) =>
+        window.alert(String(err instanceof Error ? err.message : err)),
+      ),
     );
   }
 
@@ -495,17 +966,21 @@ export function ProjectCanvas() {
     const d = current();
     if (!d) return undefined;
     const override = versionOverride();
-    return d.versions.find(v => v.id === override) ?? d.versions[d.versions.length - 1];
+    return (
+      d.versions.find((v) => v.id === override) ??
+      d.versions[d.versions.length - 1]
+    );
   });
 
   const versionAnnotations = createMemo<Annotation[]>(() => {
     const d = current();
     const v = currentVersion();
     if (!d || !v) return [];
-    return d.annotations.filter(a => a.versionId === v.id);
+    return d.annotations.filter((a) => a.versionId === v.id);
   });
 
-  const openThreadCount = () => versionAnnotations().filter(a => a.status === "open").length;
+  const openThreadCount = () =>
+    versionAnnotations().filter((a) => a.status === "open").length;
 
   /**
    * The deliverable the status bar / info modal should describe: the one
@@ -524,16 +999,22 @@ export function ProjectCanvas() {
 
   /** When one or more whole groups are selected on the board, the info modal
    * lists every deliverable they contain (rather than a single card). */
-  const selectedGroupInfo = createMemo<{ label: string; members: Deliverable[] } | undefined>(() => {
+  const selectedGroupInfo = createMemo<
+    { label: string; members: Deliverable[] } | undefined
+  >(() => {
     if (current()) return undefined; // review mode describes the reviewed asset
-    if (selectedGroups().size === 0 || !selectionIsWholeGroups()) return undefined;
+    if (selectedGroups().size === 0 || !selectionIsWholeGroups())
+      return undefined;
     const gids = [...selectedGroups()];
-    const memberIds = new Set(gids.flatMap(g => store.membersOfGroup(g)));
+    const memberIds = new Set(gids.flatMap((g) => store.membersOfGroup(g)));
     const members = [...memberIds]
-      .map(id => store.byId(id))
+      .map((id) => store.byId(id))
       .filter((d): d is Deliverable => !!d);
     if (members.length === 0) return undefined;
-    const label = gids.length === 1 ? (store.groupById(gids[0])?.label ?? "group") : `${gids.length} groups`;
+    const label =
+      gids.length === 1
+        ? (store.groupById(gids[0])?.label ?? "group")
+        : `${gids.length} groups`;
     return { label, members };
   });
   const focusedVersion = createMemo<Version | undefined>(() => {
@@ -546,21 +1027,25 @@ export function ProjectCanvas() {
     const d = focusedDeliverable();
     const v = focusedVersion();
     if (!d || !v) return 0;
-    return d.annotations.filter(a => a.versionId === v.id && a.status === "open").length;
+    return d.annotations.filter(
+      (a) => a.versionId === v.id && a.status === "open",
+    ).length;
   });
 
   /**
    * Compare mode: every version laid out in one row (ascending), scaled to the
    * current version's height, current one highlighted. Null when not comparing.
    */
-  const compareLayout = createMemo<{ v: Version; rect: Rect; current: boolean }[] | null>(() => {
+  const compareLayout = createMemo<
+    { v: Version; rect: Rect; current: boolean }[] | null
+  >(() => {
     const d = current();
     const cv = currentVersion();
     if (!d || !cv || !compare() || d.versions.length < 2) return null;
     const base = planeRect(d, cv);
     const list = [...d.versions].sort((a, b) => a.number - b.number);
     const GAP = 64;
-    const widths = list.map(v =>
+    const widths = list.map((v) =>
       v.width && v.height ? (base.h * v.width) / v.height : base.w,
     );
     const totalW = widths.reduce((a, b) => a + b, 0) + GAP * (list.length - 1);
@@ -576,16 +1061,20 @@ export function ProjectCanvas() {
     const d = current();
     if (!d) return null;
     const cl = compareLayout();
-    if (cl) return cl.find(i => i.current)!.rect;
+    if (cl) return cl.find((i) => i.current)!.rect;
     return planeRect(d, currentVersion());
   });
 
   // workspace with nothing on it: freeze the camera so the empty-state stays put
-  const locked = () => !reviewId() && store.state.loaded && store.deliverables().length === 0;
+  const locked = () =>
+    !reviewId() && store.state.loaded && store.deliverables().length === 0;
   // review mode pans only while comparing versions; workspace pans unless locked
   const panEnabled = () => (reviewId() ? compare() : !locked());
 
-  const viewport = () => ({ w: container?.clientWidth ?? 800, h: container?.clientHeight ?? 600 });
+  const viewport = () => ({
+    w: container?.clientWidth ?? 800,
+    h: container?.clientHeight ?? 600,
+  });
 
   // ---- camera transitions --------------------------------------------------
 
@@ -594,7 +1083,12 @@ export function ProjectCanvas() {
 
   function fitWorkspace(animate: boolean) {
     const rects = store.deliverables().map(effCardRect);
-    const target = camera.fitRect(boundsOf(rects), viewport().w, viewport().h, 80);
+    const target = camera.fitRect(
+      boundsOf(rects),
+      viewport().w,
+      viewport().h,
+      80,
+    );
     // never zoom cards past 1:1 when fitting
     if (target.zoom > 1) {
       const b = boundsOf(rects);
@@ -607,7 +1101,7 @@ export function ProjectCanvas() {
 
   function fitPlane(animate: boolean, duration = 400) {
     const cl = compareLayout();
-    const p = cl ? boundsOf(cl.map(i => i.rect)) : plane();
+    const p = cl ? boundsOf(cl.map((i) => i.rect)) : plane();
     if (!p) return;
     const target = camera.fitRect(p, viewport().w, viewport().h, 64);
     animate ? camera.flyTo(target, duration) : camera.jumpTo(target);
@@ -625,7 +1119,7 @@ export function ProjectCanvas() {
   function toggleCompare() {
     const d = current();
     if (!d || d.versions.length < 2) return;
-    setCompare(c => !c);
+    setCompare((c) => !c);
     // event handlers batch signal writes; fit only after the layout memo
     // reflects the new compare state, or the camera frames the old rects
     queueMicrotask(() => fitPlane(true, 300));
@@ -635,24 +1129,27 @@ export function ProjectCanvas() {
   // else (camera math, selection resets) must stay untracked or a placed pin
   // would immediately re-trigger this and get pruned again
   createEffect(
-    on([() => store.state.loaded && !!store.state.graph, reviewId], ([ready, id]) => {
-      if (!ready) return;
-      untrack(() => {
-        if (id) {
-          fitPlane(!firstFrame);
-        } else {
-          if (firstFrame) fitWorkspace(false);
-          else if (savedWorkspaceCam) camera.flyTo(savedWorkspaceCam);
-          else fitWorkspace(true);
-        }
-        firstFrame = false;
-        // reset per-deliverable UI state when the subject changes
-        setVersionOverride(null);
-        setCompare(false);
-        selectAnnotation(null);
-        setPendingDecision(null);
-      });
-    })
+    on(
+      [() => store.state.loaded && !!store.state.graph, reviewId],
+      ([ready, id]) => {
+        if (!ready) return;
+        untrack(() => {
+          if (id) {
+            fitPlane(!firstFrame);
+          } else {
+            if (firstFrame) fitWorkspace(false);
+            else if (savedWorkspaceCam) camera.flyTo(savedWorkspaceCam);
+            else fitWorkspace(true);
+          }
+          firstFrame = false;
+          // reset per-deliverable UI state when the subject changes
+          setVersionOverride(null);
+          setCompare(false);
+          selectAnnotation(null);
+          setPendingDecision(null);
+        });
+      },
+    ),
   );
 
   // ---- selection / pruning -------------------------------------------------
@@ -662,7 +1159,7 @@ export function ProjectCanvas() {
     const prevId = selectedAnnId();
     if (prevId && prevId !== id) {
       const d = current();
-      const prev = d?.annotations.find(a => a.id === prevId);
+      const prev = d?.annotations.find((a) => a.id === prevId);
       if (d && prev && prev.status === "open" && prev.comments.length === 0) {
         store.removeAnnotation(d.id, prevId);
       }
@@ -696,7 +1193,7 @@ export function ProjectCanvas() {
     const list = store.deliverables();
     const d = current();
     if (!d || list.length < 2) return;
-    const idx = list.findIndex(x => x.id === d.id);
+    const idx = list.findIndex((x) => x.id === d.id);
     const next = list[(idx + delta + list.length) % list.length];
     navigate(`/p/${store.projectId}/d/${next.id}`);
   }
@@ -721,9 +1218,15 @@ export function ProjectCanvas() {
     }
   }
 
-  function createDeliverableAt(wx: number, wy: number, name?: string): Deliverable {
+  function createDeliverableAt(
+    wx: number,
+    wy: number,
+    name?: string,
+  ): Deliverable {
     const n = name ?? `Deliverable ${store.deliverables().length + 1}`;
-    return store.addDeliverable(n, wx - CARD_W / 2, wy - 60);
+    const d = store.addDeliverable(n, wx - CARD_W / 2, wy - 60);
+    record("Create deliverable", () => store.removeDeliverable(d.id), () => store.restoreDeliverable(d));
+    return d;
   }
 
   /** A committed (non-drag) absolute move, e.g. from auto-arrange — single
@@ -732,20 +1235,50 @@ export function ProjectCanvas() {
     commitDeliverablePosition(id, x, y, true);
   }
 
+  /** Commit a set of id→position writes (undo/redo of a move). */
+  function applyPositions(pos: Record<string, { x: number; y: number }>) {
+    for (const [id, p] of Object.entries(pos)) commitDeliverablePosition(id, p.x, p.y, true);
+  }
+  /** Snapshot the effective positions of a set of deliverables. */
+  function snapshotPositions(ids: Iterable<string>): Record<string, { x: number; y: number }> {
+    const snap: Record<string, { x: number; y: number }> = {};
+    for (const id of ids) {
+      const d = store.byId(id);
+      if (d) snap[id] = posOf("deliverable", id, d.posX, d.posY);
+    }
+    return snap;
+  }
+  // captured at the first frame of a card drag, recorded as one command on drop
+  let cardMoveStart: Record<string, { x: number; y: number }> | null = null;
+
   /** Applies neighbor/grid snapping (per the toggles), then moves the card —
    * or, if it's part of a group, drags the whole group along by the same
    * delta. Movement is free unless a snap actually engages (no quantizing
    * every frame — that's what made dragging feel jittery). Writes land on
    * whichever layout layer is active (see layoutMode / commitDeliverablePosition). */
-  function handleCardMove(dl: Deliverable, x: number, y: number, done: boolean) {
-    const movingIds = dl.groupId
-      ? new Set(store.membersOfGroup(store.rootGroupOf(dl.groupId)))
-      : new Set([dl.id]);
+  function handleCardMove(
+    dl: Deliverable,
+    x: number,
+    y: number,
+    done: boolean,
+  ) {
+    // Dragging a card moves only that card (so members can be rearranged
+    // within a group); the whole-group move handle is the group label. A card
+    // that's part of a multi-selection drags the whole selection along.
+    const movingIds =
+      selected().has(dl.id) && selected().size > 1
+        ? new Set(selected())
+        : new Set([dl.id]);
+    // capture the pre-drag positions once, on the first move frame
+    if (!done && !cardMoveStart) cardMoveStart = snapshotPositions(movingIds);
     let snapped = { x, y };
     if (snapObjects()) {
       // exclude cards moving along with the drag from the snap targets
       const others = [
-        ...store.deliverables().filter(o => !movingIds.has(o.id)).map(effCardRect),
+        ...store
+          .deliverables()
+          .filter((o) => !movingIds.has(o.id))
+          .map(effCardRect),
         ...store.canvasObjects().map(effNoteRect),
       ];
       const rect = { x, y, w: CARD_W, h: thumbHeight(dl) + CARD_HEADER_H };
@@ -764,21 +1297,97 @@ export function ProjectCanvas() {
     if (done) setSnapGuides([]);
     if (movingIds.size > 1) {
       const cur = posOf("deliverable", dl.id, dl.posX, dl.posY);
-      commitGroupPositions([...movingIds], snapped.x - cur.x, snapped.y - cur.y, done);
+      commitGroupPositions(
+        [...movingIds],
+        snapped.x - cur.x,
+        snapped.y - cur.y,
+        done,
+      );
     } else {
       commitDeliverablePosition(dl.id, snapped.x, snapped.y, done);
     }
+
+    // Single-card drags participate in drag-to-group (dwell) and directional
+    // eject; multi-card drags just reposition.
+    let membershipChanged = false;
+    if (movingIds.size === 1) {
+      const t: DragTarget = { kind: "card", id: dl.id, currentGroupId: dl.groupId ?? null };
+      const itemRect: Rect = { x: snapped.x, y: snapped.y, w: CARD_W, h: thumbHeight(dl) + CARD_HEADER_H };
+      if (!done) {
+        setDragTarget(t);
+        updateDragTargets(t, itemRect);
+      } else {
+        const hg = hoverGroupId();
+        const priorGroup = dl.groupId;
+        if (hg) {
+          store.addToGroup(dl.id, hg);
+          membershipChanged = true;
+          record(
+            "Move into group",
+            () => (priorGroup ? store.addToGroup(dl.id, priorGroup) : store.ungroup(dl.id)),
+            () => store.addToGroup(dl.id, hg),
+          );
+        } else if (ejecting() && priorGroup) {
+          store.ungroup(dl.id);
+          membershipChanged = true;
+          record(
+            "Remove from group",
+            () => store.addToGroup(dl.id, priorGroup),
+            () => store.ungroup(dl.id),
+          );
+        }
+        endDragTargets();
+      }
+    }
+
+    // Push neighbours out of the way of whatever's moving; bake on drop.
+    const obstacle = boundsOf(
+      [...movingIds]
+        .map((id) => store.byId(id))
+        .filter((d): d is Deliverable => !!d)
+        .map(effCardRect),
+    );
+    if (!done) resolveCollisions(movingIds, obstacle);
+    else lockDisplaced();
+
+    // Record the move as one undoable command (unless this drop was really a
+    // membership change, which was recorded above).
+    if (done && cardMoveStart) {
+      const start = cardMoveStart;
+      cardMoveStart = null;
+      if (!membershipChanged) {
+        const end = snapshotPositions(Object.keys(start));
+        const moved = Object.keys(end).some(
+          id => end[id].x !== start[id]?.x || end[id].y !== start[id]?.y,
+        );
+        if (moved) {
+          record("Move", () => applyPositions(start), () => applyPositions(end));
+        }
+      }
+    }
   }
 
-  function handleNoteMove(o: CanvasObject, x: number, y: number, done: boolean) {
+  function handleNoteMove(
+    o: CanvasObject,
+    x: number,
+    y: number,
+    done: boolean,
+  ) {
     let snapped = { x, y };
     if (snapObjects()) {
       const others = [
         ...store.deliverables().map(effCardRect),
-        ...store.canvasObjects().filter(n => n.id !== o.id).map(effNoteRect),
+        ...store
+          .canvasObjects()
+          .filter((n) => n.id !== o.id)
+          .map(effNoteRect),
       ];
       const threshold = 8 / camera.cam.zoom;
-      const result = snapToNeighbors({ x, y, w: NOTE_W, h: 80 }, others, threshold);
+      const result = snapToNeighbors(
+        { x, y, w: NOTE_W, h: 80 },
+        others,
+        threshold,
+      );
       if (result.guides.length > 0) {
         snapped = { x: result.x, y: result.y };
         setSnapGuides(done ? [] : result.guides);
@@ -796,7 +1405,11 @@ export function ProjectCanvas() {
   function editNoteTags(o: CanvasObject) {
     const input = window.prompt("Tags (comma-separated)", o.tags.join(", "));
     if (input === null) return;
-    const tags = input.split(",").map(t => t.trim()).filter(Boolean).slice(0, 8);
+    const tags = input
+      .split(",")
+      .map((t) => t.trim())
+      .filter(Boolean)
+      .slice(0, 8);
     store.updateNote(o.id, { tags });
   }
 
@@ -804,10 +1417,16 @@ export function ProjectCanvas() {
     const canEditNote = store.can("canvasObject", "update");
     return [
       ...(canEditNote
-        ? [{ label: "Edit tags", icon: "iconoir:tag", run: () => editNoteTags(o) }]
+        ? [
+            {
+              label: "Edit tags",
+              icon: "iconoir:tag",
+              run: () => editNoteTags(o),
+            },
+          ]
         : []),
       ...(canEditNote
-        ? (Object.keys(NOTE_COLORS) as NoteColor[]).map(color => ({
+        ? (Object.keys(NOTE_COLORS) as NoteColor[]).map((color) => ({
             label: `Color: ${color}`,
             icon: "iconoir:fill-color" as string,
             hint: o.color === color ? "current" : undefined,
@@ -832,7 +1451,12 @@ export function ProjectCanvas() {
    * notes have no detail view of their own (they live on the board). */
   function jumpToNote(note: CanvasObject) {
     const pos = posOf("note", note.id, note.posX, note.posY);
-    const target = camera.fitRect({ x: pos.x, y: pos.y, w: NOTE_W, h: 80 }, viewport().w, viewport().h, 200);
+    const target = camera.fitRect(
+      { x: pos.x, y: pos.y, w: NOTE_W, h: 80 },
+      viewport().w,
+      viewport().h,
+      200,
+    );
     camera.flyTo(target);
   }
 
@@ -853,9 +1477,14 @@ export function ProjectCanvas() {
    */
   function autoArrange() {
     if (!canEdit()) return;
-    const rootGroups = store.groups().filter(g => !g.parentGroupId);
-    const groupedIds = new Set(store.deliverables().filter(d => d.groupId).map(d => d.id));
-    const ungrouped = store.deliverables().filter(d => !groupedIds.has(d.id));
+    const rootGroups = store.groups().filter((g) => !g.parentGroupId);
+    const groupedIds = new Set(
+      store
+        .deliverables()
+        .filter((d) => d.groupId)
+        .map((d) => d.id),
+    );
+    const ungrouped = store.deliverables().filter((d) => !groupedIds.has(d.id));
 
     type Unit = { w: number; h: number; place: (x: number, y: number) => void };
     const units: Unit[] = [];
@@ -863,7 +1492,7 @@ export function ProjectCanvas() {
     for (const g of rootGroups) {
       const members = store
         .membersOfGroup(g.id)
-        .map(id => store.byId(id))
+        .map((id) => store.byId(id))
         .filter((d): d is Deliverable => !!d)
         .sort((a, b) => a.createdAt - b.createdAt);
       if (members.length === 0) continue;
@@ -900,7 +1529,9 @@ export function ProjectCanvas() {
       });
     }
 
-    let x = 0, y = 0, rowH = 0;
+    let x = 0,
+      y = 0,
+      rowH = 0;
     for (const u of units) {
       if (x > 0 && x + u.w > ARRANGE_ROW_WIDTH) {
         x = 0;
@@ -924,6 +1555,43 @@ export function ProjectCanvas() {
     flash(`Added ${d.name} — drop an image on it`);
   }
 
+  /** Default starter size for a new empty group container (~two cards wide). */
+  const NEW_GROUP_W = CARD_W * 2 + 80;
+  const NEW_GROUP_H = 260;
+
+  /** Create an empty draggable group container at screen center and start
+   *  renaming it (mirrors how "New deliverable" drops a ready-to-edit card). */
+  function newGroupAtCenter() {
+    if (!canCreate()) return;
+    const c = camera.screenToWorld(viewport().w / 2, viewport().h / 2);
+    const label = `Group ${store.groups().length + 1}`;
+    const id = store.createGroup(
+      label,
+      c.x - NEW_GROUP_W / 2,
+      c.y - NEW_GROUP_H / 2,
+      NEW_GROUP_W,
+      NEW_GROUP_H,
+    );
+    flash(`Created group “${label}” — double-click the label to rename`);
+    setRenamingGroupId(id);
+  }
+
+  /** Create a new deliverable that belongs to `groupId`, placed inside the
+   *  group's current bounds (bottom-left, in the down/right growth zone so it
+   *  never lands in the eject region). */
+  function createDeliverableInGroup(groupId: string) {
+    if (!canCreate()) return;
+    const r = groupOutlineRect(groupId);
+    const base = r
+      ? { x: r.x + 14, y: r.y + r.h }
+      : camera.screenToWorld(viewport().w / 2, viewport().h / 2);
+    const free = findFreeSpot(store.deliverables(), base.x, base.y);
+    const n = `Deliverable ${store.deliverables().length + 1}`;
+    const d = store.addDeliverable(n, free.x, free.y, groupId);
+    record("Create deliverable", () => store.removeDeliverable(d.id), () => store.restoreDeliverable(d));
+    flash(`Added ${d.name} to “${store.groupById(groupId)?.label ?? "group"}”`);
+  }
+
   let pickerTarget: Deliverable | null = null;
   function openFilePicker(d: Deliverable) {
     if (!canUpload()) return;
@@ -933,8 +1601,15 @@ export function ProjectCanvas() {
 
   // ---- pointer input -------------------------------------------------------
 
+  // The container can't scroll (overflow-hidden) and doesn't move mid-gesture,
+  // so its rect is cached and only refreshed when layout could have changed —
+  // never per pointer/wheel event, which would force a synchronous layout.
+  let containerRect: DOMRect | null = null;
+  const refreshRect = () => {
+    containerRect = container.getBoundingClientRect();
+  };
   const localPoint = (e: { clientX: number; clientY: number }) => {
-    const r = container.getBoundingClientRect();
+    const r = containerRect ?? (containerRect = container.getBoundingClientRect());
     return { x: e.clientX - r.left, y: e.clientY - r.top };
   };
 
@@ -948,6 +1623,7 @@ export function ProjectCanvas() {
       if (!panEnabled()) return;
       const p = localPoint(ev);
       setPanning(true);
+      markInteracting();
       camera.panBy(p.x - last.x, p.y - last.y);
       last = p;
     };
@@ -962,9 +1638,18 @@ export function ProjectCanvas() {
   }
 
   /** World-space rect of the marquee, using whichever corners span the box. */
-  function marqueeWorldRect(start: { x: number; y: number }, end: { x: number; y: number }): Rect {
-    const w0 = camera.screenToWorld(Math.min(start.x, end.x), Math.min(start.y, end.y));
-    const w1 = camera.screenToWorld(Math.max(start.x, end.x), Math.max(start.y, end.y));
+  function marqueeWorldRect(
+    start: { x: number; y: number },
+    end: { x: number; y: number },
+  ): Rect {
+    const w0 = camera.screenToWorld(
+      Math.min(start.x, end.x),
+      Math.min(start.y, end.y),
+    );
+    const w1 = camera.screenToWorld(
+      Math.max(start.x, end.x),
+      Math.max(start.y, end.y),
+    );
     return { x: w0.x, y: w0.y, w: w1.x - w0.x, h: w1.y - w0.y };
   }
 
@@ -987,13 +1672,22 @@ export function ProjectCanvas() {
     const onMove = (ev: PointerEvent) => {
       const p = localPoint(ev);
       if (!dragged && Math.hypot(p.x - start.x, p.y - start.y) < 4) return;
-      if (!dragged && !reviewId() && !noteTool()) setSelectedGroups(new Set<string>());
+      if (!dragged && !reviewId() && !noteTool())
+        setSelectedGroups(new Set<string>());
       dragged = true; // still counts as a drag (won't place a pin on release)
       if (reviewId() || noteTool()) return;
       setMarquee({ x0: start.x, y0: start.y, x1: p.x, y1: p.y });
       const world = marqueeWorldRect(start, p);
-      const ids = store.deliverables().filter(d => rectsOverlap(world, effCardRect(d))).map(d => d.id);
-      setSelected(new Set(ids));
+      const ids = store
+        .deliverables()
+        .filter((d) => rectsOverlap(world, effCardRect(d)))
+        .map((d) => d.id);
+      // Only write when membership actually changed — otherwise a fresh Set
+      // identity re-runs the class effect on every card each pointermove.
+      const cur = selected();
+      if (ids.length !== cur.size || ids.some((id) => !cur.has(id))) {
+        setSelected(new Set(ids));
+      }
       setActiveId(null);
     };
     const onUp = (ev: PointerEvent) => {
@@ -1060,23 +1754,46 @@ export function ProjectCanvas() {
 
   /** Plain wheel/trackpad scroll pans; Ctrl/Cmd+scroll (also how browsers
    * report trackpad pinch) zooms, anchored on the cursor. */
+  // Normalize wheel deltas to CSS pixels. Trackpads report DOM_DELTA_PIXEL with
+  // fractional values; mouse wheels often report DOM_DELTA_LINE ("3" per notch),
+  // some report DOM_DELTA_PAGE. Without this, pan speed and zoom step swing wildly
+  // by device.
+  const LINE_PX = 16;
+  function normalizedDelta(e: WheelEvent) {
+    let { deltaX, deltaY } = e;
+    if (e.deltaMode === 1) {
+      deltaX *= LINE_PX;
+      deltaY *= LINE_PX;
+    } else if (e.deltaMode === 2) {
+      const page = container.clientHeight;
+      deltaX *= page;
+      deltaY *= page;
+    }
+    return { deltaX, deltaY };
+  }
+
   function onWheel(e: WheelEvent) {
     e.preventDefault();
     if (locked()) return;
+    const { deltaX, deltaY } = normalizedDelta(e);
+    markInteracting();
     if (e.ctrlKey || e.metaKey) {
       const p = localPoint(e);
-      const factor = e.deltaY < 0 ? 1.1 : 1 / 1.1;
+      // Zoom proportional to scroll magnitude: continuous, smooth trackpad pinch
+      // and consistent mouse-wheel steps. Clamp so a momentum fling can't teleport.
+      const clamped = Math.max(-300, Math.min(300, deltaY));
+      const factor = Math.exp(-clamped * 0.0015);
       camera.zoomAt(p.x, p.y, factor, 0.05, 64);
     } else if (panEnabled()) {
-      camera.panBy(-e.deltaX, -e.deltaY);
+      camera.panBy(-deltaX, -deltaY);
     }
   }
 
   function onDrop(e: DragEvent) {
     e.preventDefault();
     if (!canUpload()) return;
-    const files = Array.from(e.dataTransfer?.files ?? []).filter(f =>
-      f.type.startsWith("image/")
+    const files = Array.from(e.dataTransfer?.files ?? []).filter((f) =>
+      f.type.startsWith("image/"),
     );
     if (files.length === 0) return;
 
@@ -1088,7 +1805,7 @@ export function ProjectCanvas() {
 
     const p = localPoint(e);
     const w = camera.screenToWorld(p.x, p.y);
-    const hit = store.deliverables().find(dl => {
+    const hit = store.deliverables().find((dl) => {
       const r = effCardRect(dl);
       return w.x >= r.x && w.x <= r.x + r.w && w.y >= r.y && w.y <= r.y + r.h;
     });
@@ -1111,10 +1828,18 @@ export function ProjectCanvas() {
     const d = current();
     const target = v ?? currentVersion();
     if (!d || !target || !canDeleteVersion()) return;
-    if (!window.confirm(`Delete v${target.number} of ${d.name}? You can restore it from History.`)) return;
+    if (
+      !window.confirm(
+        `Delete v${target.number} of ${d.name}? You can restore it from History.`,
+      )
+    )
+      return;
     batch(() => {
       selectAnnotation(null);
-      if (currentVersion()?.id === target.id || versionOverride() === target.id) {
+      if (
+        currentVersion()?.id === target.id ||
+        versionOverride() === target.id
+      ) {
         setVersionOverride(null);
       }
     });
@@ -1126,22 +1851,31 @@ export function ProjectCanvas() {
 
   function confirmDeleteDeliverable(d: Deliverable) {
     if (!canDeleteDeliverable()) return;
-    if (!window.confirm(`Delete ${d.name}? You can restore it from History.`)) return;
+    if (!window.confirm(`Delete ${d.name}? You can restore it from History.`))
+      return;
     if (reviewId() === d.id) exitReview();
     store.removeDeliverable(d.id);
+    record("Delete deliverable", () => store.restoreDeliverable(d), () => store.removeDeliverable(d.id));
     flash(`${d.name} deleted — restore from History (H)`);
   }
 
   function bulkDeleteDeliverables() {
     if (!canDeleteDeliverable()) return;
     const ids = selected();
-    if (!window.confirm(`Delete ${ids.size} deliverable${ids.size === 1 ? "" : "s"}? You can restore them from History.`)) return;
+    if (
+      !window.confirm(
+        `Delete ${ids.size} deliverable${ids.size === 1 ? "" : "s"}? You can restore them from History.`,
+      )
+    )
+      return;
     for (const id of ids) {
       if (reviewId() === id) exitReview();
       store.removeDeliverable(id);
     }
     clearSelection();
-    flash(`${ids.size} deliverable${ids.size === 1 ? "" : "s"} deleted — restore from History (H)`);
+    flash(
+      `${ids.size} deliverable${ids.size === 1 ? "" : "s"} deleted — restore from History (H)`,
+    );
   }
 
   // ---- context menus (one shared component, same entries everywhere) -------
@@ -1156,15 +1890,43 @@ export function ProjectCanvas() {
               label: at ? "New deliverable here" : "New deliverable",
               icon: "iconoir:plus",
               hint: "N",
-              run: () => (at ? createDeliverableAt(at.x, at.y) : newDeliverableAtCenter()),
+              run: () =>
+                at ? createDeliverableAt(at.x, at.y) : newDeliverableAtCenter(),
+            },
+            {
+              label: "New group",
+              icon: "iconoir:folder",
+              hint: "G",
+              run: () => newGroupAtCenter(),
             },
           ]
         : []),
-      { label: "Sticky notes", icon: "iconoir:notes", run: () => openPanel("notes") },
-      { label: "Project info", icon: "iconoir:info-circle", hint: "I", run: () => setInfoOpen(true) },
-      { label: "Project history", icon: "iconoir:clock", hint: "H", run: () => openPanel("history") },
+      {
+        label: "Sticky notes",
+        icon: "iconoir:notes",
+        run: () => openPanel("notes"),
+      },
+      {
+        label: "Project info",
+        icon: "iconoir:info-circle",
+        hint: "I",
+        run: () => setInfoOpen(true),
+      },
+      {
+        label: "Project history",
+        icon: "iconoir:clock",
+        hint: "H",
+        run: () => openPanel("history"),
+      },
       ...(!locked()
-        ? [{ label: "Fit to screen", icon: "iconoir:frame", hint: "F", run: () => fitWorkspace(true) }]
+        ? [
+            {
+              label: "Fit to screen",
+              icon: "iconoir:frame",
+              hint: "F",
+              run: () => fitWorkspace(true),
+            },
+          ]
         : []),
     ];
   }
@@ -1173,7 +1935,14 @@ export function ProjectCanvas() {
     const v = currentVersion();
     return [
       ...(canUpload()
-        ? [{ label: "Upload new version", icon: "iconoir:upload", hint: "U", run: () => openFilePicker(d) }]
+        ? [
+            {
+              label: "Upload new version",
+              icon: "iconoir:upload",
+              hint: "U",
+              run: () => openFilePicker(d),
+            },
+          ]
         : []),
       ...(d.versions.length > 1
         ? [
@@ -1185,23 +1954,81 @@ export function ProjectCanvas() {
             },
           ]
         : []),
-      ...(canTask()
-        ? [{ label: "Create task", icon: "iconoir:task-list", run: () => createTaskFromDeliverable(d) }]
+      ...(d.versions.length > 0
+        ? [
+            {
+              label: "Download",
+              icon: "iconoir:download",
+              run: () => {
+                // download the version being viewed for the current deliverable,
+                // otherwise the latest version of the card the menu is on
+                const target =
+                  current()?.id === d.id
+                    ? (v ?? d.versions[d.versions.length - 1])
+                    : d.versions[d.versions.length - 1];
+                if (target) downloadFile(target.fileName);
+              },
+            },
+          ]
         : []),
-      { label: "Project info", icon: "iconoir:info-circle", hint: "I", run: () => setInfoOpen(true) },
-      { label: "Project history", icon: "iconoir:clock", hint: "H", run: () => openPanel("history") },
-      { label: "Fit to screen", icon: "iconoir:frame", hint: "F", run: () => fitPlane(true, 250) },
-      { label: sidebarOpen() ? "Hide comments" : "Show comments", icon: "iconoir:message-text", hint: "Tab", run: () => setSidebarOpen(o => !o) },
+      ...(canTask()
+        ? [
+            {
+              label: "Create task",
+              icon: "iconoir:task-list",
+              run: () => createTaskFromDeliverable(d),
+            },
+          ]
+        : []),
+      {
+        label: "Project info",
+        icon: "iconoir:info-circle",
+        hint: "I",
+        run: () => setInfoOpen(true),
+      },
+      {
+        label: "Project history",
+        icon: "iconoir:clock",
+        hint: "H",
+        run: () => openPanel("history"),
+      },
+      {
+        label: "Fit to screen",
+        icon: "iconoir:frame",
+        hint: "F",
+        run: () => fitPlane(true, 250),
+      },
+      {
+        label: sidebarOpen() ? "Hide comments" : "Show comments",
+        icon: "iconoir:message-text",
+        hint: "Tab",
+        run: () => setSidebarOpen((o) => !o),
+      },
       ...(store.deliverables().length > 1
         ? [
-            { label: "Previous deliverable", icon: "iconoir:arrow-left", hint: "←", run: () => cycleReview(-1) },
-            { label: "Next deliverable", icon: "iconoir:arrow-right", hint: "→", run: () => cycleReview(1) },
+            {
+              label: "Previous deliverable",
+              icon: "iconoir:arrow-left",
+              hint: "←",
+              run: () => cycleReview(-1),
+            },
+            {
+              label: "Next deliverable",
+              icon: "iconoir:arrow-right",
+              hint: "→",
+              run: () => cycleReview(1),
+            },
           ]
         : []),
       ...(canDeleteVersion() && v
         ? [
             { separator: true } as const,
-            { label: `Delete v${v.number}`, icon: "iconoir:trash", danger: true, run: () => confirmDeleteVersion(v) },
+            {
+              label: `Delete v${v.number}`,
+              icon: "iconoir:trash",
+              danger: true,
+              run: () => confirmDeleteVersion(v),
+            },
           ]
         : []),
       ...(canDeleteDeliverable()
@@ -1225,25 +2052,57 @@ export function ProjectCanvas() {
 
   function deliverableMenuEntries(d: Deliverable): MenuEntry[] {
     return [
-      { label: "Open review", icon: "iconoir:open-in-window", hint: "↵", run: () => enterReview(d) },
+      {
+        label: "Open review",
+        icon: "iconoir:open-in-window",
+        hint: "↵",
+        run: () => enterReview(d),
+      },
       ...(canEdit()
-        ? [{ label: "Rename", icon: "iconoir:edit-pencil", run: () => cardActions.get(d.id)?.startRename() }]
+        ? [
+            {
+              label: "Rename",
+              icon: "iconoir:edit-pencil",
+              run: () => cardActions.get(d.id)?.startRename(),
+            },
+          ]
         : []),
       ...(canUpload()
-        ? [{ label: "Upload version", icon: "iconoir:upload", run: () => openFilePicker(d) }]
+        ? [
+            {
+              label: "Upload version",
+              icon: "iconoir:upload",
+              run: () => openFilePicker(d),
+            },
+          ]
         : []),
       ...(canTask()
-        ? [{ label: "Create task", icon: "iconoir:task-list", run: () => createTaskFromDeliverable(d) }]
+        ? [
+            {
+              label: "Create task",
+              icon: "iconoir:task-list",
+              run: () => createTaskFromDeliverable(d),
+            },
+          ]
         : []),
       ...(canEdit() && d.groupId
-        ? [{ label: "Remove from group", icon: "iconoir:link-slash", run: () => store.ungroup(d.id) }]
+        ? [
+            {
+              label: "Remove from group",
+              icon: "iconoir:link-slash",
+              run: () => store.ungroup(d.id),
+            },
+          ]
         : []),
       ...(canEdit() && !d.groupId
-        ? store.groups().slice(0, 6).map(g => ({
-            label: `Add to “${g.label}”`,
-            icon: "iconoir:link" as string,
-            run: () => store.addToGroup(d.id, g.id),
-          }))
+        ? store
+            .groups()
+            .slice(0, 6)
+            .map((g) => ({
+              label: `Add to “${g.label}”`,
+              icon: "iconoir:link" as string,
+              run: () => store.addToGroup(d.id, g.id),
+            }))
         : []),
       ...(canDeleteDeliverable()
         ? [
@@ -1268,7 +2127,11 @@ export function ProjectCanvas() {
     } else {
       const p = localPoint(e);
       const w = camera.screenToWorld(p.x, p.y);
-      setCtxMenu({ x: e.clientX, y: e.clientY, entries: workspaceMenuEntries(w) });
+      setCtxMenu({
+        x: e.clientX,
+        y: e.clientY,
+        entries: workspaceMenuEntries(w),
+      });
     }
   }
 
@@ -1279,7 +2142,12 @@ export function ProjectCanvas() {
       x: e.clientX,
       y: e.clientY,
       entries: [
-        { label: `Show v${v.number}`, icon: "iconoir:eye-solid", hint: String(v.number), run: () => selectVersion(v) },
+        {
+          label: `Show v${v.number}`,
+          icon: "iconoir:eye-solid",
+          hint: String(v.number),
+          run: () => selectVersion(v),
+        },
         ...(d.versions.length > 1
           ? [
               {
@@ -1315,20 +2183,34 @@ export function ProjectCanvas() {
     setPendingDecision(null);
     const res = await store.decide(d.id, v.id, decision, note);
     if (!res.ok) flash(res.error ?? "Decision rejected");
-    else flash(decision === "approved" ? `${d.name} v${v.number} approved` : `Revisions requested on ${d.name}`);
+    else
+      flash(
+        decision === "approved"
+          ? `${d.name} v${v.number} approved`
+          : `Revisions requested on ${d.name}`,
+      );
   }
 
   // ---- keyboard ------------------------------------------------------------
 
   function isTyping(e: KeyboardEvent) {
     const t = e.target as HTMLElement;
-    return t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable;
+    return (
+      t.tagName === "INPUT" || t.tagName === "TEXTAREA" || t.isContentEditable
+    );
   }
 
   function onKeyDown(e: KeyboardEvent) {
     if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") {
       e.preventDefault();
-      setPaletteOpen(o => !o);
+      setPaletteOpen((o) => !o);
+      return;
+    }
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z") {
+      if (isTyping(e)) return; // let text fields keep native undo
+      e.preventDefault();
+      if (e.shiftKey) doRedo();
+      else doUndo();
       return;
     }
     if (paletteOpen() || searchOpen() || isTyping(e)) return;
@@ -1343,7 +2225,7 @@ export function ProjectCanvas() {
       return;
     }
     if (e.key === "i" || e.key === "I") {
-      setInfoOpen(o => !o);
+      setInfoOpen((o) => !o);
       return;
     }
 
@@ -1364,7 +2246,7 @@ export function ProjectCanvas() {
           return;
         case "Tab":
           e.preventDefault();
-          setSidebarOpen(o => !o);
+          setSidebarOpen((o) => !o);
           return;
         case "ArrowLeft":
           cycleReview(-1);
@@ -1383,7 +2265,7 @@ export function ProjectCanvas() {
       }
       const n = Number(e.key);
       if (n >= 1 && n <= 9) {
-        const v = d.versions.find(v => v.number === n);
+        const v = d.versions.find((v) => v.number === n);
         if (v) selectVersion(v);
       }
     } else {
@@ -1398,10 +2280,14 @@ export function ProjectCanvas() {
         case "N":
           if (canCreate()) newDeliverableAtCenter();
           return;
+        case "g":
+        case "G":
+          if (canCreate()) newGroupAtCenter();
+          return;
         case "s":
         case "S":
           if (canNote()) {
-            setNoteTool(t => !t);
+            setNoteTool((t) => !t);
             flash(noteTool() ? "Sticky note: click the canvas to place" : "");
           }
           return;
@@ -1418,12 +2304,33 @@ export function ProjectCanvas() {
     onCleanup(() => window.removeEventListener("keydown", onKeyDown));
   });
 
+  // Keep the cached container rect fresh. It only changes when layout does — a
+  // panel toggling, the window resizing, an ancestor scrolling — never during a
+  // pan, so refreshing here (not per pointer event) removes a forced layout from
+  // the input hot path. Deliberately does NOT touch the camera: an earlier
+  // version pan-compensated on width change and fought in-flight fly animations.
+  onMount(() => {
+    refreshRect();
+    const ro = new ResizeObserver(refreshRect);
+    ro.observe(container);
+    window.addEventListener("scroll", refreshRect, { capture: true, passive: true });
+    onCleanup(() => {
+      ro.disconnect();
+      window.removeEventListener("scroll", refreshRect, { capture: true } as EventListenerOptions);
+    });
+  });
+
   // hold-spacebar-to-pan: separate from onKeyDown so it isn't gated behind
   // review/workspace mode branches and still works while typing is blocked
   onMount(() => {
     function onSpaceDown(e: KeyboardEvent) {
       if (e.code !== "Space" || e.repeat) return;
-      if ((e.target as HTMLElement).tagName === "INPUT" || (e.target as HTMLElement).tagName === "TEXTAREA" || (e.target as HTMLElement).isContentEditable) return;
+      if (
+        (e.target as HTMLElement).tagName === "INPUT" ||
+        (e.target as HTMLElement).tagName === "TEXTAREA" ||
+        (e.target as HTMLElement).isContentEditable
+      )
+        return;
       e.preventDefault(); // no page scroll
       setSpaceHeld(true);
     }
@@ -1449,9 +2356,9 @@ export function ProjectCanvas() {
     const list = store.deliverables();
     return {
       total: list.length,
-      inReview: list.filter(d => d.status === "in_review").length,
-      revisions: list.filter(d => d.status === "revisions_requested").length,
-      approved: list.filter(d => d.status === "approved").length,
+      inReview: list.filter((d) => d.status === "in_review").length,
+      revisions: list.filter((d) => d.status === "revisions_requested").length,
+      approved: list.filter((d) => d.status === "approved").length,
     };
   });
 
@@ -1508,12 +2415,11 @@ export function ProjectCanvas() {
           { key: "⌘K", label: "search" },
         ];
   });
-
   return (
-    <div class="p-1 h-screen bg-[#fffefe]">
-      <div class="rounded-lg overflow-clip w-full flex flex-col h-full border border-[#eceaea]">
+    <div class="relative p-1 h-full bg-canvas">
+      <div class="rounded-lg overflow-clip w-full flex flex-col h-full border border-line">
         {/* ---- nav ---- */}
-        <nav class="min-h-12 px-3 flex items-center justify-between gap-4 bg-[#f8f7f7] border-b border-[#f0eeee] z-10">
+        <nav class="min-h-12 px-3 flex items-center justify-between gap-4 bg-surface border-b border-hairline z-10">
           <div class="flex items-center gap-2 text-sm min-w-0">
             <button
               class="flex items-center text-neutral-500 hover:text-neutral-800 cursor-pointer p-1"
@@ -1526,12 +2432,12 @@ export function ProjectCanvas() {
               {store.state.graph?.project.name ?? "…"}
             </span>
             <Show when={store.state.graph?.project.entityName}>
-              <span class="bg-[#efeded] text-neutral-500 text-xs py-0.5 px-1.5 rounded truncate max-w-32 shrink-0">
+              <span class="bg-muted text-neutral-500 text-xs py-0.5 px-1.5 rounded truncate max-w-32 shrink-0">
                 {store.state.graph!.project.entityName}
               </span>
             </Show>
             <Show when={current()}>
-              {d => (
+              {(d) => (
                 <>
                   <span class="text-neutral-300">/</span>
                   <Show
@@ -1540,25 +2446,37 @@ export function ProjectCanvas() {
                       <input
                         class="text-sm text-neutral-700 bg-neutral-50 border border-neutral-200 rounded px-1 py-0.5 outline-none select-text min-w-0"
                         value={d().name}
-                        ref={el => queueMicrotask(() => { el.focus(); el.select(); })}
-                        onKeyDown={e => {
-                          if (e.key === "Enter") (e.currentTarget as HTMLInputElement).blur();
+                        ref={(el) =>
+                          queueMicrotask(() => {
+                            el.focus();
+                            el.select();
+                          })
+                        }
+                        onKeyDown={(e) => {
+                          if (e.key === "Enter")
+                            (e.currentTarget as HTMLInputElement).blur();
                           if (e.key === "Escape") {
-                            (e.currentTarget as HTMLInputElement).value = d().name;
+                            (e.currentTarget as HTMLInputElement).value =
+                              d().name;
                             (e.currentTarget as HTMLInputElement).blur();
                           }
                         }}
-                        onBlur={e => {
+                        onBlur={(e) => {
                           setNavRenaming(false);
                           const name = e.currentTarget.value.trim();
-                          if (name && name !== d().name) store.renameDeliverable(d().id, name);
+                          if (name && name !== d().name)
+                            renameDeliverableU(d().id, d().name, name);
                         }}
                       />
                     }
                   >
                     <span
                       class="text-neutral-700 truncate"
-                      title={canEdit() ? `${d().name} — double-click to rename` : d().name}
+                      title={
+                        canEdit()
+                          ? `${d().name} — double-click to rename`
+                          : d().name
+                      }
                       onDblClick={() => {
                         if (canEdit()) setNavRenaming(true);
                       }}
@@ -1592,15 +2510,16 @@ export function ProjectCanvas() {
                 class="flex items-center gap-1 p-1.5 rounded cursor-pointer relative"
                 classList={{
                   "bg-neutral-200/70 text-neutral-800": tasksOpen(),
-                  "text-neutral-500 hover:text-neutral-800 hover:bg-neutral-200/50": !tasksOpen(),
+                  "text-neutral-500 hover:text-neutral-800 hover:bg-neutral-200/50":
+                    !tasksOpen(),
                 }}
                 title="Tasks"
                 onClick={() => openPanel("tasks")}
               >
                 <Icon icon="iconoir:task-list" width="15" />
-                <Show when={panelTasks().some(t => t.status !== "done")}>
+                <Show when={panelTasks().some((t) => t.status !== "done")}>
                   <span class="text-[10px]">
-                    {panelTasks().filter(t => t.status !== "done").length}
+                    {panelTasks().filter((t) => t.status !== "done").length}
                   </span>
                 </Show>
               </button>
@@ -1610,7 +2529,8 @@ export function ProjectCanvas() {
               class="flex items-center p-1.5 rounded cursor-pointer"
               classList={{
                 "bg-neutral-200/70 text-neutral-800": libraryOpen(),
-                "text-neutral-500 hover:text-neutral-800 hover:bg-neutral-200/50": !libraryOpen(),
+                "text-neutral-500 hover:text-neutral-800 hover:bg-neutral-200/50":
+                  !libraryOpen(),
               }}
               title="Library"
               onClick={() => openPanel("library")}
@@ -1621,32 +2541,37 @@ export function ProjectCanvas() {
               class="flex items-center p-1.5 rounded cursor-pointer"
               classList={{
                 "bg-neutral-200/70 text-neutral-800": historyOpen(),
-                "text-neutral-500 hover:text-neutral-800 hover:bg-neutral-200/50": !historyOpen(),
+                "text-neutral-500 hover:text-neutral-800 hover:bg-neutral-200/50":
+                  !historyOpen(),
               }}
               title="Project history (H)"
               onClick={() => openPanel("history")}
             >
               <Icon icon="iconoir:clock" width="15" />
             </button>
-            <Show
-              when={current()}
-              fallback={null}
-            >
-              {d => (
+            <Show when={store.state.graph?.viewer.role !== "guest"}>
+              <AiTrigger />
+            </Show>
+            <Show when={current()} fallback={null}>
+              {(d) => (
                 <>
                   {/* version tabs */}
-                  <div class="flex items-center gap-0.5 bg-[#efeded] rounded p-0.5">
+                  <div class="flex items-center gap-0.5 bg-muted rounded p-0.5">
                     <For each={d().versions}>
-                      {v => (
+                      {(v) => (
                         <button
                           class="text-[11px] px-1.5 py-0.5 rounded cursor-pointer"
                           classList={{
-                            "bg-white shadow-sm text-neutral-800": currentVersion()?.id === v.id,
-                            "text-neutral-500 hover:text-neutral-800": currentVersion()?.id !== v.id,
+                            "bg-panel shadow-sm text-neutral-800":
+                              currentVersion()?.id === v.id,
+                            "text-neutral-500 hover:text-neutral-800":
+                              currentVersion()?.id !== v.id,
                           }}
                           title={`Version ${v.number} (${v.number}) — right-click for actions`}
                           onClick={() => selectVersion(v)}
-                          onContextMenu={e => onVersionTabContextMenu(e, d(), v)}
+                          onContextMenu={(e) =>
+                            onVersionTabContextMenu(e, d(), v)
+                          }
                         >
                           v{v.number}
                         </button>
@@ -1667,18 +2592,33 @@ export function ProjectCanvas() {
                     <button
                       class="flex items-center gap-1 text-xs rounded border px-2.5 py-1.5 cursor-pointer"
                       classList={{
-                        "bg-sky-50 border-sky-200 text-sky-700": compare(),
-                        "border-neutral-200 text-neutral-600 hover:bg-neutral-50": !compare(),
+                        "bg-accent-sky border-accent-sky-line text-on-accent-sky":
+                          compare(),
+                        "border-neutral-200 text-neutral-600 hover:bg-neutral-50":
+                          !compare(),
                       }}
                       title="Compare versions side by side (C)"
                       onClick={toggleCompare}
                     >
-                      <Icon icon="iconoir:media-image-list" width="13" /> Compare
+                      <Icon icon="iconoir:media-image-list" width="13" />{" "}
+                      Compare
                     </button>
                   </Show>
 
+                  <Show when={currentVersion()}>
+                    {v => (
+                      <button
+                        class="flex items-center gap-1 text-xs rounded border border-neutral-200 text-neutral-600 hover:bg-neutral-50 px-2.5 py-1.5 cursor-pointer"
+                        title={`Download v${v().number}`}
+                        onClick={() => downloadFile(v().fileName)}
+                      >
+                        <Icon icon="iconoir:download" width="13" /> Download
+                      </button>
+                    )}
+                  </Show>
+
                   <button
-                    class="flex items-center gap-1 text-xs border border-amber-200 bg-amber-50 text-amber-700 rounded px-2.5 py-1.5 hover:bg-amber-100 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                    class="flex items-center gap-1 text-xs border border-accent-amber-line bg-accent-amber text-on-accent-amber rounded px-2.5 py-1.5 hover:bg-accent-amber-hover cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                     disabled={!currentVersion()}
                     onClick={() => setPendingDecision("revision_requested")}
                   >
@@ -1699,9 +2639,11 @@ export function ProjectCanvas() {
 
                   {/* decision popover */}
                   <Show when={pendingDecision()}>
-                    <div class="absolute top-full right-0 mt-2 w-72 bg-white border border-neutral-200 rounded-lg shadow-xl p-3 z-30">
+                    <div class="absolute top-full right-0 mt-2 w-72 bg-panel border border-neutral-200 rounded-lg shadow-xl p-3 z-30">
                       <p class="text-xs font-semibold text-neutral-800 mb-2">
-                        {pendingDecision() === "approved" ? "Approve" : "Request revisions on"}{" "}
+                        {pendingDecision() === "approved"
+                          ? "Approve"
+                          : "Request revisions on"}{" "}
                         {d().name} v{currentVersion()?.number}
                       </p>
                       <textarea
@@ -1709,12 +2651,16 @@ export function ProjectCanvas() {
                         rows="2"
                         class="w-full text-xs border border-neutral-200 rounded px-2 py-1.5 mb-2 outline-none focus:border-sky-400 resize-none"
                         placeholder="Note (optional)"
-                        ref={el => queueMicrotask(() => el.focus())}
-                        onKeyDown={e => {
+                        ref={(el) => queueMicrotask(() => el.focus())}
+                        onKeyDown={(e) => {
                           e.stopPropagation();
                           if (e.key === "Enter" && !e.shiftKey) {
                             e.preventDefault();
-                            void confirmDecision((e.currentTarget as HTMLTextAreaElement).value.trim());
+                            void confirmDecision(
+                              (
+                                e.currentTarget as HTMLTextAreaElement
+                              ).value.trim(),
+                            );
                           }
                           if (e.key === "Escape") setPendingDecision(null);
                         }}
@@ -1729,12 +2675,18 @@ export function ProjectCanvas() {
                         <button
                           class="text-xs text-white rounded px-2.5 py-1 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
                           classList={{
-                            "bg-emerald-600 hover:bg-emerald-500": pendingDecision() === "approved",
-                            "bg-amber-600 hover:bg-amber-500": pendingDecision() === "revision_requested",
+                            "bg-emerald-600 hover:bg-emerald-500":
+                              pendingDecision() === "approved",
+                            "bg-amber-600 hover:bg-amber-500":
+                              pendingDecision() === "revision_requested",
                           }}
                           onClick={() =>
                             void confirmDecision(
-                              (document.getElementById("decision-note") as HTMLTextAreaElement)?.value.trim() ?? ""
+                              (
+                                document.getElementById(
+                                  "decision-note",
+                                ) as HTMLTextAreaElement
+                              )?.value.trim() ?? "",
                             )
                           }
                         >
@@ -1751,9 +2703,12 @@ export function ProjectCanvas() {
             <button
               class="flex items-center p-1.5 rounded cursor-pointer text-neutral-500 hover:text-neutral-800 hover:bg-neutral-200/50"
               title="More actions"
-              onClick={e => {
+              onClick={(e) => {
                 const d = current();
-                openMenuAt(e, d ? reviewMenuEntries(d) : workspaceMenuEntries());
+                openMenuAt(
+                  e,
+                  d ? reviewMenuEntries(d) : workspaceMenuEntries(),
+                );
               }}
             >
               <Icon icon="iconoir:more-horiz" width="15" />
@@ -1765,7 +2720,7 @@ export function ProjectCanvas() {
         <div class="flex-1 flex min-h-0">
           <div
             ref={container}
-            class="relative flex-1 overflow-hidden bg-[#fffefe] select-none"
+            class="relative flex-1 overflow-hidden bg-canvas select-none"
             classList={{
               "cursor-copy": noteTool() && !spaceHeld(),
               "cursor-grabbing": panning(),
@@ -1776,17 +2731,24 @@ export function ProjectCanvas() {
             onDblClick={onDblClick}
             onWheel={onWheel}
             onContextMenu={onCanvasContextMenu}
-            onDragOver={e => e.preventDefault()}
+            onDragOver={(e) => e.preventDefault()}
             onDrop={onDrop}
           >
             <DotGrid camera={camera} />
 
-            {/* world overlay */}
+            {/* world overlay. translate3d keeps the transform on the compositor
+                fast path; will-change promotes it to its own layer during a
+                gesture so Chrome moves the layer instead of re-rasterizing every
+                card, and pointer-events:none stops hover shadows from churning
+                as cards slide under a stationary cursor. Both drop when idle so
+                there's no standing layer cost. */}
             <div
               class="absolute top-0 left-0"
               style={{
-                transform: `scale(${camera.cam.zoom}) translate(${-camera.cam.x}px, ${-camera.cam.y}px)`,
+                transform: `scale(${camera.cam.zoom}) translate3d(${-camera.cam.x}px, ${-camera.cam.y}px, 0)`,
                 "transform-origin": "0 0",
+                "will-change": interacting() ? "transform" : "auto",
+                "pointer-events": interacting() ? "none" : "auto",
               }}
             >
               <Show
@@ -1798,16 +2760,22 @@ export function ProjectCanvas() {
                         array) so a drag's position updates re-render only the rect inside
                         each item, never tear down/recreate the label DOM node mid-drag. */}
                     <For each={store.groups()}>
-                      {g => {
+                      {(g) => {
                         const rect = createMemo(() => groupOutlineRect(g.id));
                         return (
                           <Show when={rect()}>
-                            {r => (
+                            {(r) => (
                               <div
                                 class="absolute rounded-lg pointer-events-none"
                                 classList={{
-                                  "border-violet-400": !selectedGroups().has(g.id),
-                                  "border-violet-600 bg-violet-50/30": selectedGroups().has(g.id),
+                                  "border-violet-400":
+                                    !selectedGroups().has(g.id) &&
+                                    hoverGroupId() !== g.id,
+                                  "border-violet-600 bg-accent-violet/30":
+                                    selectedGroups().has(g.id) &&
+                                    hoverGroupId() !== g.id,
+                                  "border-emerald-500 bg-accent-emerald/30":
+                                    hoverGroupId() === g.id,
                                 }}
                                 style={{
                                   left: `${r().x}px`,
@@ -1822,51 +2790,113 @@ export function ProjectCanvas() {
                                   when={renamingGroupId() !== g.id}
                                   fallback={
                                     <input
-                                      class="absolute left-2 top-0 text-[11px] font-medium rounded px-1.5 py-0.5 bg-white border border-violet-300 outline-none whitespace-nowrap pointer-events-auto select-text"
+                                      class="absolute left-2 top-0 text-[11px] font-medium rounded px-1.5 py-0.5 bg-panel border border-violet-300 outline-none whitespace-nowrap pointer-events-auto select-text"
                                       style={{
                                         transform: `scale(${1 / camera.cam.zoom}) translateY(-50%)`,
                                         "transform-origin": "0 50%",
                                         width: `${Math.max(80, g.label.length * 7)}px`,
                                       }}
                                       value={g.label}
-                                      ref={el => queueMicrotask(() => { el.focus(); el.select(); })}
-                                      onPointerDown={e => e.stopPropagation()}
-                                      onKeyDown={e => {
+                                      ref={(el) =>
+                                        queueMicrotask(() => {
+                                          el.focus();
+                                          el.select();
+                                        })
+                                      }
+                                      onPointerDown={(e) => e.stopPropagation()}
+                                      onKeyDown={(e) => {
                                         e.stopPropagation();
-                                        if (e.key === "Enter") (e.currentTarget as HTMLInputElement).blur();
+                                        if (e.key === "Enter")
+                                          (
+                                            e.currentTarget as HTMLInputElement
+                                          ).blur();
                                         if (e.key === "Escape") {
-                                          (e.currentTarget as HTMLInputElement).value = g.label;
-                                          (e.currentTarget as HTMLInputElement).blur();
+                                          (
+                                            e.currentTarget as HTMLInputElement
+                                          ).value = g.label;
+                                          (
+                                            e.currentTarget as HTMLInputElement
+                                          ).blur();
                                         }
                                       }}
-                                      onBlur={e => {
+                                      onBlur={(e) => {
                                         setRenamingGroupId(null);
-                                        const name = e.currentTarget.value.trim();
-                                        if (name && name !== g.label) store.renameGroup(g.id, name);
+                                        const name =
+                                          e.currentTarget.value.trim();
+                                        if (name && name !== g.label)
+                                          renameGroupU(g.id, g.label, name);
                                       }}
                                     />
                                   }
                                 >
-                                  <button
-                                    class="absolute left-2 top-0 inline-flex items-center gap-1 text-[11px] font-medium rounded px-1.5 py-0.5 cursor-pointer whitespace-nowrap pointer-events-auto"
-                                    classList={{
-                                      "bg-violet-100 text-violet-700 hover:bg-violet-200": !selectedGroups().has(g.id),
-                                      "bg-violet-600 text-white": selectedGroups().has(g.id),
-                                    }}
+                                  {/* label + add button as one anchored, counter-
+                                      scaled cluster: stays constant screen size,
+                                      single row, and the two never overlap no
+                                      matter the group size or zoom. */}
+                                  <div
+                                    class="absolute left-2 top-0 flex items-center gap-1 whitespace-nowrap pointer-events-none"
                                     style={{
                                       transform: `scale(${1 / camera.cam.zoom}) translateY(-50%)`,
                                       "transform-origin": "0 50%",
                                     }}
-                                    title={`${g.label} — drag to move, double-click to rename`}
-                                    onPointerDown={e => onGroupLabelPointerDown(e, g.id)}
-                                    onDblClick={e => {
-                                      e.stopPropagation();
-                                      if (canEdit()) setRenamingGroupId(g.id);
-                                    }}
                                   >
-                                    <Icon icon="iconoir:link" width="10" />
-                                    {g.label}
-                                  </button>
+                                    <button
+                                      class="inline-flex items-center gap-1 text-[11px] font-medium rounded px-1.5 py-0.5 cursor-pointer pointer-events-auto"
+                                      classList={{
+                                        "bg-accent-violet text-on-accent-violet hover:bg-accent-violet-hover":
+                                          !selectedGroups().has(g.id),
+                                        "bg-violet-600 text-white":
+                                          selectedGroups().has(g.id),
+                                      }}
+                                      title={`${g.label} — drag to move, double-click to rename`}
+                                      onMouseEnter={() =>
+                                        setHovered({ kind: "group", name: g.label })
+                                      }
+                                      onMouseLeave={() => setHovered(null)}
+                                      onPointerDown={(e) =>
+                                        onGroupLabelPointerDown(e, g.id)
+                                      }
+                                      onDblClick={(e) => {
+                                        e.stopPropagation();
+                                        if (canEdit()) setRenamingGroupId(g.id);
+                                      }}
+                                    >
+                                      <Icon icon="iconoir:link" width="10" />
+                                      {g.label}
+                                    </button>
+                                    <Show when={canEdit()}>
+                                      <button
+                                        class="inline-flex items-center justify-center rounded bg-accent-violet text-on-accent-violet hover:bg-accent-violet-hover cursor-pointer pointer-events-auto px-1 py-0.5"
+                                        title="Add a deliverable to this group"
+                                        onPointerDown={(e) => e.stopPropagation()}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          createDeliverableInGroup(g.id);
+                                        }}
+                                      >
+                                        <Icon icon="iconoir:plus" width="11" />
+                                      </button>
+                                    </Show>
+                                  </div>
+                                </Show>
+                                {/* resize handle — container (framed) groups only */}
+                                <Show
+                                  when={
+                                    canEdit() &&
+                                    store.groupById(g.id)?.posX != null
+                                  }
+                                >
+                                  <div
+                                    class="absolute bottom-0 right-0 size-3 rounded-sm bg-violet-400 hover:bg-violet-600 pointer-events-auto cursor-nwse-resize"
+                                    style={{
+                                      transform: `scale(${1 / camera.cam.zoom})`,
+                                      "transform-origin": "100% 100%",
+                                    }}
+                                    title="Resize group"
+                                    onPointerDown={(e) =>
+                                      onGroupResizePointerDown(e, g.id)
+                                    }
+                                  />
                                 </Show>
                               </div>
                             )}
@@ -1875,8 +2905,10 @@ export function ProjectCanvas() {
                       }}
                     </For>
                     <For each={store.deliverables()}>
-                      {d => {
-                        const pos = createMemo(() => posOf("deliverable", d.id, d.posX, d.posY));
+                      {(d) => {
+                        const pos = createMemo(() =>
+                          posOf("deliverable", d.id, d.posX, d.posY),
+                        );
                         return (
                           <DeliverableCard
                             d={d}
@@ -1886,26 +2918,49 @@ export function ProjectCanvas() {
                             readOnly={!canEdit()}
                             selected={selected().has(d.id)}
                             active={activeId() === d.id}
-                            onSelect={(dl, o) => (o.additive ? extendSelection(dl.id) : highlightCard(dl.id))}
-                            onToggleSelect={dl => extendSelection(dl.id)}
+                            onSelect={(dl, o) =>
+                              o.additive
+                                ? extendSelection(dl.id)
+                                : highlightCard(dl.id)
+                            }
+                            onToggleSelect={(dl) => extendSelection(dl.id)}
                             onOpen={enterReview}
                             onMove={handleCardMove}
-                            onRename={(dl, name) => store.renameDeliverable(dl.id, name)}
-                            onDelete={canDeleteDeliverable() ? confirmDeleteDeliverable : undefined}
-                            onMenu={(dl, x, y) => setCtxMenu({ x, y, entries: deliverableMenuEntries(dl) })}
-                            registerActions={(id, actions) => cardActions.set(id, actions)}
+                            onRename={(dl, name) =>
+                              renameDeliverableU(dl.id, dl.name, name)
+                            }
+                            onDelete={
+                              canDeleteDeliverable()
+                                ? confirmDeleteDeliverable
+                                : undefined
+                            }
+                            onMenu={(dl, x, y) =>
+                              setCtxMenu({
+                                x,
+                                y,
+                                entries: deliverableMenuEntries(dl),
+                              })
+                            }
+                            registerActions={(id, actions) =>
+                              cardActions.set(id, actions)
+                            }
                             screenToWorldDelta={(dx, dy) => ({
                               x: dx / camera.cam.zoom,
                               y: dy / camera.cam.zoom,
                             })}
+                            onHover={(h) =>
+                              setHovered(h ? { kind: "deliverable", name: d.name } : null)
+                            }
                           />
                         );
                       }}
                     </For>
                     {/* sticky notes — board-only working notes */}
                     <For each={store.canvasObjects()}>
-                      {o => {
-                        const pos = createMemo(() => posOf("note", o.id, o.posX, o.posY));
+                      {(o) => {
+                        const pos = createMemo(() =>
+                          posOf("note", o.id, o.posX, o.posY),
+                        );
                         return (
                           <StickyNote
                             o={o}
@@ -1914,8 +2969,16 @@ export function ProjectCanvas() {
                             readOnly={!store.can("canvasObject", "update")}
                             autoEdit={newNoteId() === o.id}
                             onMove={handleNoteMove}
-                            onEdit={(note, content) => store.updateNote(note.id, { content })}
-                            onMenu={(note, x, y) => setCtxMenu({ x, y, entries: noteMenuEntries(note) })}
+                            onEdit={(note, content) =>
+                              store.updateNote(note.id, { content })
+                            }
+                            onMenu={(note, x, y) =>
+                              setCtxMenu({
+                                x,
+                                y,
+                                entries: noteMenuEntries(note),
+                              })
+                            }
                             screenToWorldDelta={(dx, dy) => ({
                               x: dx / camera.cam.zoom,
                               y: dy / camera.cam.zoom,
@@ -1926,7 +2989,7 @@ export function ProjectCanvas() {
                     </For>
                     {/* active snap guides — feedback for what a drag is snapping to */}
                     <For each={snapGuides()}>
-                      {g => (
+                      {(g) => (
                         <div
                           class="absolute bg-sky-500 pointer-events-none"
                           style={
@@ -1950,23 +3013,27 @@ export function ProjectCanvas() {
                   </>
                 }
               >
-                {d => (
+                {(d) => (
                   <>
                     {/* comparison row: every version, current highlighted */}
                     <Show when={compareLayout()}>
-                      {cl => (
+                      {(cl) => (
                         <For each={cl()}>
-                          {item => (
+                          {(item) => (
                             <>
                               <div
                                 class="absolute pointer-events-none"
-                                style={{ left: `${item.rect.x}px`, top: `${item.rect.y}px` }}
+                                style={{
+                                  left: `${item.rect.x}px`,
+                                  top: `${item.rect.y}px`,
+                                }}
                               >
                                 <span
                                   class="inline-block text-[12px] font-semibold rounded px-1.5 py-0.5 whitespace-nowrap"
                                   classList={{
                                     "bg-sky-500 text-white": item.current,
-                                    "bg-neutral-200 text-neutral-600": !item.current,
+                                    "bg-neutral-200 text-neutral-600":
+                                      !item.current,
                                   }}
                                   style={{
                                     transform: `scale(${1 / camera.cam.zoom}) translateY(-135%)`,
@@ -1981,7 +3048,7 @@ export function ProjectCanvas() {
                                 <img
                                   src={fileUrl(item.v.fileName)}
                                   alt={`Version ${item.v.number}`}
-                                  class="absolute max-w-none bg-white shadow-[0_4px_24px_rgba(0,0,0,0.10)] cursor-pointer"
+                                  class="absolute max-w-none bg-panel shadow-[var(--shadow-plane)] cursor-pointer"
                                   draggable={false}
                                   style={{
                                     left: `${item.rect.x}px`,
@@ -1990,7 +3057,7 @@ export function ProjectCanvas() {
                                     height: `${item.rect.h}px`,
                                   }}
                                   title={`Switch to v${item.v.number}`}
-                                  onClick={e => {
+                                  onClick={(e) => {
                                     e.stopPropagation();
                                     selectVersion(item.v);
                                   }}
@@ -2008,7 +3075,7 @@ export function ProjectCanvas() {
                       zoom={camera.cam.zoom}
                       annotations={versionAnnotations()}
                       selectedId={selectedAnnId()}
-                      onSelectPin={id => selectAnnotation(id)}
+                      onSelectPin={(id) => selectAnnotation(id)}
                       canUpload={canUpload()}
                       highlight={compare()}
                     />
@@ -2019,7 +3086,7 @@ export function ProjectCanvas() {
 
             {/* marquee-select box — drawn in screen space, not world space */}
             <Show when={marquee()}>
-              {m => (
+              {(m) => (
                 <div
                   class="absolute border border-sky-500 bg-sky-500/10 pointer-events-none z-10"
                   style={{
@@ -2033,18 +3100,29 @@ export function ProjectCanvas() {
             </Show>
 
             {/* empty state */}
-            <Show when={store.state.loaded && !reviewId() && store.deliverables().length === 0}>
+            <Show
+              when={
+                store.state.loaded &&
+                !reviewId() &&
+                store.deliverables().length === 0
+              }
+            >
               <div class="absolute inset-0 flex items-center justify-center pointer-events-none">
                 <div class="text-center text-neutral-400 max-w-sm px-4">
                   <Icon icon="iconoir:media-image-list" width="40" />
-                  <p class="mt-3 text-sm font-medium text-neutral-500">No deliverables yet</p>
+                  <p class="mt-3 text-sm font-medium text-neutral-500">
+                    No deliverables yet
+                  </p>
                   <p class="mt-1 text-xs">
                     <Show
                       when={canCreate()}
                       fallback={<>Nothing has been shared for review yet</>}
                     >
-                      Press <kbd class="px-1 bg-neutral-100 rounded border border-neutral-200">N</kbd>,
-                      double-click the canvas, or drop images anywhere
+                      Press{" "}
+                      <kbd class="px-1 bg-neutral-100 rounded border border-neutral-200">
+                        N
+                      </kbd>
+                      , double-click the canvas, or drop images anywhere
                     </Show>
                   </p>
                   {/* lopsided state: tasks exist but there's nothing to review yet.
@@ -2053,10 +3131,10 @@ export function ProjectCanvas() {
                   <Show when={tasks().length > 0}>
                     <div
                       class="mt-4 pointer-events-auto text-left"
-                      onPointerDown={e => e.stopPropagation()}
-                      onDblClick={e => e.stopPropagation()}
-                      onWheel={e => e.stopPropagation()}
-                      onContextMenu={e => {
+                      onPointerDown={(e) => e.stopPropagation()}
+                      onDblClick={(e) => e.stopPropagation()}
+                      onWheel={(e) => e.stopPropagation()}
+                      onContextMenu={(e) => {
                         e.preventDefault();
                         e.stopPropagation();
                       }}
@@ -2068,14 +3146,14 @@ export function ProjectCanvas() {
                           <>
                             <Show when={canCreate()}>
                               <button
-                                class="text-[11px] text-white bg-neutral-800 hover:bg-neutral-700 rounded px-2 py-1 cursor-pointer"
+                                class="text-[11px] text-on-brand bg-brand hover:bg-brand-hover rounded px-2 py-1 cursor-pointer"
                                 onClick={() => newDeliverableAtCenter()}
                               >
                                 Create deliverable
                               </button>
                             </Show>
                             <button
-                              class="text-[11px] text-amber-800 hover:bg-amber-100 rounded px-2 py-1 cursor-pointer"
+                              class="text-[11px] text-on-accent-amber hover:bg-accent-amber-hover rounded px-2 py-1 cursor-pointer"
                               onClick={() => openPanel("tasks")}
                             >
                               View tasks
@@ -2083,8 +3161,8 @@ export function ProjectCanvas() {
                           </>
                         }
                       >
-                        {tasks().length} task{tasks().length === 1 ? "" : "s"} tracked here, but no
-                        deliverables yet.
+                        {tasks().length} task{tasks().length === 1 ? "" : "s"}{" "}
+                        tracked here, but no deliverables yet.
                       </Callout>
                     </div>
                   </Show>
@@ -2104,10 +3182,10 @@ export function ProjectCanvas() {
             <Show when={!reviewId() && (canCreate() || canNote())}>
               <div
                 class="absolute top-3 left-3 z-10"
-                onPointerDown={e => e.stopPropagation()}
-                onDblClick={e => e.stopPropagation()}
-                onWheel={e => e.stopPropagation()}
-                onContextMenu={e => {
+                onPointerDown={(e) => e.stopPropagation()}
+                onDblClick={(e) => e.stopPropagation()}
+                onWheel={(e) => e.stopPropagation()}
+                onContextMenu={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
                 }}
@@ -2118,7 +3196,7 @@ export function ProjectCanvas() {
                   panelClass="w-44"
                   trigger={({ toggle }) => (
                     <button
-                      class="flex items-center gap-1 text-xs bg-neutral-900 text-white rounded px-2.5 py-1.5 hover:bg-neutral-700 cursor-pointer shadow-sm"
+                      class="flex items-center gap-1 text-xs bg-brand text-on-brand rounded px-2.5 py-1.5 hover:bg-neutral-700 cursor-pointer shadow-sm"
                       title="Add"
                       onClick={toggle}
                     >
@@ -2136,9 +3214,15 @@ export function ProjectCanvas() {
                             newDeliverableAtCenter();
                           }}
                         >
-                          <Icon icon="iconoir:media-image" width="14" class="shrink-0 text-neutral-500" />
+                          <Icon
+                            icon="iconoir:media-image"
+                            width="14"
+                            class="shrink-0 text-neutral-500"
+                          />
                           <span class="flex-1">New asset</span>
-                          <kbd class="text-[9px] font-semibold text-neutral-400 bg-neutral-100 border border-neutral-200 rounded px-1 py-px">N</kbd>
+                          <kbd class="text-[9px] font-semibold text-neutral-400 bg-neutral-100 border border-neutral-200 rounded px-1 py-px">
+                            N
+                          </kbd>
                         </button>
                       </Show>
                       <Show when={canNote()}>
@@ -2150,9 +3234,15 @@ export function ProjectCanvas() {
                             flash("Sticky note: click the canvas to place");
                           }}
                         >
-                          <Icon icon="iconoir:notes" width="14" class="shrink-0 text-neutral-500" />
+                          <Icon
+                            icon="iconoir:notes"
+                            width="14"
+                            class="shrink-0 text-neutral-500"
+                          />
                           <span class="flex-1">Sticky note</span>
-                          <kbd class="text-[9px] font-semibold text-neutral-400 bg-neutral-100 border border-neutral-200 rounded px-1 py-px">S</kbd>
+                          <kbd class="text-[9px] font-semibold text-neutral-400 bg-neutral-100 border border-neutral-200 rounded px-1 py-px">
+                            S
+                          </kbd>
                         </button>
                       </Show>
                     </div>
@@ -2162,13 +3252,15 @@ export function ProjectCanvas() {
             </Show>
 
             {/* board tools — a light toolbar for placeable canvas objects + layout actions */}
-            <Show when={!reviewId() && canEdit() && store.deliverables().length > 0}>
+            <Show
+              when={!reviewId() && canEdit() && store.deliverables().length > 0}
+            >
               <div
-                class="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center rounded-lg border border-neutral-200 bg-white/95 shadow-sm overflow-clip divide-x divide-neutral-100"
-                onPointerDown={e => e.stopPropagation()}
-                onDblClick={e => e.stopPropagation()}
-                onWheel={e => e.stopPropagation()}
-                onContextMenu={e => {
+                class="absolute bottom-3 left-1/2 -translate-x-1/2 z-10 flex items-center rounded-lg border border-neutral-200 bg-panel/95 shadow-sm overflow-clip divide-x divide-neutral-100"
+                onPointerDown={(e) => e.stopPropagation()}
+                onDblClick={(e) => e.stopPropagation()}
+                onWheel={(e) => e.stopPropagation()}
+                onContextMenu={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
                 }}
@@ -2186,11 +3278,11 @@ export function ProjectCanvas() {
             {/* navigation controls — the visible face of scroll-zoom and F */}
             <Show when={!locked()}>
               <div
-                class="absolute bottom-3 right-3 z-10 flex flex-col rounded-lg border border-neutral-200 bg-white/95 shadow-sm overflow-clip"
-                onPointerDown={e => e.stopPropagation()}
-                onDblClick={e => e.stopPropagation()}
-                onWheel={e => e.stopPropagation()}
-                onContextMenu={e => {
+                class="absolute bottom-3 right-3 z-10 flex flex-col rounded-lg border border-neutral-200 bg-panel/95 shadow-sm overflow-clip"
+                onPointerDown={(e) => e.stopPropagation()}
+                onDblClick={(e) => e.stopPropagation()}
+                onWheel={(e) => e.stopPropagation()}
+                onContextMenu={(e) => {
                   e.preventDefault();
                   e.stopPropagation();
                 }}
@@ -2220,10 +3312,16 @@ export function ProjectCanvas() {
                   <button
                     class="p-1.5 cursor-pointer border-t border-neutral-100"
                     classList={{
-                      "text-sky-600 bg-sky-50 hover:bg-sky-100": snapObjects(),
-                      "text-neutral-400 hover:text-neutral-800 hover:bg-neutral-50": !snapObjects(),
+                      "text-on-accent-sky bg-accent-sky hover:bg-accent-sky-hover":
+                        snapObjects(),
+                      "text-neutral-400 hover:text-neutral-800 hover:bg-neutral-50":
+                        !snapObjects(),
                     }}
-                    title={snapObjects() ? "Snap to deliverables: on" : "Snap to deliverables: off"}
+                    title={
+                      snapObjects()
+                        ? "Snap to deliverables: on"
+                        : "Snap to deliverables: off"
+                    }
                     onClick={toggleSnapObjects}
                   >
                     <Icon icon="iconoir:magnet" width="14" />
@@ -2231,10 +3329,14 @@ export function ProjectCanvas() {
                   <button
                     class="p-1.5 cursor-pointer border-t border-neutral-100"
                     classList={{
-                      "text-sky-600 bg-sky-50 hover:bg-sky-100": snapGrid(),
-                      "text-neutral-400 hover:text-neutral-800 hover:bg-neutral-50": !snapGrid(),
+                      "text-on-accent-sky bg-accent-sky hover:bg-accent-sky-hover":
+                        snapGrid(),
+                      "text-neutral-400 hover:text-neutral-800 hover:bg-neutral-50":
+                        !snapGrid(),
                     }}
-                    title={snapGrid() ? "Snap to grid: on" : "Snap to grid: off"}
+                    title={
+                      snapGrid() ? "Snap to grid: on" : "Snap to grid: off"
+                    }
                     onClick={toggleSnapGrid}
                   >
                     <Icon icon="iconoir:orthogonal-view" width="14" />
@@ -2242,8 +3344,10 @@ export function ProjectCanvas() {
                   <button
                     class="flex items-center gap-1 px-2 py-1.5 cursor-pointer border-t border-neutral-100 text-[10px] font-medium"
                     classList={{
-                      "text-violet-600 bg-violet-50 hover:bg-violet-100": layoutMode() === "personal",
-                      "text-neutral-500 hover:text-neutral-800 hover:bg-neutral-50": layoutMode() === "sync",
+                      "text-on-accent-violet bg-accent-violet hover:bg-accent-violet-hover":
+                        layoutMode() === "personal",
+                      "text-neutral-500 hover:text-neutral-800 hover:bg-neutral-50":
+                        layoutMode() === "sync",
                     }}
                     title={
                       layoutMode() === "sync"
@@ -2252,7 +3356,14 @@ export function ProjectCanvas() {
                     }
                     onClick={toggleLayoutMode}
                   >
-                    <Icon icon={layoutMode() === "sync" ? "iconoir:group" : "iconoir:user"} width="13" />
+                    <Icon
+                      icon={
+                        layoutMode() === "sync"
+                          ? "iconoir:group"
+                          : "iconoir:user"
+                      }
+                      width="13"
+                    />
                     {layoutMode() === "sync" ? "Sync" : "Personal"}
                   </button>
                 </Show>
@@ -2277,8 +3388,16 @@ export function ProjectCanvas() {
                               annotations={versionAnnotations()}
                               selectedId={selectedAnnId()}
                               onSelect={selectAnnotation}
-                              onComment={(annId, body) => store.addComment(current()!.id, annId, body)}
-                              onResolve={(annId, status) => store.resolveAnnotation(current()!.id, annId, status)}
+                              onComment={(annId, body) =>
+                                store.addComment(current()!.id, annId, body)
+                              }
+                              onResolve={(annId, status) =>
+                                store.resolveAnnotation(
+                                  current()!.id,
+                                  annId,
+                                  status,
+                                )
+                              }
                             />
                           </Show>
                         }
@@ -2288,7 +3407,9 @@ export function ProjectCanvas() {
                           loading={projectFiles.loading}
                           projectId={store.projectId}
                           onClose={() => setLibraryOpen(false)}
-                          onOpenMirror={(pid, did) => navigate(`/p/${pid}/d/${did}`)}
+                          onOpenMirror={(pid, did) =>
+                            navigate(`/p/${pid}/d/${did}`)
+                          }
                         />
                       </Show>
                     }
@@ -2327,92 +3448,115 @@ export function ProjectCanvas() {
         <AppFooter
           start={
             <>
-            <button
-              class="flex items-center gap-1 shrink-0 text-neutral-500 hover:text-neutral-800 hover:bg-neutral-200/50 rounded px-1.5 py-1 cursor-pointer"
-              title="Project info (I)"
-              onClick={() => setInfoOpen(true)}
-            >
-              <Icon icon="iconoir:info-circle" width="13" />
-            </button>
-            <span class="w-px h-3.5 bg-neutral-200 shrink-0" />
+              <button
+                class="flex items-center gap-1 shrink-0 text-neutral-500 hover:text-neutral-800 hover:bg-neutral-200/50 rounded px-1.5 py-1 cursor-pointer"
+                title="Project info (I)"
+                onClick={() => setInfoOpen(true)}
+              >
+                <Icon icon="iconoir:info-circle" width="13" />
+              </button>
+              <span class="w-px h-3.5 bg-neutral-200 shrink-0" />
 
-            <Show
-              when={focusedDeliverable()}
-              fallback={
-                <div class="flex items-center gap-1.5 min-w-0 overflow-hidden">
-                  <span class="shrink-0 font-medium text-neutral-600">
-                    {counts().total} deliverable{counts().total === 1 ? "" : "s"}
-                  </span>
-                  <Show when={counts().inReview > 0}>
-                    <span class="shrink-0 flex items-center gap-1 text-[10px] font-medium rounded-full px-1.5 py-px bg-sky-50 text-sky-700">
-                      <span class="size-1.5 rounded-full bg-sky-500" />
-                      {counts().inReview} in review
+              <Show
+                when={focusedDeliverable()}
+                fallback={
+                  <Show
+                    when={hovered()}
+                    fallback={
+                  <div class="flex items-center gap-1.5 min-w-0 overflow-hidden">
+                    <span class="shrink-0 font-medium text-neutral-600">
+                      {counts().total} deliverable
+                      {counts().total === 1 ? "" : "s"}
                     </span>
-                  </Show>
-                  <Show when={counts().revisions > 0}>
-                    <span class="shrink-0 flex items-center gap-1 text-[10px] font-medium rounded-full px-1.5 py-px bg-amber-50 text-amber-700">
-                      <span class="size-1.5 rounded-full bg-amber-500" />
-                      {counts().revisions} need revisions
-                    </span>
-                  </Show>
-                  <Show when={counts().approved > 0}>
-                    <span class="shrink-0 flex items-center gap-1 text-[10px] font-medium rounded-full px-1.5 py-px bg-emerald-50 text-emerald-700">
-                      <span class="size-1.5 rounded-full bg-emerald-500" />
-                      {counts().approved} approved
-                    </span>
-                  </Show>
-                </div>
-              }
-            >
-              {d => (
-                <div class="flex items-center gap-1.5 min-w-0 overflow-hidden">
-                  <span class="shrink-0 font-medium text-neutral-700 truncate max-w-40">
-                    {d().name}
-                  </span>
-                  <span
-                    class={`shrink-0 text-[10px] font-medium rounded-full px-1.5 py-px ${STATUS_META[d().status].chip}`}
-                  >
-                    {STATUS_META[d().status].label}
-                  </span>
-                  <Show when={focusedVersion()}>
-                    {v => (
-                      <span class="shrink-0 flex items-center gap-1.5">
-                        <span class="text-[10px] font-medium text-neutral-600 bg-neutral-200/70 rounded px-1 py-px">
-                          v{v().number}
-                        </span>
-                        <span class="text-neutral-400">
-                          {v().width}×{v().height}
-                        </span>
+                    <Show when={counts().inReview > 0}>
+                      <span class="shrink-0 flex items-center gap-1 text-[10px] font-medium rounded-full px-1.5 py-px bg-accent-sky text-on-accent-sky">
+                        <span class="size-1.5 rounded-full bg-sky-500" />
+                        {counts().inReview} in review
                       </span>
+                    </Show>
+                    <Show when={counts().revisions > 0}>
+                      <span class="shrink-0 flex items-center gap-1 text-[10px] font-medium rounded-full px-1.5 py-px bg-accent-amber text-on-accent-amber">
+                        <span class="size-1.5 rounded-full bg-amber-500" />
+                        {counts().revisions} need revisions
+                      </span>
+                    </Show>
+                    <Show when={counts().approved > 0}>
+                      <span class="shrink-0 flex items-center gap-1 text-[10px] font-medium rounded-full px-1.5 py-px bg-accent-emerald text-on-accent-emerald">
+                        <span class="size-1.5 rounded-full bg-emerald-500" />
+                        {counts().approved} approved
+                      </span>
+                    </Show>
+                  </div>
+                    }
+                  >
+                    {(h) => (
+                      <div class="flex items-center gap-1.5 min-w-0 overflow-hidden">
+                        <Icon
+                          icon={h().kind === "group" ? "iconoir:link" : "iconoir:media-image"}
+                          width="12"
+                          class="shrink-0 text-neutral-400"
+                        />
+                        <span class="shrink-0 font-medium text-neutral-700 truncate max-w-52">
+                          {h().name}
+                        </span>
+                        <span class="shrink-0 text-neutral-400">{h().kind}</span>
+                      </div>
                     )}
                   </Show>
-                  <span
-                    class="shrink-0 flex items-center gap-1 text-[10px] font-medium rounded-full px-1.5 py-px"
-                    classList={{
-                      "bg-orange-50 text-orange-600": focusedOpenThreadCount() > 0,
-                      "bg-neutral-200/60 text-neutral-500": focusedOpenThreadCount() === 0,
-                    }}
-                  >
-                    {focusedOpenThreadCount()} open thread{focusedOpenThreadCount() === 1 ? "" : "s"}
-                  </span>
-                </div>
-              )}
-            </Show>
+                }
+              >
+                {(d) => (
+                  <div class="flex items-center gap-1.5 min-w-0 overflow-hidden">
+                    <span class="shrink-0 font-medium text-neutral-700 truncate max-w-40">
+                      {d().name}
+                    </span>
+                    <span
+                      class={`shrink-0 text-[10px] font-medium rounded-full px-1.5 py-px ${STATUS_META[d().status].chip}`}
+                    >
+                      {STATUS_META[d().status].label}
+                    </span>
+                    <Show when={focusedVersion()}>
+                      {(v) => (
+                        <span class="shrink-0 flex items-center gap-1.5">
+                          <span class="text-[10px] font-medium text-neutral-600 bg-neutral-200/70 rounded px-1 py-px">
+                            v{v().number}
+                          </span>
+                          <span class="text-neutral-400">
+                            {v().width}×{v().height}
+                          </span>
+                        </span>
+                      )}
+                    </Show>
+                    <span
+                      class="shrink-0 flex items-center gap-1 text-[10px] font-medium rounded-full px-1.5 py-px"
+                      classList={{
+                        "bg-accent-orange text-on-accent-orange":
+                          focusedOpenThreadCount() > 0,
+                        "bg-neutral-200/60 text-neutral-500":
+                          focusedOpenThreadCount() === 0,
+                      }}
+                    >
+                      {focusedOpenThreadCount()} open thread
+                      {focusedOpenThreadCount() === 1 ? "" : "s"}
+                    </span>
+                  </div>
+                )}
+              </Show>
 
-            <Show when={statusMsg()}>
-              <span class="shrink-0 text-[10px] font-medium text-sky-700 bg-sky-50 rounded-full px-2 py-0.5 truncate">
-                {statusMsg()}
-              </span>
-            </Show>
+              <Show when={statusMsg()}>
+                <span class="shrink-0 text-[10px] font-medium text-on-accent-sky bg-accent-sky rounded-full px-2 py-0.5 truncate">
+                  {statusMsg()}
+                </span>
+              </Show>
             </>
           }
         >
           <div class="hidden sm:flex items-center gap-2.5 text-neutral-400 shrink-0">
             <For each={hints()}>
-              {h => (
+              {(h) => (
                 <span class="flex items-center gap-1 whitespace-nowrap">
                   <Show when={h.key}>
-                    <kbd class="text-[9px] font-semibold text-neutral-500 bg-white border border-neutral-200 rounded px-1 py-px">
+                    <kbd class="text-[9px] font-semibold text-neutral-500 bg-panel border border-neutral-200 rounded px-1 py-px">
                       {h.key}
                     </kbd>
                   </Show>
@@ -2430,7 +3574,7 @@ export function ProjectCanvas() {
         accept="image/*"
         multiple
         class="hidden"
-        onChange={e => {
+        onChange={(e) => {
           const files = Array.from(e.currentTarget.files ?? []);
           e.currentTarget.value = "";
           if (pickerTarget && files.length) void uploadTo(pickerTarget, files);
@@ -2441,23 +3585,24 @@ export function ProjectCanvas() {
       <ContextMenu state={ctxMenu()} onClose={() => setCtxMenu(null)} />
 
       <Show when={!current() && selected().size > 0}>
-        <div class="fixed bottom-16 left-1/2 -translate-x-1/2 z-30 flex items-center gap-1.5 bg-neutral-900 text-white rounded-lg shadow-2xl px-3 py-2 text-xs">
+        <div class="absolute bottom-16 left-1/2 -translate-x-1/2 z-30 flex items-center gap-1.5 bg-brand text-on-brand rounded-lg shadow-2xl px-3 py-2 text-xs">
           <Show
             when={!groupPromptOpen()}
             fallback={
               <input
-                class="text-xs text-neutral-900 bg-white rounded px-2 py-1 outline-none w-40"
+                class="text-xs text-neutral-900 bg-panel rounded px-2 py-1 outline-none w-40"
                 placeholder="Group label…"
-                ref={el => queueMicrotask(() => el.focus())}
-                onKeyDown={e => {
-                  if (e.key === "Enter") (e.currentTarget as HTMLInputElement).blur();
+                ref={(el) => queueMicrotask(() => el.focus())}
+                onKeyDown={(e) => {
+                  if (e.key === "Enter")
+                    (e.currentTarget as HTMLInputElement).blur();
                   if (e.key === "Escape") {
                     // clear first so the blur this triggers can't still submit it
                     (e.currentTarget as HTMLInputElement).value = "";
                     (e.currentTarget as HTMLInputElement).blur();
                   }
                 }}
-                onBlur={e => void submitGroup(e.currentTarget.value)}
+                onBlur={(e) => void submitGroup(e.currentTarget.value)}
               />
             }
           >
@@ -2468,40 +3613,61 @@ export function ProjectCanvas() {
             </span>
             <Show when={canEdit() && groupButtonAction()}>
               <button
-                class="flex items-center gap-1 px-2 py-1 rounded hover:bg-white/10 cursor-pointer"
+                class="flex items-center gap-1 px-2 py-1 rounded hover:bg-panel/10 cursor-pointer"
                 onClick={() => setGroupPromptOpen(true)}
               >
-                <Icon icon="iconoir:link" width="13" /> Group
+                <Icon icon="iconoir:link" width="13" />{" "}
+                {groupButtonAction() === "nest"
+                  ? "Nest"
+                  : createParentGroupId()
+                    ? "Sub-group"
+                    : "Group"}
               </button>
             </Show>
             <Show when={canEdit() && addToExistingGroupAction()}>
-              {action => (
+              {(action) => (
                 <button
-                  class="flex items-center gap-1 px-2 py-1 rounded hover:bg-white/10 cursor-pointer"
+                  class="flex items-center gap-1 px-2 py-1 rounded hover:bg-panel/10 cursor-pointer"
                   onClick={() => addSelectedToGroup(action())}
                 >
-                  <Icon icon="iconoir:link" width="13" /> Add to “{action().label}”
+                  <Icon icon="iconoir:link" width="13" /> Add to “
+                  {action().label}”
                 </button>
               )}
             </Show>
-            <Show when={canEdit() && selectedGroups().size === 1 && selectionIsWholeGroups()}>
+            <Show
+              when={
+                canEdit() &&
+                selectedGroups().size === 1 &&
+                selectionIsWholeGroups()
+              }
+            >
               <button
-                class="flex items-center gap-1 px-2 py-1 rounded hover:bg-white/10 cursor-pointer"
+                class="flex items-center gap-1 px-2 py-1 rounded hover:bg-panel/10 cursor-pointer"
                 onClick={ungroupSelected}
               >
                 <Icon icon="iconoir:link-slash" width="13" /> Ungroup
               </button>
             </Show>
+            <Show when={downloadableSelection().length > 0}>
+              <button
+                class="flex items-center gap-1 px-2 py-1 rounded hover:bg-panel/10 cursor-pointer"
+                title="Download selected deliverables"
+                onClick={() => void downloadZip(downloadableSelection())}
+              >
+                <Icon icon="iconoir:download" width="13" /> Download
+              </button>
+            </Show>
             <Show when={canDeleteDeliverable()}>
               <button
-                class="flex items-center gap-1 px-2 py-1 rounded text-rose-300 hover:bg-white/10 cursor-pointer"
+                class="flex items-center gap-1 px-2 py-1 rounded text-on-brand-danger hover:bg-panel/10 cursor-pointer"
                 onClick={bulkDeleteDeliverables}
               >
                 <Icon icon="iconoir:trash" width="13" /> Delete
               </button>
             </Show>
             <button
-              class="p-1 rounded hover:bg-white/10 cursor-pointer"
+              class="p-1 rounded hover:bg-panel/10 cursor-pointer"
               title="Clear selection"
               onClick={clearSelection}
             >
@@ -2512,7 +3678,7 @@ export function ProjectCanvas() {
       </Show>
 
       <Show when={store.state.graph}>
-        {graph => (
+        {(graph) => (
           <ProjectInfoModal
             open={infoOpen()}
             onClose={() => setInfoOpen(false)}
@@ -2526,7 +3692,9 @@ export function ProjectCanvas() {
             onOpenHistory={() => setHistoryOpen(true)}
             allTags={orgTags() ?? []}
             canTagDeliverable={canEdit()}
-            onSetDeliverableTags={(d, tags) => store.setDeliverableTags(d.id, tags)}
+            onSetDeliverableTags={(d, tags) =>
+              store.setDeliverableTags(d.id, tags)
+            }
             onCreateTag={makeTag}
           />
         )}
@@ -2539,18 +3707,22 @@ export function ProjectCanvas() {
         currentDeliverable={current()}
         actions={{
           newDeliverable: newDeliverableAtCenter,
-          openDeliverable: d => (reviewId() ? navigate(`/p/${store.projectId}/d/${d.id}`) : enterReview(d)),
+          openDeliverable: (d) =>
+            reviewId()
+              ? navigate(`/p/${store.projectId}/d/${d.id}`)
+              : enterReview(d),
           upload: () => {
             const d = current();
             if (d) openFilePicker(d);
           },
           approve: () => current() && setPendingDecision("approved"),
-          requestRevisions: () => current() && setPendingDecision("revision_requested"),
+          requestRevisions: () =>
+            current() && setPendingDecision("revision_requested"),
           exitReview,
           fit: () => (current() ? fitPlane(true, 250) : fitWorkspace(true)),
           compare: toggleCompare,
           history: () => openPanel("history"),
-          info: () => setInfoOpen(o => !o),
+          info: () => setInfoOpen((o) => !o),
           deleteVersion: confirmDeleteVersion,
           deleteDeliverable: () => {
             const d = current();
@@ -2566,7 +3738,9 @@ export function ProjectCanvas() {
         onModalClose={() => setSearchOpen(false)}
         orgId={() => store.state.graph?.project.organizationId ?? null}
         projectContext={() =>
-          store.state.graph ? { id: store.projectId, name: store.state.graph.project.name } : null
+          store.state.graph
+            ? { id: store.projectId, name: store.state.graph.project.name }
+            : null
         }
       />
     </div>

@@ -114,11 +114,11 @@ export function CommandPalette(props: {
   return (
     <Show when={props.open}>
       <div
-        class="fixed inset-0 z-50 bg-black/10 flex items-start justify-center pt-[18vh]"
+        class="fixed inset-0 z-50 bg-scrim flex items-start justify-center pt-[18vh]"
         onClick={props.onClose}
       >
         <div
-          class="w-[440px] max-w-[90vw] bg-white rounded-xl shadow-2xl border border-neutral-200 overflow-hidden"
+          class="w-[440px] max-w-[90vw] bg-panel rounded-xl shadow-2xl border border-neutral-200 overflow-hidden"
           onClick={e => e.stopPropagation()}
         >
           <div class="flex items-center gap-2 px-3 border-b border-neutral-100">

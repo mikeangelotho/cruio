@@ -45,11 +45,11 @@ export function ProjectInfoModal(props: {
   return (
     <Show when={props.open}>
       <div
-        class="fixed inset-0 z-50 bg-black/10 flex items-center justify-center"
+        class="fixed inset-0 z-50 bg-scrim flex items-center justify-center"
         onClick={props.onClose}
       >
         <div
-          class="w-[440px] max-w-[90vw] bg-white rounded-xl shadow-2xl border border-neutral-200 overflow-hidden"
+          class="w-[440px] max-w-[90vw] bg-panel rounded-xl shadow-2xl border border-neutral-200 overflow-hidden"
           onClick={e => e.stopPropagation()}
         >
           <div class="flex items-start justify-between px-4 pt-4">
@@ -62,7 +62,7 @@ export function ProjectInfoModal(props: {
                   {props.project.name}
                 </h2>
                 <Show when={props.project.entityName}>
-                  <span class="text-xs text-neutral-500 bg-[#efeded] rounded px-1.5 py-0.5">
+                  <span class="text-xs text-neutral-500 bg-muted rounded px-1.5 py-0.5">
                     {props.project.entityName}
                   </span>
                 </Show>

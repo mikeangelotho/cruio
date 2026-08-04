@@ -10,7 +10,9 @@ import {
 } from "solid-js";
 import { A, createAsync, revalidate, useNavigate } from "@solidjs/router";
 import { Icon } from "@iconify-icon/solid";
-import { archiveProject, createProject, listProjects } from "../lib/api";
+import { archiveProject, createProject, listProjects, restoreProject, setProjectStatus } from "../lib/api";
+import { createUndoStack } from "../lib/undo";
+import { pushToast } from "../lib/toast";
 import {
   createEntity,
   listEntities,
@@ -20,6 +22,7 @@ import {
 } from "../lib/org-api";
 import { authClient } from "../lib/auth-client";
 import { useViewerRole } from "../lib/viewer";
+import { onAiInvalidate } from "../lib/ai/invalidate";
 import { newId } from "../lib/id";
 import { EntityAvatar } from "../components/Avatar";
 import { AppNav } from "../components/AppNav";
@@ -29,10 +32,18 @@ import { ContextMenu, type MenuState } from "../components/ContextMenu";
 import { EntityOptions } from "../components/EntityOptions";
 import { TagChips } from "../components/TagChips";
 import { TagPicker } from "../components/TagPicker";
+import { NavMenu } from "../components/NavMenu";
 import { FilterBar } from "../components/FilterBar";
 import { createTag, listTags, setProjectTags } from "../lib/tag-api";
 import { fileUrl } from "../lib/types";
 import type { Project, Tag, TagColor } from "../lib/types";
+import {
+  PROJECT_STATUS_META,
+  PROJECT_STATUS_ORDER,
+  canSetStatus,
+  rank,
+  type ProjectStatus,
+} from "../lib/project-status";
 
 export const route = {
   preload: () => {
@@ -53,10 +64,61 @@ export default function Home() {
     () => user()?.activeOrganizationId ?? null,
     () => listTags(),
   );
+  onAiInvalidate(() => {
+    void refetch();
+    void refetchEntities();
+    void refetchTags();
+  });
   // Optimistic overlay so toggling a project's tags stays responsive without a
   // full project refetch (which would remount the card and close the picker).
   const [tagOverrides, setTagOverrides] = createSignal<Record<string, Tag[]>>({});
   const projectTags = (p: Project) => tagOverrides()[p.id] ?? p.tags ?? [];
+  // Optimistic overlay for the status pill, same rationale as tag overrides —
+  // keep the card responsive without a full refetch that would remount it.
+  const [statusOverrides, setStatusOverrides] = createSignal<Record<string, ProjectStatus>>({});
+  const projectStatus = (p: Project): ProjectStatus => statusOverrides()[p.id] ?? p.status;
+
+  // ---- undo/redo (per-screen; resets on navigation) ------------------------
+  const undo = createUndoStack();
+  function record(label: string, undoFn: () => void, redoFn: () => void) {
+    undo.push({ label, undo: undoFn, redo: redoFn });
+    pushToast(label, { actionLabel: "Undo", onAction: doUndo });
+  }
+  function doUndo() {
+    const c = undo.undo();
+    if (c) pushToast(`Undid: ${c.label}`, { actionLabel: "Redo", onAction: doRedo });
+  }
+  function doRedo() {
+    const c = undo.redo();
+    if (c) pushToast(`Redid: ${c.label}`);
+  }
+  function archiveOne(id: string) {
+    void archiveProject(id).then(() => refetch());
+    record(
+      "Archive project",
+      () => void restoreProject(id).then(() => refetch()),
+      () => void archiveProject(id).then(() => refetch()),
+    );
+  }
+
+  function setStatusRaw(id: string, status: ProjectStatus, fallback: ProjectStatus) {
+    setStatusOverrides(o => ({ ...o, [id]: status }));
+    void setProjectStatus(id, status).catch(() => {
+      // server-side gate (or any failure) — revert the optimistic move
+      setStatusOverrides(o => ({ ...o, [id]: fallback }));
+      void refetch();
+    });
+  }
+  function applyProjectStatus(p: Project, next: ProjectStatus) {
+    const prev = projectStatus(p);
+    if (next === prev) return;
+    setStatusRaw(p.id, next, prev);
+    record(
+      "Change project status",
+      () => setStatusRaw(p.id, prev, next),
+      () => setStatusRaw(p.id, next, prev),
+    );
+  }
   // Compact review-status rollup for the card — only non-zero statuses.
   const statusRollup = (p: Project) =>
     (
@@ -68,9 +130,14 @@ export default function Home() {
     )
       .map(s => ({ ...s, count: p.statusCounts?.[s.key] ?? 0 }))
       .filter(s => s.count > 0);
+  function setTagsRaw(id: string, tags: Tag[]) {
+    setTagOverrides(o => ({ ...o, [id]: tags }));
+    void setProjectTags(id, tags.map(t => t.id));
+  }
   function applyProjectTags(p: Project, next: Tag[]) {
-    setTagOverrides(o => ({ ...o, [p.id]: next }));
-    void setProjectTags(p.id, next.map(t => t.id));
+    const prev = projectTags(p);
+    setTagsRaw(p.id, next);
+    record("Update tags", () => setTagsRaw(p.id, prev), () => setTagsRaw(p.id, next));
   }
   async function makeTag(name: string, color: TagColor): Promise<Tag> {
     const t = await createTag(name, color);
@@ -81,23 +148,37 @@ export default function Home() {
   const [formTags, setFormTags] = createSignal<Tag[]>([]);
 
   // ---- sorting + tag filtering ----
-  type SortMode = "newest" | "oldest" | "name" | "tag";
+  type SortMode = "newest" | "oldest" | "name" | "tag" | "status";
   const SORT_OPTIONS: { value: SortMode; label: string }[] = [
     { value: "newest", label: "Newest" },
     { value: "oldest", label: "Oldest" },
     { value: "name", label: "Name A–Z" },
     { value: "tag", label: "By tag" },
+    { value: "status", label: "By status" },
   ];
   const [sortMode, setSortMode] = createSignal<SortMode>("newest");
   const [tagFilter, setTagFilter] = createSignal<Set<string>>(new Set());
   const [search, setSearch] = createSignal("");
-  type GroupMode = "none" | "entity" | "tag";
+  type GroupMode = "none" | "entity" | "tag" | "status";
   const GROUP_OPTIONS: { value: GroupMode; label: string }[] = [
     { value: "none", label: "None" },
     { value: "entity", label: "Entity" },
     { value: "tag", label: "Tag" },
+    { value: "status", label: "Status" },
   ];
   const [groupMode, setGroupMode] = createSignal<GroupMode>("none");
+  type ViewMode = "grid" | "list";
+  const [view, setView] = createSignal<ViewMode>("grid");
+  // collapsible group sections (parity with the Tasks screen)
+  const [collapsed, setCollapsed] = createSignal<Set<string>>(new Set());
+  function toggleCollapsed(key: string) {
+    setCollapsed(s => {
+      const n = new Set(s);
+      if (n.has(key)) n.delete(key);
+      else n.add(key);
+      return n;
+    });
+  }
   function toggleTagFilter(id: string) {
     setTagFilter(s => {
       const n = new Set(s);
@@ -122,6 +203,9 @@ export default function Home() {
       if (mode === "newest") return b.createdAt - a.createdAt;
       if (mode === "oldest") return a.createdAt - b.createdAt;
       if (mode === "name") return a.name.localeCompare(b.name);
+      // by lifecycle status (To do → Done), newest first within a status
+      if (mode === "status")
+        return rank(projectStatus(a)) - rank(projectStatus(b)) || b.createdAt - a.createdAt;
       // by first tag name, untagged last
       const at = projectTags(a)[0]?.name ?? "￿";
       const bt = projectTags(b)[0]?.name ?? "￿";
@@ -146,11 +230,21 @@ export default function Home() {
     };
     for (const p of list) {
       if (mode === "entity") push(p.entityId ?? "none", p.entityName ?? "No entity", p);
-      else {
+      else if (mode === "status") {
+        const s = projectStatus(p);
+        push(`status:${s}`, PROJECT_STATUS_META[s].label, p);
+      } else {
         const first = projectTags(p)[0];
         if (first) push(`tag:${first.id}`, first.name, p);
         else push("untagged", "Untagged", p);
       }
+    }
+    // status sections follow the lifecycle order; others sort by label with
+    // the catch-all bucket ("No entity"/"Untagged") pinned last.
+    if (mode === "status") {
+      return [...buckets.values()].sort(
+        (a, b) => rank(a.key.slice(7) as ProjectStatus) - rank(b.key.slice(7) as ProjectStatus),
+      );
     }
     const isCatchAll = (k: string) => k === "none" || k === "untagged";
     return [...buckets.values()].sort((a, b) => {
@@ -182,9 +276,8 @@ export default function Home() {
   async function bulkArchive() {
     const ids = selected();
     if (!window.confirm(`Archive ${ids.size} project${ids.size === 1 ? "" : "s"}? You can restore them from the Archived section.`)) return;
-    for (const id of ids) await archiveProject(id);
+    for (const id of ids) archiveOne(id);
     clearSelection();
-    void refetch();
   }
 
   function openProjectMenu(p: Project, x: number, y: number) {
@@ -212,9 +305,7 @@ export default function Home() {
                     )
                   )
                     return;
-                  void archiveProject(p.id).then(() => {
-                    void refetch();
-                  });
+                  archiveOne(p.id);
                 },
               },
             ]
@@ -233,6 +324,13 @@ export default function Home() {
         target.tagName === "INPUT" ||
         target.tagName === "TEXTAREA" ||
         target.isContentEditable;
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z") {
+        if (typing) return;
+        e.preventDefault();
+        if (e.shiftKey) doRedo();
+        else doUndo();
+        return;
+      }
       if (typing) return;
       if (e.key === "n" && !e.metaKey && !e.ctrlKey && !e.altKey && isAdmin()) {
         e.preventDefault();
@@ -301,9 +399,250 @@ export default function Home() {
     navigate(`/p/${id}`);
   }
 
+  const selectBox = (p: Project, cls: string) => (
+    <Show when={isAdmin()}>
+      <button
+        class={`w-4 h-4 rounded border flex items-center justify-center cursor-pointer bg-panel/90 ${cls}`}
+        classList={{
+          "border-neutral-300 opacity-0 group-hover:opacity-100": !selected().has(p.id),
+          "border-sky-500 bg-sky-500 text-white opacity-100": selected().has(p.id),
+        }}
+        title="Select"
+        onClick={(e) => {
+          e.stopPropagation();
+          toggleSelect(p.id);
+        }}
+      >
+        <Show when={selected().has(p.id)}>
+          <Icon icon="iconoir:check" width="10" />
+        </Show>
+      </button>
+    </Show>
+  );
+
+  const statusRollupRow = (p: Project) => (
+    <div class="flex items-center gap-2 flex-wrap text-[11px] text-neutral-400">
+      <Show
+        when={statusRollup(p).length > 0}
+        fallback={<span>{p.deliverableCount ? "No reviews yet" : "No deliverables yet"}</span>}
+      >
+        <For each={statusRollup(p)}>
+          {(s) => (
+            <span class="flex items-center gap-1 text-neutral-500">
+              <span class={`size-1.5 rounded-full ${s.dot}`} />
+              {s.count} {s.label}
+            </span>
+          )}
+        </For>
+      </Show>
+    </div>
+  );
+
+  // Overall project status pill. Read-only for non-admins; for admins it's a
+  // picker whose forward options are gated by the project's tasks (a project
+  // can only advance into a status once all its tasks have reached it).
+  const statusPill = (p: Project) => {
+    const st = () => projectStatus(p);
+    const meta = () => PROJECT_STATUS_META[st()];
+    const counts = () => p.taskCounts ?? { todo: 0, in_progress: 0, done: 0 };
+    const pill = (interactive: boolean) => (
+      <span
+        class={`inline-flex items-center gap-1 text-[11px] font-medium px-1.5 py-0.5 rounded ${meta().chip}${
+          interactive ? " cursor-pointer" : ""
+        }`}
+      >
+        <span class={`size-1.5 rounded-full ${meta().dot}`} />
+        {meta().label}
+        <Show when={interactive}>
+          <Icon icon="iconoir:nav-arrow-down" width="11" class="opacity-60" />
+        </Show>
+      </span>
+    );
+    return (
+      <Show when={isAdmin()} fallback={pill(false)}>
+        <NavMenu
+          portal
+          panelClass="w-44"
+          trigger={({ toggle }) => (
+            <button
+              type="button"
+              title={`Status: ${meta().label}`}
+              onClick={(e) => {
+                e.stopPropagation();
+                toggle();
+              }}
+            >
+              {pill(true)}
+            </button>
+          )}
+        >
+          {({ close }) => (
+            <div class="p-1" onClick={(e) => e.stopPropagation()}>
+              <For each={PROJECT_STATUS_ORDER}>
+                {(opt) => {
+                  const allowed = () => canSetStatus(st(), opt, counts());
+                  const m = PROJECT_STATUS_META[opt];
+                  return (
+                    <button
+                      type="button"
+                      disabled={!allowed()}
+                      title={allowed() ? undefined : `All tasks must reach ${m.label} first`}
+                      class="w-full flex items-center gap-2 px-2 py-1.5 rounded text-left text-xs text-neutral-700 enabled:hover:bg-neutral-50 enabled:cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                      onClick={() => {
+                        if (!allowed()) return;
+                        close();
+                        applyProjectStatus(p, opt);
+                      }}
+                    >
+                      <span class={`size-1.5 rounded-full ${m.dot}`} />
+                      <span class="flex-1">{m.label}</span>
+                      <Show when={st() === opt}>
+                        <Icon icon="iconoir:check" width="12" class="text-neutral-400" />
+                      </Show>
+                    </button>
+                  );
+                }}
+              </For>
+            </div>
+          )}
+        </NavMenu>
+      </Show>
+    );
+  };
+
+  const menuButton = (p: Project) => (
+    <button
+      class="p-0.5 rounded text-neutral-300 opacity-0 group-hover:opacity-100 hover:text-neutral-600 hover:bg-neutral-100 cursor-pointer"
+      title="Project actions"
+      onClick={(e) => {
+        e.stopPropagation();
+        const r = e.currentTarget.getBoundingClientRect();
+        openProjectMenu(p, r.left, r.bottom + 4);
+      }}
+    >
+      <Icon icon="iconoir:more-horiz" width="14" />
+    </button>
+  );
+
+  const tagArea = (p: Project) => (
+    <Show when={isAdmin()}>
+      <div
+        classList={{
+          "opacity-100": projectTags(p).length === 0,
+          "opacity-0 group-hover:opacity-100 transition-opacity": projectTags(p).length > 0,
+        }}
+      >
+        <TagPicker
+          selected={projectTags(p)}
+          allTags={tagsList() ?? []}
+          onChange={next => applyProjectTags(p, next)}
+          onCreateTag={makeTag}
+          canManage={true}
+          portal
+          align="right"
+        />
+      </div>
+    </Show>
+  );
+
+  const projectCard = (p: Project) => (
+    <div
+      class="group text-left border rounded-lg bg-panel overflow-hidden hover:shadow-sm transition-all cursor-pointer"
+      classList={{
+        "border-sky-500 ring-2 ring-sky-500": selected().has(p.id),
+        "border-neutral-200 hover:border-neutral-300": !selected().has(p.id),
+      }}
+      onClick={() => navigate(`/p/${p.id}`)}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        openProjectMenu(p, e.clientX, e.clientY);
+      }}
+    >
+      {/* cover — most recent version image across the project */}
+      <div class="relative aspect-video bg-neutral-50 flex items-center justify-center border-b border-neutral-100 overflow-hidden">
+        <Show
+          when={p.cover}
+          fallback={<Icon icon="iconoir:media-image" width="26" class="text-neutral-300" />}
+        >
+          <img src={fileUrl(p.cover!)} alt="" class="w-full h-full object-cover" draggable={false} />
+        </Show>
+        <span class="absolute bottom-2 left-2 flex items-center gap-1 bg-black/55 text-white text-[10px] px-1.5 py-0.5 rounded-full backdrop-blur-sm">
+          <Icon icon="iconoir:media-image-list" width="11" />
+          {p.deliverableCount ?? 0}
+        </span>
+        {selectBox(p, "absolute top-2 left-2")}
+      </div>
+
+      <div class="p-3.5">
+        <div class="flex items-center justify-between gap-2">
+          <span class="text-sm font-medium text-neutral-800 truncate min-w-0">{p.name}</span>
+          <div class="flex items-center gap-1.5 shrink-0">
+            {/* entity chip is redundant once scoped into that entity */}
+            <Show when={!scope.entity() && groupMode() !== "entity" && p.entityName}>
+              <span class="bg-muted text-neutral-500 text-xs py-0.5 px-1.5 rounded truncate max-w-28">
+                {p.entityName}
+              </span>
+            </Show>
+            {menuButton(p)}
+          </div>
+        </div>
+
+        {/* overall project status (task-gated) */}
+        <div class="mt-2">{statusPill(p)}</div>
+
+        {/* review-status rollup across the project's deliverables */}
+        <div class="mt-1.5">{statusRollupRow(p)}</div>
+
+        <div class="mt-2.5 flex items-center gap-1.5 flex-wrap">
+          <TagChips tags={projectTags(p)} />
+          {tagArea(p)}
+        </div>
+      </div>
+    </div>
+  );
+
+  const projectRow = (p: Project) => (
+    <div
+      class="group flex items-center gap-3 px-3 py-2.5 hover:bg-neutral-50 cursor-pointer"
+      classList={{ "bg-accent-sky": selected().has(p.id) }}
+      onClick={() => navigate(`/p/${p.id}`)}
+      onContextMenu={(e) => {
+        e.preventDefault();
+        openProjectMenu(p, e.clientX, e.clientY);
+      }}
+    >
+      {selectBox(p, "shrink-0")}
+      <div class="relative w-14 h-9 shrink-0 rounded bg-neutral-50 border border-neutral-100 overflow-hidden flex items-center justify-center">
+        <Show
+          when={p.cover}
+          fallback={<Icon icon="iconoir:media-image" width="16" class="text-neutral-300" />}
+        >
+          <img src={fileUrl(p.cover!)} alt="" class="w-full h-full object-cover" draggable={false} />
+        </Show>
+      </div>
+      <span class="text-sm font-medium text-neutral-800 truncate min-w-0 w-48 shrink-0">{p.name}</span>
+      <span class="shrink-0 flex items-center gap-1 text-[11px] text-neutral-400">
+        <Icon icon="iconoir:media-image-list" width="12" />
+        {p.deliverableCount ?? 0}
+      </span>
+      <div class="shrink-0">{statusPill(p)}</div>
+      <div class="flex-1 min-w-0">{statusRollupRow(p)}</div>
+      <div class="hidden md:flex items-center gap-1.5 flex-wrap justify-end max-w-64">
+        <TagChips tags={projectTags(p)} />
+        {tagArea(p)}
+      </div>
+      <Show when={!scope.entity() && groupMode() !== "entity" && p.entityName}>
+        <span class="shrink-0 bg-muted text-neutral-500 text-xs py-0.5 px-1.5 rounded truncate max-w-28">
+          {p.entityName}
+        </span>
+      </Show>
+      {menuButton(p)}
+    </div>
+  );
+
   return (
-    <div class="p-1 h-screen bg-[#fffefe]">
-      <div class="rounded-lg overflow-clip w-full flex flex-col h-full border border-[#eceaea]">
+    <div class="p-1 h-full bg-canvas">
+      <div class="rounded-lg overflow-clip w-full flex flex-col h-full border border-line">
         <AppNav
           onOrgSwitch={() => {
             void refetch();
@@ -312,7 +651,7 @@ export default function Home() {
         />
 
         <main class="flex-1 overflow-y-auto p-8">
-          <div class="max-w-4xl mx-auto">
+          <div class="w-full">
             <div class="flex items-center justify-between mb-6">
               <div class="flex items-center gap-3">
               <EntityAvatar name={scope.entity()?.name || "•"} size={32} />
@@ -321,6 +660,8 @@ export default function Home() {
                 <EntityOptions
                   entity={scope.entity()}
                   isAdmin={isAdmin()}
+                  portal
+                  align="left"
                   onChanged={() => {
                     void refetch();
                     void refetchEntities();
@@ -331,7 +672,7 @@ export default function Home() {
               <Show when={isAdmin()}>
                 <button
                   ref={newProjectBtnRef}
-                  class="flex items-center gap-1 text-xs bg-neutral-900 text-white rounded-md px-3 py-1.5 hover:bg-neutral-700 cursor-pointer"
+                  class="flex items-center gap-1 text-xs bg-brand text-on-brand rounded-md px-3 py-1.5 hover:bg-neutral-700 cursor-pointer"
                   onClick={() => setCreating((c) => !c)}
                 >
                   <Icon icon="iconoir:plus" width="14" /> New project
@@ -342,6 +683,14 @@ export default function Home() {
 
             {/* sort + tag filter + search toolbar (shared with the Tasks screen) */}
             <FilterBar
+              segmented={{
+                value: view(),
+                options: [
+                  { value: "grid", label: "Grid", icon: "iconoir:view-grid" },
+                  { value: "list", label: "List", icon: "iconoir:list" },
+                ],
+                onChange: v => setView(v as ViewMode),
+              }}
               menus={[
                 {
                   icon: "iconoir:view-grid",
@@ -378,7 +727,7 @@ export default function Home() {
               <form
                 ref={createFormRef}
                 onSubmit={submit}
-                class="relative mb-6 p-4 border border-neutral-200 rounded-lg bg-white flex gap-3 items-end"
+                class="relative mb-6 p-4 border border-neutral-200 rounded-lg bg-panel flex gap-3 items-end"
               >
                 <button
                   type="button"
@@ -404,7 +753,7 @@ export default function Home() {
                     <div class="flex-1 text-xs text-neutral-500">
                       Entity
                       <div class="mt-1 flex items-center h-[30px]">
-                        <span class="bg-[#efeded] text-neutral-600 text-xs py-1 px-2 rounded">
+                        <span class="bg-muted text-neutral-600 text-xs py-1 px-2 rounded">
                           {scope.entity()!.name}
                         </span>
                       </div>
@@ -414,7 +763,7 @@ export default function Home() {
                   <label class="flex-1 text-xs text-neutral-500">
                     Entity
                     <select
-                      class="mt-1 block w-full text-sm border border-neutral-200 rounded px-2 py-1.5 outline-none focus:border-sky-400 bg-white"
+                      class="mt-1 block w-full text-sm border border-neutral-200 rounded px-2 py-1.5 outline-none focus:border-sky-400 bg-panel"
                       onChange={(e) => setFormEntity(e.currentTarget.value)}
                     >
                       <option value="" selected={formEntity() === ""}>
@@ -460,7 +809,7 @@ export default function Home() {
                 </div>
                 <button
                   type="submit"
-                  class="text-xs bg-neutral-900 text-white rounded px-3 py-2 hover:bg-neutral-700 cursor-pointer"
+                  class="text-xs bg-brand text-on-brand rounded px-3 py-2 hover:bg-neutral-700 cursor-pointer"
                 >
                   Create
                 </button>
@@ -493,137 +842,36 @@ export default function Home() {
                     <div>
                       <Show when={g.label}>
                         <div class="flex items-center gap-2 mb-2">
+                          <button
+                            class="cursor-pointer text-neutral-400 hover:text-neutral-600"
+                            onClick={() => toggleCollapsed(`${groupMode()}:${g.key}`)}
+                          >
+                            <Icon
+                              icon="iconoir:nav-arrow-down"
+                              width="12"
+                              class={collapsed().has(`${groupMode()}:${g.key}`) ? "-rotate-90" : ""}
+                            />
+                          </button>
                           <h2 class="text-xs font-semibold text-neutral-400 uppercase tracking-wide">
                             {g.label}
                           </h2>
                           <span class="text-[10px] text-neutral-400">{g.projects.length}</span>
                         </div>
                       </Show>
-                      <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                        <For each={g.projects}>
-                          {(p) => (
-                    <div
-                      class="group text-left border rounded-lg bg-white overflow-hidden hover:shadow-sm transition-all cursor-pointer"
-                      classList={{
-                        "border-sky-500 ring-2 ring-sky-500": selected().has(p.id),
-                        "border-neutral-200 hover:border-neutral-300": !selected().has(p.id),
-                      }}
-                      onClick={() => navigate(`/p/${p.id}`)}
-                      onContextMenu={(e) => {
-                        e.preventDefault();
-                        openProjectMenu(p, e.clientX, e.clientY);
-                      }}
-                    >
-                      {/* cover — most recent version image across the project */}
-                      <div class="relative aspect-video bg-neutral-50 flex items-center justify-center border-b border-neutral-100 overflow-hidden">
+                      <Show when={!collapsed().has(`${groupMode()}:${g.key}`)}>
                         <Show
-                          when={p.cover}
+                          when={view() === "grid"}
                           fallback={
-                            <Icon icon="iconoir:media-image" width="26" class="text-neutral-300" />
+                            <div class="border border-neutral-200 rounded-lg bg-panel divide-y divide-neutral-100 overflow-hidden">
+                              <For each={g.projects}>{projectRow}</For>
+                            </div>
                           }
                         >
-                          <img
-                            src={fileUrl(p.cover!)}
-                            alt=""
-                            class="w-full h-full object-cover"
-                            draggable={false}
-                          />
-                        </Show>
-                        <span class="absolute bottom-2 left-2 flex items-center gap-1 bg-black/55 text-white text-[10px] px-1.5 py-0.5 rounded-full backdrop-blur-sm">
-                          <Icon icon="iconoir:media-image-list" width="11" />
-                          {p.deliverableCount ?? 0}
-                        </span>
-                        <Show when={isAdmin()}>
-                          <button
-                            class="absolute top-2 left-2 w-4 h-4 rounded border flex items-center justify-center cursor-pointer bg-white/90"
-                            classList={{
-                              "border-neutral-300 opacity-0 group-hover:opacity-100": !selected().has(p.id),
-                              "border-sky-500 bg-sky-500 text-white opacity-100": selected().has(p.id),
-                            }}
-                            title="Select"
-                            onClick={(e) => {
-                              e.stopPropagation();
-                              toggleSelect(p.id);
-                            }}
-                          >
-                            <Show when={selected().has(p.id)}>
-                              <Icon icon="iconoir:check" width="10" />
-                            </Show>
-                          </button>
-                        </Show>
-                      </div>
-
-                      <div class="p-3.5">
-                        <div class="flex items-center justify-between gap-2">
-                          <span class="text-sm font-medium text-neutral-800 truncate min-w-0">
-                            {p.name}
-                          </span>
-                          <div class="flex items-center gap-1.5 shrink-0">
-                            {/* entity chip is redundant once scoped into that entity */}
-                            <Show when={!scope.entity() && groupMode() !== "entity" && p.entityName}>
-                              <span class="bg-[#efeded] text-neutral-500 text-xs py-0.5 px-1.5 rounded truncate max-w-28">
-                                {p.entityName}
-                              </span>
-                            </Show>
-                            <button
-                              class="p-0.5 rounded text-neutral-300 opacity-0 group-hover:opacity-100 hover:text-neutral-600 hover:bg-neutral-100 cursor-pointer"
-                              title="Project actions"
-                              onClick={(e) => {
-                                e.stopPropagation();
-                                const r = e.currentTarget.getBoundingClientRect();
-                                openProjectMenu(p, r.left, r.bottom + 4);
-                              }}
-                            >
-                              <Icon icon="iconoir:more-horiz" width="14" />
-                            </button>
+                          <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3">
+                            <For each={g.projects}>{projectCard}</For>
                           </div>
-                        </div>
-
-                        {/* review-status rollup across the project's deliverables */}
-                        <div class="mt-1.5 flex items-center gap-2 flex-wrap text-[11px] text-neutral-400">
-                          <Show
-                            when={statusRollup(p).length > 0}
-                            fallback={
-                              <span>
-                                {p.deliverableCount ? "No reviews yet" : "No deliverables yet"}
-                              </span>
-                            }
-                          >
-                            <For each={statusRollup(p)}>
-                              {(s) => (
-                                <span class="flex items-center gap-1 text-neutral-500">
-                                  <span class={`size-1.5 rounded-full ${s.dot}`} />
-                                  {s.count} {s.label}
-                                </span>
-                              )}
-                            </For>
-                          </Show>
-                        </div>
-
-                        <div class="mt-2.5 flex items-center gap-1.5 flex-wrap">
-                          <TagChips tags={projectTags(p)} />
-                          <Show when={isAdmin()}>
-                            <div
-                              classList={{
-                                "opacity-100": projectTags(p).length === 0,
-                                "opacity-0 group-hover:opacity-100 transition-opacity": projectTags(p).length > 0,
-                              }}
-                            >
-                              <TagPicker
-                                selected={projectTags(p)}
-                                allTags={tagsList() ?? []}
-                                onChange={next => applyProjectTags(p, next)}
-                                onCreateTag={makeTag}
-                                canManage={true}
-                              />
-                            </div>
-                          </Show>
-                        </div>
-                      </div>
-                    </div>
-                          )}
-                        </For>
-                      </div>
+                        </Show>
+                      </Show>
                     </div>
                   )}
                 </For>
@@ -649,16 +897,16 @@ export default function Home() {
       </div>
       <ContextMenu state={ctxMenu()} onClose={() => setCtxMenu(null)} />
       <Show when={selected().size > 0}>
-        <div class="fixed bottom-5 left-1/2 -translate-x-1/2 z-30 flex items-center gap-1.5 bg-neutral-900 text-white rounded-lg shadow-2xl px-3 py-2 text-xs">
+        <div class="fixed bottom-5 left-1/2 -translate-x-1/2 z-30 flex items-center gap-1.5 bg-brand text-on-brand rounded-lg shadow-2xl px-3 py-2 text-xs">
           <span class="px-2 font-medium">{selected().size} selected</span>
           <button
-            class="flex items-center gap-1 px-2 py-1 rounded hover:bg-white/10 cursor-pointer"
+            class="flex items-center gap-1 px-2 py-1 rounded hover:bg-panel/10 cursor-pointer"
             onClick={() => void bulkArchive()}
           >
             <Icon icon="iconoir:archive" width="13" /> Archive
           </button>
           <button
-            class="p-1 rounded hover:bg-white/10 cursor-pointer"
+            class="p-1 rounded hover:bg-panel/10 cursor-pointer"
             title="Clear selection"
             onClick={clearSelection}
           >

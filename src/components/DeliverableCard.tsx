@@ -2,7 +2,7 @@ import { Show, createSignal } from "solid-js";
 import { Icon } from "@iconify-icon/solid";
 import type { Deliverable } from "../lib/types";
 import { fileUrl } from "../lib/types";
-import { CARD_W, thumbHeight } from "../lib/canvas/geometry";
+import { CARD_W, CARD_HEADER_H, thumbHeight } from "../lib/canvas/geometry";
 import { STAGE_META, type Stage } from "../lib/stage";
 import { TagChips } from "./TagChips";
 
@@ -10,10 +10,10 @@ export const STATUS_META: Record<
   Deliverable["status"],
   { label: string; chip: string; dot: string }
 > = {
-  draft: { label: "Draft", chip: "bg-neutral-100 text-neutral-500", dot: "bg-neutral-400" },
-  in_review: { label: "In review", chip: "bg-sky-50 text-sky-700", dot: "bg-sky-500" },
-  revisions_requested: { label: "Revisions", chip: "bg-amber-50 text-amber-700", dot: "bg-amber-500" },
-  approved: { label: "Approved", chip: "bg-emerald-50 text-emerald-700", dot: "bg-emerald-500" },
+  draft: { label: "Draft", chip: "bg-accent-neutral text-on-accent-neutral", dot: "bg-neutral-400" },
+  in_review: { label: "In review", chip: "bg-accent-sky text-on-accent-sky", dot: "bg-sky-500" },
+  revisions_requested: { label: "Revisions", chip: "bg-accent-amber text-on-accent-amber", dot: "bg-amber-500" },
+  approved: { label: "Approved", chip: "bg-accent-emerald text-on-accent-emerald", dot: "bg-emerald-500" },
 };
 
 export function DeliverableCard(props: {
@@ -44,6 +44,8 @@ export function DeliverableCard(props: {
   hidden?: boolean;
   /** viewer can open but not drag or rename (guest role) */
   readOnly?: boolean;
+  /** mouse entered/left the card — drives the status-bar hover readout */
+  onHover?: (hovering: boolean) => void;
 }) {
   const [editing, setEditing] = createSignal(false);
   props.registerActions?.(props.d.id, { startRename: () => setEditing(true) });
@@ -92,7 +94,7 @@ export function DeliverableCard(props: {
   return (
     <div
       data-card={props.d.id}
-      class="group absolute select-none rounded-lg bg-white border-2 shadow-[0_1px_4px_rgba(0,0,0,0.06)] hover:shadow-[0_2px_10px_rgba(0,0,0,0.10)] transition-shadow cursor-default outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
+      class="group absolute select-none rounded-lg bg-panel border-2 shadow-[var(--shadow-card)] hover:shadow-[var(--shadow-lift)] transition-shadow cursor-default outline-none focus-visible:ring-2 focus-visible:ring-sky-400"
       classList={{
         "border-sky-500": !!props.selected || !!props.active,
         "border-neutral-200 hover:border-neutral-300": !props.selected && !props.active,
@@ -102,8 +104,14 @@ export function DeliverableCard(props: {
         top: `${props.y}px`,
         width: `${CARD_W}px`,
         display: props.hidden ? "none" : undefined,
+        // Skip rendering + raster of off-screen cards; the intrinsic size keeps
+        // canvas geometry stable while a card is culled.
+        "content-visibility": "auto",
+        "contain-intrinsic-size": `${CARD_W}px ${thumbHeight(props.d) + CARD_HEADER_H}px`,
       }}
       tabindex="0"
+      onMouseEnter={() => props.onHover?.(true)}
+      onMouseLeave={() => props.onHover?.(false)}
       onPointerDown={onPointerDown}
       onDblClick={e => {
         e.stopPropagation();
@@ -129,7 +137,7 @@ export function DeliverableCard(props: {
         <button
           class="absolute top-1.5 left-1.5 z-10 w-4 h-4 rounded border flex items-center justify-center cursor-pointer"
           classList={{
-            "border-neutral-300 bg-white opacity-0 group-hover:opacity-100": !props.selected,
+            "border-neutral-300 bg-panel opacity-0 group-hover:opacity-100": !props.selected,
             "border-sky-500 bg-sky-500 text-white opacity-100": !!props.selected,
           }}
           title="Select"
@@ -149,7 +157,7 @@ export function DeliverableCard(props: {
           never hidden behind a hover-only footer control. */}
       <Show when={props.onMenu}>
         <button
-          class="absolute top-1.5 right-1.5 z-10 p-0.5 rounded border border-neutral-200 bg-white/90 text-neutral-400 shadow-sm hover:text-neutral-700 hover:bg-white cursor-pointer transition-opacity"
+          class="absolute top-1.5 right-1.5 z-10 p-0.5 rounded border border-neutral-200 bg-panel/90 text-neutral-400 shadow-sm hover:text-neutral-700 hover:bg-panel cursor-pointer transition-opacity"
           classList={{
             "opacity-0 group-hover:opacity-100": !props.selected && !props.active,
             "opacity-100": !!props.selected || !!props.active,
@@ -189,8 +197,14 @@ export function DeliverableCard(props: {
             <img
               src={fileUrl(v().fileName)}
               alt={props.d.name}
+              // Intrinsic dims from the stored version give the decoder the real
+              // aspect up front; CSS still sizes it to the card.
+              width={v().width || undefined}
+              height={v().height || undefined}
               class="w-full h-full object-contain pointer-events-none"
               draggable={false}
+              decoding="async"
+              loading="lazy"
             />
           )}
         </Show>
@@ -236,7 +250,7 @@ export function DeliverableCard(props: {
 
         <div class="flex items-center gap-1.5 shrink-0">
           <Show when={openThreads() > 0}>
-            <span class="flex items-center gap-0.5 text-[10px] text-orange-600 bg-orange-50 rounded-full px-1.5 py-px">
+            <span class="flex items-center gap-0.5 text-[10px] text-on-accent-orange bg-accent-orange rounded-full px-1.5 py-px">
               <Icon icon="iconoir:message-text" width="10" />
               {openThreads()}
             </span>

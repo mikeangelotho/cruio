@@ -27,7 +27,7 @@ export function NotesPanel(props: {
   const sorted = () => [...props.notes].sort((a, b) => b.createdAt - a.createdAt);
 
   return (
-    <aside class="w-80 shrink-0 h-full flex flex-col border-l border-neutral-200 bg-white/95 backdrop-blur-sm">
+    <aside class="w-80 shrink-0 h-full flex flex-col border-l border-neutral-200 bg-panel/95 backdrop-blur-sm">
       <div class="h-10 px-3 flex items-center justify-between border-b border-neutral-100">
         <span class="text-xs font-semibold text-neutral-700">Sticky notes</span>
         <button
@@ -83,7 +83,7 @@ export function NotesPanel(props: {
                 </button>
                 <Show when={props.canDelete}>
                   <button
-                    class="shrink-0 p-1 rounded text-neutral-300 opacity-0 group-hover:opacity-100 hover:text-rose-600 hover:bg-rose-50 cursor-pointer"
+                    class="shrink-0 p-1 rounded text-neutral-300 opacity-0 group-hover:opacity-100 hover:text-rose-600 hover:bg-accent-rose cursor-pointer"
                     title="Delete note"
                     onClick={() => props.onDelete(n)}
                   >

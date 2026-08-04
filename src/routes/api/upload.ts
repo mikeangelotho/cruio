@@ -2,13 +2,17 @@ import { randomUUID } from "node:crypto";
 import { writeFile } from "node:fs/promises";
 import { join, extname } from "node:path";
 import { imageSize } from "image-size";
-import { and, eq, ne, max } from "drizzle-orm";
+import { eq, max } from "drizzle-orm";
 import { getDb, UPLOADS_DIR } from "../../db";
-import { deliverables, projects, versions } from "../../db/schema";
+import { deliverables, versions } from "../../db/schema";
 import { getSession, recordHistory, requireProjectAccess } from "../../lib/guard";
 import { mirrorVersion } from "../../lib/library";
+import { fileTypeFor } from "../../lib/filetypes";
 
 const ALLOWED = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg", ".avif"]);
+// Images are capped at 25 MB by the shared safelist (filetypes.ts). Reject the
+// body up front by Content-Length so a large upload never buffers into memory.
+const MAX_IMAGE_BYTES = 25 * 1024 * 1024;
 
 /**
  * POST /api/upload — multipart form: { deliverableId, file }
@@ -17,6 +21,12 @@ const ALLOWED = new Set([".png", ".jpg", ".jpeg", ".webp", ".gif", ".svg", ".avi
 export async function POST(event: { request: Request }) {
   const session = await getSession(event.request.headers);
   if (!session) return Response.json({ error: "Unauthorized" }, { status: 401 });
+
+  // Reject oversized bodies before buffering the form into memory (DoS guard).
+  const contentLength = Number(event.request.headers.get("content-length") ?? 0);
+  if (contentLength > MAX_IMAGE_BYTES + 1024 * 1024) {
+    return Response.json({ error: "File too large" }, { status: 413 });
+  }
 
   const form = await event.request.formData();
   const deliverableId = form.get("deliverableId");
@@ -29,6 +39,13 @@ export async function POST(event: { request: Request }) {
   const ext = extname(file.name).toLowerCase() || ".png";
   if (!ALLOWED.has(ext)) {
     return Response.json({ error: `Unsupported file type ${ext}` }, { status: 400 });
+  }
+  const maxBytes = fileTypeFor(ext)?.maxBytes ?? MAX_IMAGE_BYTES;
+  if (file.size > maxBytes) {
+    return Response.json(
+      { error: `${ext} files are limited to ${Math.round(maxBytes / 1024 / 1024)} MB` },
+      { status: 413 },
+    );
   }
 
   const db = await getDb();
@@ -90,11 +107,6 @@ export async function POST(event: { request: Request }) {
     type: "version_uploaded",
     detail: `uploaded v${number} of “${deliverable.name}”`,
   });
-  // First upload moves the project out of pre-production.
-  await db
-    .update(projects)
-    .set({ phase: "iterations" })
-    .where(and(eq(projects.id, deliverable.projectId), eq(projects.phase, "pre_production")));
 
   return Response.json(row);
 }

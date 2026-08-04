@@ -3,6 +3,7 @@ import { getRequestEvent } from "solid-js/web";
 import { randomUUID } from "node:crypto";
 import { and, asc, eq, isNull } from "drizzle-orm";
 import { auth } from "./auth";
+import { getActor } from "./actor";
 import { getDb } from "~/db";
 import {
   annotations,
@@ -29,10 +30,26 @@ export type SessionInfo = {
   activeOrganizationId: string | null;
 };
 
-/** Headers can be passed explicitly by raw Nitro routes (upload/files). */
+/**
+ * Headers can be passed explicitly by raw Nitro routes (upload/files).
+ * Otherwise an ambient actor wins over the request event: an MCP call runs
+ * inside a real request, but that request carries a bearer token rather than
+ * a session cookie, so better-auth would find nothing to read.
+ */
 export async function getSession(
   headers?: Headers,
 ): Promise<SessionInfo | null> {
+  if (!headers) {
+    const actor = getActor();
+    if (actor) {
+      return {
+        userId: actor.userId,
+        name: actor.name,
+        email: actor.email,
+        activeOrganizationId: actor.organizationId,
+      };
+    }
+  }
   const h = headers ?? getRequestEvent()?.request.headers;
   if (!h) return null;
   const res = await auth.api.getSession({ headers: h });
@@ -260,4 +277,31 @@ export async function resolveVersionProject(
     .where(eq(versions.fileName, fileName));
   if (!v) return null;
   return resolveDeliverableProject(v.deliverableId);
+}
+
+/**
+ * Authorize read access to one stored file by its on-disk name, mirroring the
+ * gate in GET /api/files/[name]: version files and project-folder library files
+ * defer to project access; workspace-folder library files require org
+ * membership (guests excluded). Returns a sensible display name for the file.
+ * Throws "Not found"/"Forbidden" like the other guards. Used by the ZIP route.
+ */
+export async function authorizeFileByName(
+  fileName: string,
+  headers?: Headers,
+): Promise<{ displayName: string }> {
+  const projectId = await resolveVersionProject(fileName);
+  if (projectId) {
+    await requireProjectAccess(projectId, undefined, headers);
+    return { displayName: fileName };
+  }
+  const lib = await resolveLibraryFile(fileName);
+  if (!lib) throw new Error("Not found");
+  if (lib.folder.projectId) {
+    await requireProjectAccess(lib.folder.projectId, undefined, headers);
+  } else {
+    const { role } = await requireMember(lib.folder.organizationId, headers);
+    if (role === "guest") throw new Error("Forbidden");
+  }
+  return { displayName: lib.file.name };
 }

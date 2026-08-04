@@ -1,7 +1,8 @@
-import { For, Show, createResource } from "solid-js";
+import { For, Show, createResource, createSignal } from "solid-js";
 import { A, createAsync, revalidate, useLocation } from "@solidjs/router";
 import { Icon } from "@iconify-icon/solid";
 import {
+  createEntity,
   listEntities,
   myOrgsQuery,
   requireUserQuery,
@@ -11,6 +12,7 @@ import { authClient } from "../lib/auth-client";
 import { useViewerRole } from "../lib/viewer";
 import { EntityAvatar, SquareAvatar } from "./Avatar";
 import { GlobalSearch } from "./GlobalSearch";
+import { AiTrigger } from "./ai/AiTrigger";
 import { NavMenu } from "./NavMenu";
 import { useScope } from "./ScopeProvider";
 
@@ -22,11 +24,23 @@ export function AppNav(props: { onOrgSwitch?: () => void }) {
   const location = useLocation();
   const user = createAsync(() => requireUserQuery());
   const orgs = createAsync(() => myOrgsQuery());
-  const [entitiesList] = createResource(
+  const [entitiesList, { refetch: refetchEntities }] = createResource(
     () => user()?.activeOrganizationId ?? null,
     () => listEntities(),
   );
   const scope = useScope();
+  // inline "New entity" creation from the entity dropdown
+  const [addingEntity, setAddingEntity] = createSignal(false);
+
+  async function addEntity(name: string, close: () => void) {
+    const trimmed = name.trim();
+    if (!trimmed) return;
+    const created = await createEntity(trimmed);
+    await refetchEntities();
+    setAddingEntity(false);
+    scope.setEntity({ id: created.id, name: created.name });
+    close();
+  }
   const { activeOrg, myRole, isAdmin, isGuest } = useViewerRole(user, orgs);
 
   async function switchOrg(orgId: string) {
@@ -44,8 +58,11 @@ export function AppNav(props: { onOrgSwitch?: () => void }) {
     }`;
 
   return (
-    <nav class="min-h-12 px-4 flex items-center gap-4 bg-[#f8f7f7] border-b border-[#f0eeee]">
+    <nav class="min-h-12 px-4 flex items-center gap-4 bg-surface border-b border-hairline">
       <div class="flex-1 flex items-center gap-3 min-w-0">
+        <a href="/" class="shrink-0 flex items-center" aria-label="Cruio home">
+          <img class="dark:invert" style="height: 16px;" src="/CRIO_Logo-2026.svg" />
+        </a>
         <Show when={activeOrg()}>
           {o => (
             <NavMenu
@@ -169,32 +186,64 @@ export function AppNav(props: { onOrgSwitch?: () => void }) {
                       </button>
                     )}
                   </For>
+                  <Show when={isAdmin()}>
+                    <div class="mt-1 pt-1 border-t border-neutral-100">
+                      <Show
+                        when={addingEntity()}
+                        fallback={
+                          <button
+                            class="rounded-md w-full flex items-center gap-2 px-3 py-2 text-left text-xs text-neutral-500 hover:bg-neutral-50 cursor-pointer"
+                            onClick={() => setAddingEntity(true)}
+                          >
+                            <Icon icon="iconoir:plus" width="13" /> New entity…
+                          </button>
+                        }
+                      >
+                        <input
+                          class="w-full text-xs border border-neutral-200 rounded px-2 py-1.5 outline-none focus:border-sky-400 bg-panel placeholder:text-neutral-400"
+                          placeholder="Entity name — Enter to add"
+                          ref={el => queueMicrotask(() => el.focus())}
+                          onKeyDown={e => {
+                            if (e.key === "Enter") {
+                              e.preventDefault();
+                              void addEntity((e.currentTarget as HTMLInputElement).value, close);
+                            }
+                            if (e.key === "Escape") setAddingEntity(false);
+                          }}
+                          onBlur={() => setAddingEntity(false)}
+                        />
+                      </Show>
+                    </div>
+                  </Show>
                 </div>
               )}
             </NavMenu>
           )}
         </Show>
-      </div>
 
-      <div class="flex items-center gap-6 shrink-0 justify-center">
-        <Show when={!isGuest()}>
-          <A href="/tasks" class={linkClass("/tasks")}>
-            <Icon icon="iconoir:task-list" width="14" />
-            Tasks
+        <div class="flex items-center gap-5 shrink-0 ml-1">
+          <Show when={!isGuest()}>
+            <A href="/tasks" class={linkClass("/tasks")}>
+              <Icon icon="iconoir:task-list" width="14" />
+              Tasks
+            </A>
+          </Show>
+          <A href="/" class={linkClass("/")}>
+            <Icon icon="iconoir:folder" width="14" />
+            Projects
           </A>
-        </Show>
-        <A href="/" class={linkClass("/")}>
-          <Icon icon="iconoir:folder" width="14" />
-          Projects
-        </A>
-        <A href="/library" class={linkClass("/library")}>
-          <Icon icon="iconoir:media-image-folder" width="14" />
-          Library
-        </A>
+          <A href="/library" class={linkClass("/library")}>
+            <Icon icon="iconoir:media-image-folder" width="14" />
+            Library
+          </A>
+        </div>
       </div>
 
-      <div class="flex-1 flex justify-end min-w-0">
+      <div class="flex-1 flex items-center gap-2 justify-end min-w-0">
         <GlobalSearch orgId={() => user()?.activeOrganizationId ?? null} />
+        <Show when={!isGuest()}>
+          <AiTrigger />
+        </Show>
       </div>
     </nav>
   );

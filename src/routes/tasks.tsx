@@ -28,14 +28,18 @@ import {
   listTaskLinks,
   listTasks,
   removeTaskLink,
+  restoreTask,
   updateTask,
   type TaskPatchInput,
 } from "../lib/task-api";
+import { createUndoStack } from "../lib/undo";
+import { pushToast } from "../lib/toast";
 import { listProjects } from "../lib/api";
-import { myOrgsQuery, requireUserQuery } from "../lib/org-api";
+import { listEntities, myOrgsQuery, requireUserQuery } from "../lib/org-api";
 import { newId } from "../lib/id";
 import { PRIORITIES, priorityMeta } from "../lib/priority";
 import { useViewerRole } from "../lib/viewer";
+import { onAiInvalidate } from "../lib/ai/invalidate";
 import type { Project, Task, TaskLink, TaskLinkType, TaskPriority, TaskStatus } from "../lib/types";
 
 export const route = {
@@ -59,12 +63,13 @@ const STATUS_META: Record<TaskStatus, { label: string; dot: string; text: string
 };
 
 type ViewMode = "list" | "board";
-type GroupBy = "status" | "priority" | "assignee" | "project";
+type GroupBy = "status" | "priority" | "assignee" | "project" | "entity";
 const GROUP_BY_OPTIONS: { value: GroupBy; label: string }[] = [
+  { value: "project", label: "Project" },
+  { value: "entity", label: "Entity" },
   { value: "status", label: "Status" },
   { value: "priority", label: "Priority" },
   { value: "assignee", label: "Assignee" },
-  { value: "project", label: "Project" },
 ];
 
 type SortBy = "created" | "due" | "priority" | "title";
@@ -100,6 +105,7 @@ export default function TasksPage() {
     () => ({ org: user()?.activeOrganizationId, entity: scope.entity()?.id ?? null }),
     ({ entity }) => listTasks(entity),
   );
+  onAiInvalidate(() => void refetch());
   const [assignees] = createResource(
     () => user()?.activeOrganizationId,
     () => listAssignees(),
@@ -108,6 +114,13 @@ export default function TasksPage() {
     () => ({ org: user()?.activeOrganizationId, entity: scope.entity()?.id ?? null }),
     ({ entity }) => listProjects(entity),
   );
+  const [entitiesList] = createResource(
+    () => user()?.activeOrganizationId,
+    () => listEntities(),
+  );
+  // entityId → name for the "group by entity" buckets
+  const entityName = (id: string | null) =>
+    id ? ((entitiesList() ?? []).find(e => e.id === id)?.name ?? "Unknown entity") : "No entity";
 
   // Optimistic local copy: mutations apply here immediately, then hit the
   // server; errors refetch to reconverge (same philosophy as the canvas store).
@@ -166,7 +179,7 @@ export default function TasksPage() {
   }
 
   const [view, setView] = createSignal<ViewMode>("list");
-  const [groupBy, setGroupBy] = createSignal<GroupBy>("status");
+  const [groupBy, setGroupBy] = createSignal<GroupBy>("project");
   const [sortBy, setSortBy] = createSignal<SortBy>("created");
   const [search, setSearch] = createSignal("");
   const [onlyMine, setOnlyMine] = createSignal(false);
@@ -195,7 +208,11 @@ export default function TasksPage() {
     () => searchParams.task,
     raw => {
       const id = Array.isArray(raw) ? raw[0] : raw;
-      if (id) setHighlightId(id);
+      if (!id) return;
+      setHighlightId(id);
+      // arriving from search means the user picked *this* task — open it, don't
+      // just tint its row and make them hunt for it in the list
+      setPanelId(id);
     },
   ));
   createEffect(on(
@@ -220,10 +237,60 @@ export default function TasksPage() {
     setItems(list => list.map(t => (t.id === id ? { ...t, ...patch } : t)));
   }
 
-  function applyPatch(id: string, patch: TaskPatchInput, local: Partial<Task>) {
+  // ---- undo/redo (per-screen; resets on navigation) ------------------------
+  const undo = createUndoStack();
+  /** Record a just-performed action (its effect has already been applied) and
+   *  surface an Undo toast. */
+  function record(label: string, undoFn: () => void, redoFn: () => void) {
+    undo.push({ label, undo: undoFn, redo: redoFn });
+    pushToast(label, { actionLabel: "Undo", onAction: doUndo });
+  }
+  function doUndo() {
+    const c = undo.undo();
+    if (c) pushToast(`Undid: ${c.label}`, { actionLabel: "Redo", onAction: doRedo });
+  }
+  function doRedo() {
+    const c = undo.redo();
+    if (c) pushToast(`Redid: ${c.label}`);
+  }
+
+  function applyPatchRaw(id: string, patch: TaskPatchInput, local: Partial<Task>) {
     setError("");
     patchLocal(id, local);
     updateTask(id, patch).catch(fail);
+  }
+
+  function applyPatch(
+    id: string,
+    patch: TaskPatchInput,
+    local: Partial<Task>,
+    opts?: { silent?: boolean },
+  ) {
+    const prior = items().find(t => t.id === id);
+    applyPatchRaw(id, patch, local);
+    if (!prior || opts?.silent) return;
+    // inverse = the prior value of every field this patch touched
+    const priorRec = prior as unknown as Record<string, unknown>;
+    const invPatch: Record<string, unknown> = {};
+    for (const k of Object.keys(patch)) invPatch[k] = priorRec[k];
+    const invLocal: Record<string, unknown> = {};
+    for (const k of Object.keys(local)) invLocal[k] = priorRec[k];
+    record(
+      "Update task",
+      () => applyPatchRaw(id, invPatch as TaskPatchInput, invLocal as Partial<Task>),
+      () => applyPatchRaw(id, patch, local),
+    );
+  }
+
+  /** Local + server soft-delete, with no undo recording (used as a command step). */
+  function removeTaskRaw(id: string) {
+    setItems(list => list.filter(x => x.id !== id));
+    deleteTask(id).catch(fail);
+  }
+  /** Local re-add + server restore, no recording (command step). */
+  function restoreTaskRaw(task: Task) {
+    setItems(list => (list.some(x => x.id === task.id) ? list : [task, ...list]));
+    restoreTask(task.id).catch(fail);
   }
 
   function setStatus(t: Task, status: TaskStatus) {
@@ -262,6 +329,49 @@ export default function TasksPage() {
     };
     setItems(list => [optimistic, ...list]);
     createTask(id, trimmed, { status }).catch(fail);
+    record("Create task", () => removeTaskRaw(id), () => restoreTaskRaw(optimistic));
+  }
+
+  /** Create a blank task and open it in the panel to edit. Reliable from any
+   *  view/grouping (the inline quick-add only renders under status grouping or
+   *  the board). */
+  function newTask() {
+    setError("");
+    const id = newId();
+    const title = "New task";
+    const optimistic: Task = {
+      id,
+      organizationId: user()?.activeOrganizationId ?? "",
+      title,
+      description: "",
+      status: "todo",
+      priority: "none",
+      assigneeId: null,
+      assigneeName: null,
+      dueDate: null,
+      projectId: null,
+      projectName: null,
+      entityId: null,
+      deliverableId: null,
+      createdBy: user()?.userId ?? "",
+      createdAt: Date.now(),
+      completedAt: null,
+    };
+    setItems(list => [optimistic, ...list]);
+    createTask(id, title, {}).catch(fail);
+    record("Create task", () => removeTaskRaw(id), () => restoreTaskRaw(optimistic));
+    setPanelId(id);
+  }
+
+  /** The "New task" button + the `n` shortcut. Uses the inline quick-add where
+   *  it's actually visible (board, or list grouped by status); otherwise falls
+   *  back to creating a task and opening it. */
+  function startNewTask() {
+    if (view() === "board" || (view() === "list" && groupBy() === "status")) {
+      setCreatingIn("todo");
+    } else {
+      newTask();
+    }
   }
 
   // Situation (2) CTA: create a task pre-linked to a project and open it to edit.
@@ -289,13 +399,14 @@ export default function TasksPage() {
     };
     setItems(list => [optimistic, ...list]);
     createTask(id, title, { projectId: p.id }).catch(fail);
+    record("Create task", () => removeTaskRaw(id), () => restoreTaskRaw(optimistic));
     setPanelId(id);
   }
 
   function removeTask(t: Task) {
     setError("");
-    setItems(list => list.filter(x => x.id !== t.id));
-    deleteTask(t.id).catch(fail);
+    removeTaskRaw(t.id);
+    record("Delete task", () => restoreTaskRaw(t), () => removeTaskRaw(t.id));
   }
 
   function toggleSelect(id: string) {
@@ -442,10 +553,18 @@ export default function TasksPage() {
         target.tagName === "INPUT" ||
         target.tagName === "TEXTAREA" ||
         target.isContentEditable;
+      // undo/redo — skipped while typing so text fields keep native undo
+      if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z") {
+        if (typing) return;
+        e.preventDefault();
+        if (e.shiftKey) doRedo();
+        else doUndo();
+        return;
+      }
       if (typing) return;
       if (e.key === "n" && !e.metaKey && !e.ctrlKey && !e.altKey) {
         e.preventDefault();
-        setCreatingIn("todo");
+        startNewTask();
       }
     }
     window.addEventListener("keydown", onKey);
@@ -485,12 +604,21 @@ export default function TasksPage() {
         tasks: list.filter(t => t.priority === p.value),
       }));
     }
-    if (gb === "assignee" || gb === "project") {
+    if (gb === "assignee" || gb === "project" || gb === "entity") {
       const buckets = new Map<string, { key: string; label: string; tasks: Task[] }>();
       for (const t of list) {
-        const key = gb === "assignee" ? (t.assigneeId ?? "none") : (t.projectId ?? "none");
+        const key =
+          gb === "assignee"
+            ? (t.assigneeId ?? "none")
+            : gb === "entity"
+              ? (t.entityId ?? "none")
+              : (t.projectId ?? "none");
         const label =
-          gb === "assignee" ? (t.assigneeName ?? "Unassigned") : (t.projectName ?? "No project");
+          gb === "assignee"
+            ? (t.assigneeName ?? "Unassigned")
+            : gb === "entity"
+              ? entityName(t.entityId)
+              : (t.projectName ?? "No project");
         if (!buckets.has(key)) buckets.set(key, { key, label, tasks: [] });
         buckets.get(key)!.tasks.push(t);
       }
@@ -510,7 +638,7 @@ export default function TasksPage() {
       <span
         class="shrink-0 text-[10px] rounded px-1.5 py-0.5"
         classList={{
-          "text-rose-600 bg-rose-50": overdue(t),
+          "text-on-accent-rose bg-accent-rose": overdue(t),
           "text-neutral-400 bg-neutral-100": !overdue(t),
         }}
       >
@@ -609,7 +737,7 @@ export default function TasksPage() {
   const blockedBadge = (t: Task) => (
     <Show when={isBlocked(t)}>
       <span
-        class="shrink-0 flex items-center gap-0.5 text-[10px] font-medium text-amber-700 bg-amber-50 rounded-full px-1.5 py-px"
+        class="shrink-0 flex items-center gap-0.5 text-[10px] font-medium text-on-accent-amber bg-accent-amber rounded-full px-1.5 py-px"
         title={`Blocked by: ${openBlockers(t).map(b => b.title).join(", ")}`}
       >
         <Icon icon="iconoir:lock" width="10" /> Blocked
@@ -622,8 +750,8 @@ export default function TasksPage() {
       ref={el => rowRefs.set(t.id, el)}
       class="group px-3 py-2 flex items-center gap-2 hover:bg-neutral-50 cursor-pointer"
       classList={{
-        "bg-amber-50": highlightId() === t.id,
-        "bg-sky-50": selected().has(t.id) && highlightId() !== t.id,
+        "bg-accent-amber": highlightId() === t.id,
+        "bg-accent-sky": selected().has(t.id) && highlightId() !== t.id,
       }}
       onContextMenu={e => {
         e.preventDefault();
@@ -686,7 +814,7 @@ export default function TasksPage() {
         }
       >
         <input
-          class="flex-1 min-w-0 text-xs bg-white border border-sky-300 rounded px-1.5 py-1 outline-none"
+          class="flex-1 min-w-0 text-xs bg-panel border border-sky-300 rounded px-1.5 py-1 outline-none"
           value={t.title}
           ref={el => queueMicrotask(() => el.select())}
           onClick={e => e.stopPropagation()}
@@ -706,7 +834,7 @@ export default function TasksPage() {
       </Show>
 
       <Show when={t.projectName}>
-        <span class="shrink-0 text-[10px] text-neutral-500 bg-[#efeded] rounded px-1.5 py-0.5 truncate max-w-32">
+        <span class="shrink-0 text-[10px] text-neutral-500 bg-muted rounded px-1.5 py-0.5 truncate max-w-32">
           {t.projectName}
         </span>
       </Show>
@@ -791,9 +919,9 @@ export default function TasksPage() {
         e.preventDefault();
         openTaskMenu(t, e.clientX, e.clientY);
       }}
-      class="group bg-white border border-neutral-200 border-l-4 rounded-lg p-2.5 cursor-pointer hover:border-neutral-300 hover:shadow-sm"
+      class="group bg-panel border border-neutral-200 border-l-4 rounded-lg p-2.5 cursor-pointer hover:border-neutral-300 hover:shadow-sm"
       classList={{
-        "bg-amber-50": highlightId() === t.id,
+        "bg-accent-amber": highlightId() === t.id,
         [priorityMeta(t.priority).bg]: highlightId() !== t.id && !!priorityMeta(t.priority).bg,
         [priorityMeta(t.priority).border]: true,
         "opacity-40": dragId() === t.id,
@@ -827,7 +955,7 @@ export default function TasksPage() {
       </div>
       <div class="flex items-center gap-1.5 flex-wrap">
         <Show when={t.projectName}>
-          <span class="text-[10px] text-neutral-500 bg-[#efeded] rounded px-1.5 py-0.5 truncate max-w-24">
+          <span class="text-[10px] text-neutral-500 bg-muted rounded px-1.5 py-0.5 truncate max-w-24">
             {t.projectName}
           </span>
         </Show>
@@ -842,17 +970,19 @@ export default function TasksPage() {
   );
 
   return (
-    <div class="p-1 h-screen bg-[#fffefe]">
-      <div class="rounded-lg overflow-clip w-full flex flex-col h-full border border-[#eceaea]">
+    <div class="p-1 h-full bg-canvas">
+      <div class="rounded-lg overflow-clip w-full flex flex-col h-full border border-line">
         <AppNav onOrgSwitch={() => void refetch()} />
 
         <main class="flex-1 overflow-y-auto p-8">
-          <div class="max-w-4xl mx-auto">
+          <div class="w-full">
             <div class="flex items-center justify-between mb-3">
               <div>
                 <div class="flex items-center gap-3">
                   <EntityAvatar name={scope.entity()?.name || "•"} size={32} />
-                  <h1 class="text-lg font-semibold text-neutral-800">Tasks</h1>
+                  <h1 class="text-lg font-semibold text-neutral-800">
+                    {scope.entity()?.name || "All"} Tasks
+                  </h1>
                 </div>
                 <Show when={stats().total > 0}>
                   <div class="flex items-center gap-2 mt-1.5">
@@ -869,8 +999,8 @@ export default function TasksPage() {
                 </Show>
               </div>
               <button
-                class="flex items-center gap-1 text-xs bg-neutral-900 text-white rounded-md px-3 py-1.5 hover:bg-neutral-700 cursor-pointer"
-                onClick={() => setCreatingIn("todo")}
+                class="flex items-center gap-1 text-xs bg-brand text-on-brand rounded-md px-3 py-1.5 hover:bg-neutral-700 cursor-pointer"
+                onClick={startNewTask}
               >
                 <Icon icon="iconoir:plus" width="14" /> New task
                 <span class="text-[10px] text-neutral-400 bg-neutral-800 rounded px-1 ml-1">N</span>
@@ -909,7 +1039,7 @@ export default function TasksPage() {
                   label: "Overdue",
                   active: onlyOverdue(),
                   onToggle: () => setOnlyOverdue(v => !v),
-                  activeClass: "bg-rose-100 text-rose-700",
+                  activeClass: "bg-accent-rose text-on-accent-rose",
                 },
               ]}
               search={{
@@ -920,7 +1050,7 @@ export default function TasksPage() {
             />
 
             <Show when={error()}>
-              <p class="mb-4 text-xs text-rose-600 bg-rose-50 border border-rose-200 rounded px-3 py-2">
+              <p class="mb-4 text-xs text-on-accent-rose bg-accent-rose border border-accent-rose-line rounded px-3 py-2">
                 {error()}
               </p>
             </Show>
@@ -937,7 +1067,7 @@ export default function TasksPage() {
                     <For each={projectsNeedingTasks()}>
                       {p => (
                         <button
-                          class="flex items-center gap-1 text-[11px] text-sky-800 bg-white/70 border border-sky-200 rounded-full px-2 py-0.5 hover:bg-white cursor-pointer"
+                          class="flex items-center gap-1 text-[11px] text-on-accent-sky bg-accent-sky border border-accent-sky-line rounded-full px-2 py-0.5 hover:bg-accent-sky-hover cursor-pointer"
                           title={`Add a task to ${p.name}`}
                           onClick={() => addTaskForProject(p)}
                         >
@@ -951,7 +1081,26 @@ export default function TasksPage() {
               </div>
             </Show>
 
-            <Show when={view() === "list"}>
+            <Show when={!serverTasks.loading && items().length === 0}>
+              <div class="flex flex-col items-center justify-center text-center py-20">
+                <div class="flex items-center justify-center size-12 rounded-full bg-muted text-neutral-400 mb-3">
+                  <Icon icon="iconoir:task-list" width="24" />
+                </div>
+                <h2 class="text-sm font-medium text-neutral-700">No tasks yet</h2>
+                <p class="text-xs text-neutral-400 mt-1 max-w-xs">
+                  Tasks track the work behind your deliverables. Create your first one to
+                  get started.
+                </p>
+                <button
+                  class="mt-4 flex items-center gap-1 text-xs bg-brand text-on-brand rounded-md px-3 py-1.5 hover:bg-neutral-700 cursor-pointer"
+                  onClick={newTask}
+                >
+                  <Icon icon="iconoir:plus" width="14" /> New task
+                </button>
+              </div>
+            </Show>
+
+            <Show when={view() === "list" && items().length > 0}>
               <For each={grouped()}>
                 {group => (
                   <div class="mb-6">
@@ -981,12 +1130,12 @@ export default function TasksPage() {
                       </Show>
                     </div>
                     <Show when={!collapsed().has(`${groupBy()}:${group.key}`)}>
-                      <div class="border border-neutral-200 rounded-lg bg-white divide-y divide-neutral-100">
+                      <div class="border border-neutral-200 rounded-lg bg-panel divide-y divide-neutral-100">
                         <Show when={groupBy() === "status" && creatingIn() === group.key}>
                           <div class="px-3 py-2 flex items-center gap-2.5">
                             <span class="w-4 h-4 rounded-full border border-dashed border-neutral-300" />
                             <input
-                              class="flex-1 text-xs bg-white outline-none placeholder:text-neutral-400"
+                              class="flex-1 text-xs bg-panel outline-none placeholder:text-neutral-400"
                               placeholder="Task title — Enter to add, Esc to cancel"
                               ref={el => queueMicrotask(() => el.focus())}
                               onKeyDown={e => {
@@ -1016,13 +1165,13 @@ export default function TasksPage() {
               </For>
             </Show>
 
-            <Show when={view() === "board"}>
+            <Show when={view() === "board" && items().length > 0}>
               <div class="flex gap-4 items-start">
                 <For each={boardColumns()}>
                   {col => (
                     <div
                       class="flex-1 min-w-0 rounded-lg p-2"
-                      classList={{ "bg-sky-50/60 outline outline-dashed outline-sky-200": dragOverStatus() === col.status }}
+                      classList={{ "bg-accent-sky/60 outline outline-dashed outline-accent-sky-line": dragOverStatus() === col.status }}
                       onDragOver={e => {
                         e.preventDefault();
                         setDragOverStatus(col.status);
@@ -1053,9 +1202,9 @@ export default function TasksPage() {
                       </div>
                       <div class="flex flex-col gap-2">
                         <Show when={creatingIn() === col.status}>
-                          <div class="bg-white border border-sky-300 rounded-lg p-2">
+                          <div class="bg-panel border border-sky-300 rounded-lg p-2">
                             <input
-                              class="w-full text-xs bg-white outline-none placeholder:text-neutral-400"
+                              class="w-full text-xs bg-panel outline-none placeholder:text-neutral-400"
                               placeholder="Task title — Enter to add"
                               ref={el => queueMicrotask(() => el.focus())}
                               onKeyDown={e => {
@@ -1101,10 +1250,10 @@ export default function TasksPage() {
       </div>
 
       <Show when={selected().size > 0}>
-        <div class="fixed bottom-5 left-1/2 -translate-x-1/2 z-30 flex items-center gap-1.5 bg-neutral-900 text-white rounded-lg shadow-2xl px-3 py-2 text-xs">
+        <div class="fixed bottom-5 left-1/2 -translate-x-1/2 z-30 flex items-center gap-1.5 bg-brand text-on-brand rounded-lg shadow-2xl px-3 py-2 text-xs">
           <span class="px-2 font-medium">{selected().size} selected</span>
           <button
-            class="flex items-center gap-1 rounded-md px-2 py-1 hover:bg-white/10 cursor-pointer"
+            class="flex items-center gap-1 rounded-md px-2 py-1 hover:bg-panel/10 cursor-pointer"
             onClick={bulkMarkDone}
           >
             <Icon icon="iconoir:check" width="13" /> Mark done
@@ -1114,7 +1263,7 @@ export default function TasksPage() {
             panelClass="w-40"
             trigger={({ toggle }) => (
               <button
-                class="flex items-center gap-1 rounded-md px-2 py-1 hover:bg-white/10 cursor-pointer"
+                class="flex items-center gap-1 rounded-md px-2 py-1 hover:bg-panel/10 cursor-pointer"
                 onClick={toggle}
               >
                 <Icon icon="iconoir:flag-outline" width="13" /> Priority
@@ -1145,7 +1294,7 @@ export default function TasksPage() {
             panelClass="w-44"
             trigger={({ toggle }) => (
               <button
-                class="flex items-center gap-1 rounded-md px-2 py-1 hover:bg-white/10 cursor-pointer"
+                class="flex items-center gap-1 rounded-md px-2 py-1 hover:bg-panel/10 cursor-pointer"
                 onClick={toggle}
               >
                 <Icon icon="iconoir:user" width="13" /> Assign
@@ -1172,13 +1321,13 @@ export default function TasksPage() {
             )}
           </NavMenu>
           <button
-            class="flex items-center gap-1 rounded-md px-2 py-1 text-rose-300 hover:bg-white/10 cursor-pointer"
+            class="flex items-center gap-1 rounded-md px-2 py-1 text-on-brand-danger hover:bg-panel/10 cursor-pointer"
             onClick={bulkDelete}
           >
             <Icon icon="iconoir:trash" width="13" /> Delete
           </button>
           <button
-            class="ml-1 rounded-md p-1 hover:bg-white/10 cursor-pointer"
+            class="ml-1 rounded-md p-1 hover:bg-panel/10 cursor-pointer"
             title="Clear selection"
             onClick={clearSelection}
           >

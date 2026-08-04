@@ -2,6 +2,7 @@ import { For, Show, createEffect, createMemo, createResource, createSignal, on, 
 import { createAsync, useNavigate, useSearchParams } from "@solidjs/router";
 import { Icon } from "@iconify-icon/solid";
 import { useViewerRole } from "../lib/viewer";
+import { onAiInvalidate } from "../lib/ai/invalidate";
 import { AppNav } from "../components/AppNav";
 import { AppFooter } from "../components/AppFooter";
 import { useScope } from "../components/ScopeProvider";
@@ -18,6 +19,7 @@ import {
   renameFolder,
 } from "../lib/library-api";
 import { myOrgsQuery, requireUserQuery } from "../lib/org-api";
+import { downloadFile, downloadZip } from "../lib/download";
 import { fileUrl, type LibraryFile, type LibraryFolder } from "../lib/types";
 
 export const route = {
@@ -38,6 +40,7 @@ export default function LibraryPage() {
     () => ({ org: user()?.activeOrganizationId, entity: scope.entity()?.id ?? null }),
     ({ entity }) => listLibrary(entity),
   );
+  onAiInvalidate(() => void refetch());
 
   const [selectedFolder, setSelectedFolder] = createSignal<string | null>(null);
   const [ctxMenu, setCtxMenu] = createSignal<MenuState | null>(null);
@@ -46,6 +49,22 @@ export default function LibraryPage() {
   const [dragOver, setDragOver] = createSignal(false);
   const [uploading, setUploading] = createSignal(0);
   const [highlightFileId, setHighlightFileId] = createSignal<string | null>(null);
+  const [view, setView] = createSignal<"grid" | "list">("grid");
+  const [selected, setSelected] = createSignal<Set<string>>(new Set());
+
+  function toggleSelect(id: string) {
+    setSelected(s => {
+      const n = new Set(s);
+      if (n.has(id)) n.delete(id);
+      else n.add(id);
+      return n;
+    });
+  }
+  const clearSelection = () => setSelected(new Set<string>());
+  const selectedFiles = () => (listing()?.files ?? []).filter(f => selected().has(f.id));
+  function downloadSelected() {
+    void downloadZip(selectedFiles().map(f => ({ name: f.fileName, displayName: f.name })));
+  }
 
   // arriving from a search result: select the folder and flash the file. The
   // fade-out timer only starts once the file has actually loaded — listing()
@@ -211,6 +230,11 @@ export default function LibraryPage() {
           icon: "iconoir:open-in-window",
           run: () => window.open(fileUrl(file.fileName), "_blank"),
         },
+        {
+          label: "Download",
+          icon: "iconoir:download",
+          run: () => downloadFile(file.fileName),
+        },
         ...(!isMirror && canUpload()
           ? [
               { separator: true } as const,
@@ -290,13 +314,13 @@ export default function LibraryPage() {
     (listing()?.folders ?? []).find(f => f.id === file.folderId)?.entityName ?? null;
 
   return (
-    <div class="p-1 h-screen bg-[#fffefe]">
-      <div class="rounded-lg overflow-clip w-full flex flex-col h-full border border-[#eceaea]">
+    <div class="p-1 h-full bg-canvas">
+      <div class="rounded-lg overflow-clip w-full flex flex-col h-full border border-line">
         <AppNav onOrgSwitch={() => void refetch()} />
 
         <div class="flex-1 flex min-h-0">
           {/* folder rail */}
-          <aside class="w-56 shrink-0 border-r border-[#f0eeee] bg-[#fbfafa] p-3 overflow-y-auto">
+          <aside class="w-56 shrink-0 border-r border-hairline bg-panel p-3 overflow-y-auto">
             <button
               class="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md text-left text-xs cursor-pointer mb-2"
               classList={{
@@ -327,7 +351,7 @@ export default function LibraryPage() {
                   name="name"
                   required
                   placeholder="Folder name"
-                  class="w-full text-xs border border-neutral-200 rounded px-2 py-1 outline-none focus:border-sky-400 bg-white"
+                  class="w-full text-xs border border-neutral-200 rounded px-2 py-1 outline-none focus:border-sky-400 bg-panel"
                   ref={el => queueMicrotask(() => el.focus())}
                   onKeyDown={e => {
                     if (e.key === "Escape") setAddingFolder(false);
@@ -359,7 +383,7 @@ export default function LibraryPage() {
           {/* file grid */}
           <main
             class="flex-1 overflow-y-auto p-6"
-            classList={{ "bg-sky-50/40": dragOver() }}
+            classList={{ "bg-accent-sky/40": dragOver() }}
             onDragOver={e => {
               if (!canUpload() || !uploadTargetId()) return;
               e.preventDefault();
@@ -386,21 +410,43 @@ export default function LibraryPage() {
                   </span>
                 </Show>
               </div>
-              <Show when={canUpload()}>
-                <button
-                  class="flex items-center gap-1 text-xs bg-neutral-900 text-white rounded-md px-3 py-1.5 hover:bg-neutral-700 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-                  disabled={!uploadTargetId()}
-                  title={uploadTargetId() ? "Upload files (U)" : "Select a folder to upload into"}
-                  onClick={pickAndUpload}
-                >
-                  <Icon icon="iconoir:upload" width="14" /> Upload
-                  <span class="text-[10px] text-neutral-400 bg-neutral-800 rounded px-1 ml-1">U</span>
-                </button>
-              </Show>
+              <div class="flex items-center gap-2">
+                <div class="flex items-center bg-neutral-100 rounded-md p-0.5">
+                  <For each={[
+                    { value: "grid", label: "Grid", icon: "iconoir:view-grid" },
+                    { value: "list", label: "List", icon: "iconoir:list" },
+                  ] as const}>
+                    {o => (
+                      <button
+                        class="flex items-center gap-1 text-[11px] rounded px-2 py-1 cursor-pointer"
+                        classList={{
+                          "bg-panel shadow-sm text-neutral-800": view() === o.value,
+                          "text-neutral-500": view() !== o.value,
+                        }}
+                        title={`${o.label} view`}
+                        onClick={() => setView(o.value)}
+                      >
+                        <Icon icon={o.icon} width="13" />
+                      </button>
+                    )}
+                  </For>
+                </div>
+                <Show when={canUpload()}>
+                  <button
+                    class="flex items-center gap-1 text-xs bg-brand text-on-brand rounded-md px-3 py-1.5 hover:bg-neutral-700 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                    disabled={!uploadTargetId()}
+                    title={uploadTargetId() ? "Upload files (U)" : "Select a folder to upload into"}
+                    onClick={pickAndUpload}
+                  >
+                    <Icon icon="iconoir:upload" width="14" /> Upload
+                    <span class="text-[10px] text-neutral-400 bg-neutral-800 rounded px-1 ml-1">U</span>
+                  </button>
+                </Show>
+              </div>
             </div>
 
             <Show when={error()}>
-              <p class="mb-4 text-xs text-rose-600 bg-rose-50 border border-rose-200 rounded px-3 py-2">
+              <p class="mb-4 text-xs text-on-accent-rose bg-accent-rose border border-accent-rose-line rounded px-3 py-2">
                 {error()}
               </p>
             </Show>
@@ -425,19 +471,43 @@ export default function LibraryPage() {
                 </Show>
               }
             >
-              <div class="grid gap-3 grid-cols-[repeat(auto-fill,minmax(110px,140px))]">
-                <For each={visibleFiles()}>
-                  {file => (
-                    <FileCard
-                      file={file}
-                      entityName={scope.entity() ? null : fileEntityName(file)}
-                      onClick={() => onFileClick(file)}
-                      onContextMenu={e => openFileMenu(file, e.clientX, e.clientY)}
-                      highlighted={highlightFileId() === file.id}
-                    />
-                  )}
-                </For>
-              </div>
+              <Show
+                when={view() === "grid"}
+                fallback={
+                  <div class="border border-neutral-200 rounded-lg bg-panel divide-y divide-neutral-100 overflow-hidden">
+                    <For each={visibleFiles()}>
+                      {file => (
+                        <FileCard
+                          file={file}
+                          layout="list"
+                          entityName={scope.entity() ? null : fileEntityName(file)}
+                          onClick={() => onFileClick(file)}
+                          onContextMenu={e => openFileMenu(file, e.clientX, e.clientY)}
+                          highlighted={highlightFileId() === file.id}
+                          selected={selected().has(file.id)}
+                          onToggleSelect={() => toggleSelect(file.id)}
+                        />
+                      )}
+                    </For>
+                  </div>
+                }
+              >
+                <div class="grid gap-3 grid-cols-[repeat(auto-fill,minmax(110px,140px))]">
+                  <For each={visibleFiles()}>
+                    {file => (
+                      <FileCard
+                        file={file}
+                        entityName={scope.entity() ? null : fileEntityName(file)}
+                        onClick={() => onFileClick(file)}
+                        onContextMenu={e => openFileMenu(file, e.clientX, e.clientY)}
+                        highlighted={highlightFileId() === file.id}
+                        selected={selected().has(file.id)}
+                        onToggleSelect={() => toggleSelect(file.id)}
+                      />
+                    )}
+                  </For>
+                </div>
+              </Show>
             </Show>
           </main>
         </div>
@@ -457,6 +527,24 @@ export default function LibraryPage() {
         />
       </div>
       <ContextMenu state={ctxMenu()} onClose={() => setCtxMenu(null)} />
+      <Show when={selected().size > 0}>
+        <div class="fixed bottom-5 left-1/2 -translate-x-1/2 z-30 flex items-center gap-1.5 bg-brand text-on-brand rounded-lg shadow-2xl px-3 py-2 text-xs">
+          <span class="px-2 font-medium">{selected().size} selected</span>
+          <button
+            class="flex items-center gap-1 px-2 py-1 rounded hover:bg-panel/10 cursor-pointer"
+            onClick={downloadSelected}
+          >
+            <Icon icon="iconoir:download" width="13" /> Download
+          </button>
+          <button
+            class="p-1 rounded hover:bg-panel/10 cursor-pointer"
+            title="Clear selection"
+            onClick={clearSelection}
+          >
+            <Icon icon="iconoir:xmark" width="13" />
+          </button>
+        </div>
+      </Show>
     </div>
   );
 }

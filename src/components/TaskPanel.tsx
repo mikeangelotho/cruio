@@ -136,8 +136,8 @@ export function TaskPanel(props: {
     <Show when={props.task}>
       {task => (
         <div class="fixed inset-0 z-40">
-          <div class="absolute inset-0 bg-neutral-900/10" onClick={props.onClose} />
-          <div class="absolute right-0 top-0 bottom-0 w-[420px] max-w-full bg-white border-l border-neutral-200 shadow-2xl flex flex-col">
+          <div class="absolute inset-0 bg-scrim" onClick={props.onClose} />
+          <div class="absolute right-0 top-0 bottom-0 w-[420px] max-w-full bg-panel border-l border-neutral-200 shadow-2xl flex flex-col">
             <div class="px-4 py-3 flex items-center justify-between border-b border-neutral-100">
               <div class="flex gap-1">
                 <For each={STATUSES}>
@@ -145,7 +145,7 @@ export function TaskPanel(props: {
                     <button
                       class="text-[11px] rounded-md px-2 py-1 cursor-pointer"
                       classList={{
-                        "bg-neutral-900 text-white": task().status === s.value,
+                        "bg-brand text-on-brand": task().status === s.value,
                         "text-neutral-500 hover:bg-neutral-100": task().status !== s.value,
                       }}
                       onClick={() =>
@@ -334,13 +334,28 @@ export function TaskPanel(props: {
                     </NavMenu>
                   }
                 >
-                  <button
-                    class="flex items-center gap-1.5 text-xs text-sky-600 hover:underline cursor-pointer w-fit"
-                    onClick={() => props.onOpenProject(task())}
-                  >
-                    <Icon icon="iconoir:frame" width="13" />
-                    {task().projectName}
-                  </button>
+                  <div class="flex items-center gap-1.5 w-fit">
+                    <button
+                      class="flex items-center gap-1.5 text-xs text-sky-600 hover:underline cursor-pointer"
+                      onClick={() => props.onOpenProject(task())}
+                    >
+                      <Icon icon="iconoir:frame" width="13" />
+                      {task().projectName}
+                    </button>
+                    <button
+                      class="p-0.5 rounded text-neutral-300 hover:text-rose-600 hover:bg-neutral-100 cursor-pointer"
+                      title="Remove project link"
+                      onClick={() =>
+                        props.onPatch(
+                          task().id,
+                          { projectId: null, deliverableId: null },
+                          { projectId: null, projectName: null, entityId: null, deliverableId: null },
+                        )
+                      }
+                    >
+                      <Icon icon="iconoir:xmark" width="12" />
+                    </button>
+                  </div>
                 </Show>
               </div>
 
@@ -431,7 +446,7 @@ export function TaskPanel(props: {
 
             <div class="px-4 py-3 border-t border-neutral-100">
               <button
-                class="flex items-center gap-1.5 text-xs text-rose-600 hover:bg-rose-50 rounded-md px-2 py-1.5 cursor-pointer"
+                class="flex items-center gap-1.5 text-xs text-rose-600 hover:bg-accent-rose rounded-md px-2 py-1.5 cursor-pointer"
                 onClick={() => {
                   props.onDelete(task());
                   props.onClose();
