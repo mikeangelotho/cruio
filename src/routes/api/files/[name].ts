@@ -56,6 +56,11 @@ export async function GET(event: { request: Request; params: { name: string } })
   const ext = extname(name).toLowerCase();
   const type = fileTypeFor(ext);
 
+  // `?download=1` forces a save dialog even for inline-renderable kinds; the
+  // download buttons in the UI append it so images/PDFs don't open in a tab.
+  const forceDownload = new URL(event.request.url).searchParams.has("download");
+  const safeName = displayName.replace(/[^\w.\- ]/g, "_");
+
   const headers: Record<string, string> = {
     "Content-Type": type?.mime ?? "application/octet-stream",
     // Files are immutable — named by UUID, never rewritten.
@@ -64,9 +69,9 @@ export async function GET(event: { request: Request; params: { name: string } })
     "X-Content-Type-Options": "nosniff",
     "Accept-Ranges": "bytes",
     "Content-Disposition":
-      type && INLINE_KINDS.has(type.kind)
+      type && INLINE_KINDS.has(type.kind) && !forceDownload
         ? "inline"
-        : `attachment; filename="${displayName.replace(/[^\w.\- ]/g, "_")}"`,
+        : `attachment; filename="${safeName}"`,
   };
   // SVG can carry scripts; this CSP neutralizes them when the file is opened
   // directly in a browsing context while <img> embedding keeps working.

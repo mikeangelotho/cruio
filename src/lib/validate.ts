@@ -56,6 +56,9 @@ export const PersonalPositionKindSchema = v.picklist(["deliverable", "note"]);
 
 export const TaskLinkTypeSchema = v.picklist(["blocks", "related"]);
 
+/** Project status — same vocabulary as task status (see project-status.ts). */
+export const ProjectStatusSchema = v.picklist(["todo", "in_progress", "done"]);
+
 /** Global search box input, including any `key:value` tokens. */
 export const SearchQuery = v.pipe(v.string(), v.trim(), v.maxLength(200));
 

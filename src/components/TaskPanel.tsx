@@ -334,13 +334,28 @@ export function TaskPanel(props: {
                     </NavMenu>
                   }
                 >
-                  <button
-                    class="flex items-center gap-1.5 text-xs text-sky-600 hover:underline cursor-pointer w-fit"
-                    onClick={() => props.onOpenProject(task())}
-                  >
-                    <Icon icon="iconoir:frame" width="13" />
-                    {task().projectName}
-                  </button>
+                  <div class="flex items-center gap-1.5 w-fit">
+                    <button
+                      class="flex items-center gap-1.5 text-xs text-sky-600 hover:underline cursor-pointer"
+                      onClick={() => props.onOpenProject(task())}
+                    >
+                      <Icon icon="iconoir:frame" width="13" />
+                      {task().projectName}
+                    </button>
+                    <button
+                      class="p-0.5 rounded text-neutral-300 hover:text-rose-600 hover:bg-neutral-100 cursor-pointer"
+                      title="Remove project link"
+                      onClick={() =>
+                        props.onPatch(
+                          task().id,
+                          { projectId: null, deliverableId: null },
+                          { projectId: null, projectName: null, entityId: null, deliverableId: null },
+                        )
+                      }
+                    >
+                      <Icon icon="iconoir:xmark" width="12" />
+                    </button>
+                  </div>
                 </Show>
               </div>
 

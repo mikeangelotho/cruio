@@ -19,6 +19,7 @@ import {
   renameFolder,
 } from "../lib/library-api";
 import { myOrgsQuery, requireUserQuery } from "../lib/org-api";
+import { downloadFile, downloadZip } from "../lib/download";
 import { fileUrl, type LibraryFile, type LibraryFolder } from "../lib/types";
 
 export const route = {
@@ -48,6 +49,22 @@ export default function LibraryPage() {
   const [dragOver, setDragOver] = createSignal(false);
   const [uploading, setUploading] = createSignal(0);
   const [highlightFileId, setHighlightFileId] = createSignal<string | null>(null);
+  const [view, setView] = createSignal<"grid" | "list">("grid");
+  const [selected, setSelected] = createSignal<Set<string>>(new Set());
+
+  function toggleSelect(id: string) {
+    setSelected(s => {
+      const n = new Set(s);
+      if (n.has(id)) n.delete(id);
+      else n.add(id);
+      return n;
+    });
+  }
+  const clearSelection = () => setSelected(new Set<string>());
+  const selectedFiles = () => (listing()?.files ?? []).filter(f => selected().has(f.id));
+  function downloadSelected() {
+    void downloadZip(selectedFiles().map(f => ({ name: f.fileName, displayName: f.name })));
+  }
 
   // arriving from a search result: select the folder and flash the file. The
   // fade-out timer only starts once the file has actually loaded — listing()
@@ -212,6 +229,11 @@ export default function LibraryPage() {
           label: "Open file",
           icon: "iconoir:open-in-window",
           run: () => window.open(fileUrl(file.fileName), "_blank"),
+        },
+        {
+          label: "Download",
+          icon: "iconoir:download",
+          run: () => downloadFile(file.fileName),
         },
         ...(!isMirror && canUpload()
           ? [
@@ -388,17 +410,39 @@ export default function LibraryPage() {
                   </span>
                 </Show>
               </div>
-              <Show when={canUpload()}>
-                <button
-                  class="flex items-center gap-1 text-xs bg-brand text-on-brand rounded-md px-3 py-1.5 hover:bg-neutral-700 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-                  disabled={!uploadTargetId()}
-                  title={uploadTargetId() ? "Upload files (U)" : "Select a folder to upload into"}
-                  onClick={pickAndUpload}
-                >
-                  <Icon icon="iconoir:upload" width="14" /> Upload
-                  <span class="text-[10px] text-neutral-400 bg-neutral-800 rounded px-1 ml-1">U</span>
-                </button>
-              </Show>
+              <div class="flex items-center gap-2">
+                <div class="flex items-center bg-neutral-100 rounded-md p-0.5">
+                  <For each={[
+                    { value: "grid", label: "Grid", icon: "iconoir:view-grid" },
+                    { value: "list", label: "List", icon: "iconoir:list" },
+                  ] as const}>
+                    {o => (
+                      <button
+                        class="flex items-center gap-1 text-[11px] rounded px-2 py-1 cursor-pointer"
+                        classList={{
+                          "bg-panel shadow-sm text-neutral-800": view() === o.value,
+                          "text-neutral-500": view() !== o.value,
+                        }}
+                        title={`${o.label} view`}
+                        onClick={() => setView(o.value)}
+                      >
+                        <Icon icon={o.icon} width="13" />
+                      </button>
+                    )}
+                  </For>
+                </div>
+                <Show when={canUpload()}>
+                  <button
+                    class="flex items-center gap-1 text-xs bg-brand text-on-brand rounded-md px-3 py-1.5 hover:bg-neutral-700 cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+                    disabled={!uploadTargetId()}
+                    title={uploadTargetId() ? "Upload files (U)" : "Select a folder to upload into"}
+                    onClick={pickAndUpload}
+                  >
+                    <Icon icon="iconoir:upload" width="14" /> Upload
+                    <span class="text-[10px] text-neutral-400 bg-neutral-800 rounded px-1 ml-1">U</span>
+                  </button>
+                </Show>
+              </div>
             </div>
 
             <Show when={error()}>
@@ -427,19 +471,43 @@ export default function LibraryPage() {
                 </Show>
               }
             >
-              <div class="grid gap-3 grid-cols-[repeat(auto-fill,minmax(110px,140px))]">
-                <For each={visibleFiles()}>
-                  {file => (
-                    <FileCard
-                      file={file}
-                      entityName={scope.entity() ? null : fileEntityName(file)}
-                      onClick={() => onFileClick(file)}
-                      onContextMenu={e => openFileMenu(file, e.clientX, e.clientY)}
-                      highlighted={highlightFileId() === file.id}
-                    />
-                  )}
-                </For>
-              </div>
+              <Show
+                when={view() === "grid"}
+                fallback={
+                  <div class="border border-neutral-200 rounded-lg bg-panel divide-y divide-neutral-100 overflow-hidden">
+                    <For each={visibleFiles()}>
+                      {file => (
+                        <FileCard
+                          file={file}
+                          layout="list"
+                          entityName={scope.entity() ? null : fileEntityName(file)}
+                          onClick={() => onFileClick(file)}
+                          onContextMenu={e => openFileMenu(file, e.clientX, e.clientY)}
+                          highlighted={highlightFileId() === file.id}
+                          selected={selected().has(file.id)}
+                          onToggleSelect={() => toggleSelect(file.id)}
+                        />
+                      )}
+                    </For>
+                  </div>
+                }
+              >
+                <div class="grid gap-3 grid-cols-[repeat(auto-fill,minmax(110px,140px))]">
+                  <For each={visibleFiles()}>
+                    {file => (
+                      <FileCard
+                        file={file}
+                        entityName={scope.entity() ? null : fileEntityName(file)}
+                        onClick={() => onFileClick(file)}
+                        onContextMenu={e => openFileMenu(file, e.clientX, e.clientY)}
+                        highlighted={highlightFileId() === file.id}
+                        selected={selected().has(file.id)}
+                        onToggleSelect={() => toggleSelect(file.id)}
+                      />
+                    )}
+                  </For>
+                </div>
+              </Show>
             </Show>
           </main>
         </div>
@@ -459,6 +527,24 @@ export default function LibraryPage() {
         />
       </div>
       <ContextMenu state={ctxMenu()} onClose={() => setCtxMenu(null)} />
+      <Show when={selected().size > 0}>
+        <div class="fixed bottom-5 left-1/2 -translate-x-1/2 z-30 flex items-center gap-1.5 bg-brand text-on-brand rounded-lg shadow-2xl px-3 py-2 text-xs">
+          <span class="px-2 font-medium">{selected().size} selected</span>
+          <button
+            class="flex items-center gap-1 px-2 py-1 rounded hover:bg-panel/10 cursor-pointer"
+            onClick={downloadSelected}
+          >
+            <Icon icon="iconoir:download" width="13" /> Download
+          </button>
+          <button
+            class="p-1 rounded hover:bg-panel/10 cursor-pointer"
+            title="Clear selection"
+            onClick={clearSelection}
+          >
+            <Icon icon="iconoir:xmark" width="13" />
+          </button>
+        </div>
+      </Show>
     </div>
   );
 }

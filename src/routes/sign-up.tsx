@@ -57,7 +57,7 @@ export default function SignUp() {
                 required
                 autocomplete="name"
                 class="mt-1 w-full text-sm border border-neutral-200 rounded px-2 py-1.5 outline-none focus:border-sky-400"
-                placeholder="Mike Angelo"
+                placeholder="Jane Doe"
                 ref={el => queueMicrotask(() => el.focus())}
               />
             </label>

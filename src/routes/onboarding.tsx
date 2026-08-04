@@ -64,7 +64,7 @@ export default function Onboarding() {
               name="name"
               required
               class="w-full text-sm border border-neutral-200 rounded px-2 py-1.5 outline-none focus:border-sky-400"
-              placeholder="e.g. Edgar Creative"
+              placeholder="e.g. Acme Studio"
               ref={el => queueMicrotask(() => el.focus())}
             />
             <Show when={error()}>

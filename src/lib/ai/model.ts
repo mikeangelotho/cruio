@@ -4,17 +4,28 @@ import Anthropic from "@anthropic-ai/sdk";
 // development without touching call sites.
 //
 //   ANTHROPIC_API_KEY   real key (unset when pointing at a local server)
-//   AI_BASE_URL         e.g. http://localhost:8080 — anything Anthropic-shaped
+//   AI_BASE_URL         e.g. http://localhost:8080 — a model server
+//   AI_PROTOCOL         "anthropic" (default) | "openai"
 //   AI_MODEL            override the model id
 //   AI_EFFORT           low | medium | high | xhigh | max
 //
-// If the local server speaks OpenAI's schema rather than Anthropic's, put
-// LiteLLM in front of it in Anthropic mode rather than writing an adapter.
+// A local server that speaks Anthropic's Messages schema needs only AI_BASE_URL.
+// A server that speaks OpenAI's schema instead (e.g. llama.cpp's llama-server,
+// /v1/chat/completions) is reached by ALSO setting AI_PROTOCOL=openai — see
+// ./openai.ts for the transport. No LiteLLM/translation layer required.
 
-const baseURL = process.env.AI_BASE_URL?.trim() || undefined;
+export const baseURL = process.env.AI_BASE_URL?.trim() || undefined;
 
-/** Betas and server-side features only exist on the real API. */
-export const isAnthropic = !baseURL;
+/** Which wire protocol the transport speaks. */
+export const PROTOCOL: "anthropic" | "openai" =
+  process.env.AI_PROTOCOL?.trim() === "openai" ? "openai" : "anthropic";
+
+/**
+ * True only when talking to the real Anthropic API, where betas, prompt
+ * caching, thinking, and the mid-conversation system role exist. Any local
+ * server (Anthropic- or OpenAI-shaped) is false.
+ */
+export const isAnthropic = PROTOCOL === "anthropic" && !baseURL;
 
 export const MODEL = process.env.AI_MODEL?.trim() || "claude-opus-5";
 export const EFFORT = (process.env.AI_EFFORT?.trim() || "medium") as

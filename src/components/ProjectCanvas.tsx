@@ -28,6 +28,7 @@ import {
   type SnapGuide,
 } from "../lib/canvas/geometry";
 import { useProject, uploadVersion } from "../lib/store";
+import { downloadFile, downloadZip } from "../lib/download";
 import { fileUrl } from "../lib/types";
 import type { Tag, TagColor } from "../lib/types";
 import { createTag, listTags } from "../lib/tag-api";
@@ -61,6 +62,9 @@ import { Callout } from "./Callout";
 import { AppFooter } from "./AppFooter";
 import { CommandPalette } from "./CommandPalette";
 import { GlobalSearch } from "./GlobalSearch";
+import { createUndoStack } from "../lib/undo";
+import { pushToast } from "../lib/toast";
+import { AiTrigger } from "./ai/AiTrigger";
 
 export function ProjectCanvas() {
   const store = useProject();
@@ -339,6 +343,193 @@ export function ProjectCanvas() {
     y1: number;
   } | null>(null);
 
+  // ---- drag-to-group / eject state -----------------------------------------
+  // There is no shared "drag in progress" signal otherwise; these drive the
+  // dwell add-target highlight and the anchored-outline eject preview during a
+  // card or group-label drag.
+  type DragTarget = { kind: "card" | "group"; id: string; currentGroupId: string | null };
+  const [dragTarget, setDragTarget] = createSignal<DragTarget | null>(null);
+  const [hoverGroupId, setHoverGroupId] = createSignal<string | null>(null);
+  const [ejecting, setEjecting] = createSignal(false);
+  // Blender-style status-bar readout: what the cursor is currently over.
+  const [hovered, setHovered] = createSignal<{ kind: "deliverable" | "group"; name: string } | null>(null);
+  const DWELL_MS = 500;
+  let dwellTimer: ReturnType<typeof setTimeout> | null = null;
+  let dwellCandidate: string | null = null;
+
+  /** Area of the intersection of two world rects (0 when disjoint). */
+  const overlapArea = (a: Rect, b: Rect) => {
+    const ix = Math.max(0, Math.min(a.x + a.w, b.x + b.w) - Math.max(a.x, b.x));
+    const iy = Math.max(0, Math.min(a.y + a.h, b.y + b.h) - Math.max(a.y, b.y));
+    return ix * iy;
+  };
+
+  /** Deliverable ids that constitute the dragged item (one card, or every
+   *  member of a dragged group) — excluded when measuring the group it's
+   *  leaving. */
+  function draggedMemberIds(t: DragTarget): Set<string> {
+    return t.kind === "group" ? new Set(store.membersOfGroup(t.id)) : new Set([t.id]);
+  }
+
+  /** Group ids to exclude as drop targets: the item's current group and all of
+   *  its ancestors (an item is always geometrically inside its own ancestors, so
+   *  a dwell there must not re-home it), plus — for a dragged group — itself and
+   *  all its descendants, to prevent cycles. */
+  function excludedTargetGroups(t: DragTarget): Set<string> {
+    const out = new Set<string>();
+    // current group + ancestor chain
+    let cur = t.currentGroupId;
+    for (let i = 0; i < 64 && cur; i++) {
+      out.add(cur);
+      cur = store.groupById(cur)?.parentGroupId ?? null;
+    }
+    if (t.kind === "group") {
+      out.add(t.id);
+      let grew = true;
+      while (grew) {
+        grew = false;
+        for (const g of store.groups()) {
+          if (g.parentGroupId && out.has(g.parentGroupId) && !out.has(g.id)) {
+            out.add(g.id);
+            grew = true;
+          }
+        }
+      }
+    }
+    return out;
+  }
+
+  /** The legal drop-target group the dragged item most overlaps (at least half
+   *  of the smaller of the two rects). Overlap-based rather than center-in-rect
+   *  so dragging a large group onto a small one — or vice versa — lands
+   *  predictably instead of keying off a geometric centre. */
+  function targetGroupFor(itemRect: Rect, t: DragTarget): string | null {
+    const exclude = excludedTargetGroups(t);
+    const itemArea = itemRect.w * itemRect.h;
+    let best: { id: string; ratio: number } | null = null;
+    for (const g of store.groups()) {
+      if (exclude.has(g.id)) continue;
+      const r = groupOutlineRect(g.id);
+      if (!r) continue;
+      const inter = overlapArea(itemRect, r);
+      if (inter <= 0) continue;
+      const ratio = inter / Math.min(itemArea, r.w * r.h);
+      if (ratio >= 0.5 && (!best || ratio > best.ratio)) best = { id: g.id, ratio };
+    }
+    return best?.id ?? null;
+  }
+
+  function clearDwell() {
+    if (dwellTimer) {
+      clearTimeout(dwellTimer);
+      dwellTimer = null;
+    }
+    dwellCandidate = null;
+  }
+
+  /** Per-frame during a drag: (re)arm the dwell timer over a candidate group and
+   *  flag whether the item has crossed up/left past its current group's handle. */
+  function updateDragTargets(t: DragTarget, itemRect: Rect) {
+    const cand = targetGroupFor(itemRect, t);
+    if (cand !== dwellCandidate) {
+      clearDwell();
+      dwellCandidate = cand;
+      if (cand) dwellTimer = setTimeout(() => setHoverGroupId(cand), DWELL_MS);
+      else setHoverGroupId(null);
+    }
+    // directional eject: the item leaves once it's at least half past the top or
+    // left edge of the handle (the top-left of the current group's *other*
+    // members) — i.e. its centre crosses that edge.
+    if (t.currentGroupId) {
+      const excl = draggedMemberIds(t);
+      const others = store
+        .membersOfGroup(t.currentGroupId)
+        .filter((id) => !excl.has(id))
+        .map((id) => store.byId(id))
+        .filter((d): d is Deliverable => !!d)
+        .map(effCardRect);
+      if (others.length > 0) {
+        const anchor = boundsOf(others);
+        const cx = itemRect.x + itemRect.w / 2;
+        const cy = itemRect.y + itemRect.h / 2;
+        setEjecting(cx < anchor.x || cy < anchor.y);
+      } else {
+        setEjecting(false);
+      }
+    } else {
+      setEjecting(false);
+    }
+  }
+
+  function endDragTargets() {
+    clearDwell();
+    setDragTarget(null);
+    setHoverGroupId(null);
+    setEjecting(false);
+  }
+
+  // ---- collision push-away ---------------------------------------------------
+  // While something is dragged, neighbours it would overlap slide out of the
+  // way (local-only). Each is keyed to its *home* (pre-push) position so the
+  // decision is stable frame-to-frame: home overlaps the obstacle ⇒ push; home
+  // clears ⇒ restore. On drop the pushes are committed; if the drag never
+  // reaches them (or is cancelled) they return home.
+  const COLLIDE_GAP = 16;
+  const displacedHome = new Map<string, { x: number; y: number }>();
+
+  /** Shift `home` the least distance needed to clear `obstacle` (or null if it
+   *  already clears). */
+  function separate(home: Rect, obstacle: Rect): { x: number; y: number } | null {
+    if (overlapArea(home, obstacle) <= 0) return null;
+    const right = obstacle.x + obstacle.w + COLLIDE_GAP - home.x;
+    const left = home.x + home.w + COLLIDE_GAP - obstacle.x;
+    const down = obstacle.y + obstacle.h + COLLIDE_GAP - home.y;
+    const up = home.y + home.h + COLLIDE_GAP - obstacle.y;
+    const opts = [
+      { x: home.x + right, y: home.y, m: right },
+      { x: home.x - left, y: home.y, m: left },
+      { x: home.x, y: home.y + down, m: down },
+      { x: home.x, y: home.y - up, m: up },
+    ];
+    const best = opts.reduce((a, b) => (b.m < a.m ? b : a));
+    return { x: best.x, y: best.y };
+  }
+
+  /** Per drag frame: push neighbours out of `obstacle`, restore any that no
+   *  longer need to move. `movingIds` are excluded (they're being dragged). */
+  function resolveCollisions(movingIds: Set<string>, obstacle: Rect) {
+    for (const o of store.deliverables()) {
+      if (movingIds.has(o.id)) continue;
+      const cur = posOf("deliverable", o.id, o.posX, o.posY);
+      const home = displacedHome.get(o.id) ?? cur;
+      const homeRect: Rect = {
+        x: home.x,
+        y: home.y,
+        w: CARD_W,
+        h: thumbHeight(o) + CARD_HEADER_H,
+      };
+      const pushed = separate(homeRect, obstacle);
+      if (pushed) {
+        if (!displacedHome.has(o.id)) displacedHome.set(o.id, { x: home.x, y: home.y });
+        commitDeliverablePosition(o.id, pushed.x, pushed.y, false);
+      } else if (displacedHome.has(o.id)) {
+        commitDeliverablePosition(o.id, home.x, home.y, false);
+        displacedHome.delete(o.id);
+      }
+    }
+  }
+
+  /** Drop: bake the current (pushed) positions of displaced neighbours in.
+   *  Neighbours the drag moved away from were already sent home per-frame, so
+   *  only the ones still cleared aside remain here to persist. */
+  function lockDisplaced() {
+    for (const id of displacedHome.keys()) {
+      const cur = posOf("deliverable", id, store.byId(id)?.posX ?? 0, store.byId(id)?.posY ?? 0);
+      commitDeliverablePosition(id, cur.x, cur.y, true);
+    }
+    displacedHome.clear();
+  }
+
   /** Single-click highlight: one card, border only, no checkmark. Distinct
    * from the multi-select `selected` set (checkmarks). */
   const [activeId, setActiveId] = createSignal<string | null>(null);
@@ -413,21 +604,40 @@ export function ProjectCanvas() {
    * mapped array) is what keeps a label's DOM node alive across a drag; see
    * onGroupLabelPointerDown. */
   function groupOutlineRect(groupId: string): Rect | null {
-    const members = store
-      .membersOfGroup(groupId)
+    let memberIds = store.membersOfGroup(groupId);
+    // While an item is being dragged up/left out of this group, drop it from the
+    // bounds so the outline stays pinned at the handle (previews the removal and
+    // never chases the item up/left). Growing down/right stays automatic.
+    const t = dragTarget();
+    if (t && ejecting() && t.currentGroupId === groupId) {
+      const excl = draggedMemberIds(t);
+      memberIds = memberIds.filter((id) => !excl.has(id));
+    }
+    const members = memberIds
       .map((id) => store.byId(id))
       .filter((d): d is Deliverable => !!d);
-    if (members.length === 0) return null;
+    const g = store.groupById(groupId);
+    const frame: Rect | null =
+      g && g.posX != null && g.posY != null && g.w != null && g.h != null
+        ? { x: g.posX, y: g.posY, w: g.w, h: g.h }
+        : null;
+    // A group with no members and no own frame is a legacy derived group with
+    // nothing to draw. A container (frame) stays visible while empty.
+    if (members.length === 0) return frame;
     const pad = 14 + 12 * groupDepth(groupId);
     const b = boundsOf(members.map(effCardRect));
-    return { x: b.x - pad, y: b.y - pad, w: b.w + pad * 2, h: b.h + pad * 2 };
+    const memberRect: Rect = { x: b.x - pad, y: b.y - pad, w: b.w + pad * 2, h: b.h + pad * 2 };
+    // Union the stored frame (if any) with the member bounds so a container
+    // grows to include what's dropped in but never shrinks below its frame.
+    return frame ? boundsOf([frame, memberRect]) : memberRect;
   }
   const [groupPromptOpen, setGroupPromptOpen] = createSignal(false);
   const [renamingGroupId, setRenamingGroupId] = createSignal<string | null>(
     null,
   );
 
-  /** Drag the label to move the whole (root) group; a clean click selects it. */
+  /** Drag the label to move this group's members as a unit (a sub-group label
+   * moves just that sub-group); a clean click selects the group. */
   function onGroupLabelPointerDown(e: PointerEvent, groupId: string) {
     if (e.button !== 0 || renamingGroupId() === groupId) return;
     e.stopPropagation();
@@ -439,19 +649,41 @@ export function ProjectCanvas() {
     let lastX = startX;
     let lastY = startY;
     let dragged = false;
-    const memberIds = store.membersOfGroup(store.rootGroupOf(groupId));
+    // Move exactly this group's members — a sub-group's label moves just that
+    // sub-group, the outermost label moves the whole group.
+    const memberIds = store.membersOfGroup(groupId);
 
+    const t: DragTarget = {
+      kind: "group",
+      id: groupId,
+      currentGroupId: store.groupById(groupId)?.parentGroupId ?? null,
+    };
+    // A container group with its own frame moves the frame too (so an empty one
+    // — with no members to translate — still moves).
+    const moveFrameBy = (dx: number, dy: number, sync: boolean) => {
+      const g = store.groupById(groupId);
+      if (g && g.posX != null && g.posY != null && g.w != null && g.h != null) {
+        store.setGroupFrame(groupId, g.posX + dx, g.posY + dy, g.w, g.h, sync);
+      }
+    };
     const onMove = (ev: PointerEvent) => {
       if (!dragged && Math.hypot(ev.clientX - startX, ev.clientY - startY) < 4)
         return;
+      if (!dragged) setDragTarget(t);
       dragged = true;
       const wd = {
         x: (ev.clientX - lastX) / camera.cam.zoom,
         y: (ev.clientY - lastY) / camera.cam.zoom,
       };
       commitGroupPositions(memberIds, wd.x, wd.y, false);
+      moveFrameBy(wd.x, wd.y, false);
       lastX = ev.clientX;
       lastY = ev.clientY;
+      const gr = groupOutlineRect(groupId);
+      if (gr) {
+        updateDragTargets(t, gr);
+        resolveCollisions(new Set(memberIds), gr);
+      }
     };
     const onUp = (ev: PointerEvent) => {
       el.removeEventListener("pointermove", onMove);
@@ -463,9 +695,65 @@ export function ProjectCanvas() {
           y: (ev.clientY - lastY) / camera.cam.zoom,
         };
         commitGroupPositions(memberIds, wd.x, wd.y, true);
+        moveFrameBy(wd.x, wd.y, true);
+        const hg = hoverGroupId();
+        const priorParent = t.currentGroupId;
+        if (hg) {
+          store.setGroupParent(groupId, hg);
+          record(
+            "Nest group",
+            () => store.setGroupParent(groupId, priorParent),
+            () => store.setGroupParent(groupId, hg),
+          );
+        } else if (ejecting() && priorParent) {
+          store.setGroupParent(groupId, null);
+          record(
+            "Un-nest group",
+            () => store.setGroupParent(groupId, priorParent),
+            () => store.setGroupParent(groupId, null),
+          );
+        }
+        endDragTargets();
+        lockDisplaced();
       } else {
         toggleGroupSelect(groupId);
       }
+    };
+    el.addEventListener("pointermove", onMove);
+    el.addEventListener("pointerup", onUp);
+  }
+
+  /** Bottom-right resize of a container group's frame (framed groups only). */
+  function onGroupResizePointerDown(e: PointerEvent, groupId: string) {
+    if (e.button !== 0) return;
+    e.stopPropagation();
+    const g = store.groupById(groupId);
+    if (!g || g.posX == null || g.posY == null || g.w == null || g.h == null) return;
+    const el = e.currentTarget as HTMLElement;
+    el.setPointerCapture(e.pointerId);
+    const startX = e.clientX;
+    const startY = e.clientY;
+    const startW = g.w;
+    const startH = g.h;
+    const MIN = 120;
+    const apply = (ev: PointerEvent, sync: boolean) => {
+      const dx = (ev.clientX - startX) / camera.cam.zoom;
+      const dy = (ev.clientY - startY) / camera.cam.zoom;
+      store.setGroupFrame(
+        groupId,
+        g.posX!,
+        g.posY!,
+        Math.max(MIN, startW + dx),
+        Math.max(MIN, startH + dy),
+        sync,
+      );
+    };
+    const onMove = (ev: PointerEvent) => apply(ev, false);
+    const onUp = (ev: PointerEvent) => {
+      el.removeEventListener("pointermove", onMove);
+      el.removeEventListener("pointerup", onUp);
+      el.releasePointerCapture(ev.pointerId);
+      apply(ev, true);
     };
     el.addEventListener("pointermove", onMove);
     el.addEventListener("pointerup", onUp);
@@ -483,20 +771,51 @@ export function ProjectCanvas() {
     );
   }
 
-  /** "nest" (2+ whole groups picked via their labels) or "create" (2+
-   * ungrouped cards) — either way the toolbar's Group button opens the
-   * label prompt. Null when the raw card selection spans two *different*
-   * existing groups: mixing a grouped asset into a fresh group would
-   * silently orphan it from where it already lives, so that's blocked
-   * rather than guessed at — the fix is "Add to <group>", not "Group". */
+  /** "nest" (2+ whole groups picked via their labels) or "create" (1+ cards).
+   * The label prompt opens either way. "create" covers both a top-level group
+   * from ungrouped cards and a *sub-group* from cards that all already share
+   * one group (see createParentGroupId). Null when the selection mixes grouped
+   * and ungrouped cards or spans two different groups — the fix there is "Add
+   * to <group>", not "Group". A single card is allowed so a group can be
+   * started with one asset and grown later. */
   const groupButtonAction = createMemo<"nest" | "create" | null>(() => {
     if (selectedGroups().size >= 2 && selectionIsWholeGroups()) return "nest";
+    if (selectedGroups().size !== 0) return null; // a single whole group offers Ungroup, not Group
+    const ids = [...selected()];
+    if (ids.length === 0) return null;
+    const groupIds = new Set(
+      ids.map((id) => store.byId(id)?.groupId).filter((g): g is string => !!g),
+    );
+    if (groupIds.size === 0) return "create"; // new top-level group
+    const anyUngrouped = ids.some((id) => !store.byId(id)?.groupId);
+    if (groupIds.size === 1 && !anyUngrouped) return "create"; // sub-group under the shared group
+    return null;
+  });
+
+  /** The parent a "create" action nests under (null = top level): set only when
+   * every selected card already belongs to the same one group. */
+  const createParentGroupId = createMemo<string | null>(() => {
     const ids = [...selected()];
     const groupIds = new Set(
       ids.map((id) => store.byId(id)?.groupId).filter((g): g is string => !!g),
     );
-    return groupIds.size === 0 && ids.length >= 2 ? "create" : null;
+    const anyUngrouped = ids.some((id) => !store.byId(id)?.groupId);
+    return groupIds.size === 1 && !anyUngrouped ? [...groupIds][0] : null;
   });
+
+  /** Selected deliverables that have a downloadable version, mapped to the ZIP
+   * payload (latest version file, named after the deliverable). */
+  const downloadableSelection = createMemo<{ name: string; displayName: string }[]>(() =>
+    [...selected()]
+      .map((id) => store.byId(id))
+      .filter((d): d is Deliverable => !!d && d.versions.length > 0)
+      .map((d) => {
+        const v = d.versions[d.versions.length - 1];
+        const dot = v.fileName.lastIndexOf(".");
+        const ext = dot >= 0 ? v.fileName.slice(dot) : "";
+        return { name: v.fileName, displayName: `${d.name}${ext}` };
+      }),
+  );
 
   /** When the selection mixes ungrouped cards with exactly one existing
    * group's members, offer to add the ungrouped ones into that group
@@ -538,16 +857,23 @@ export function ProjectCanvas() {
     setGroupPromptOpen(false);
     const name = label.trim();
     if (!name) return;
-    if (selectedGroups().size >= 2 && selectionIsWholeGroups()) {
-      const gids = [...selectedGroups()];
-      await store.nestGroups(gids, name);
-      clearSelection();
-      flash(`Grouped ${gids.length} groups as “${name}”`);
-    } else {
-      const ids = [...selected()];
-      await store.groupSelected(ids, name);
-      clearSelection();
-      flash(`Grouped ${ids.length} deliverables as “${name}”`);
+    try {
+      if (selectedGroups().size >= 2 && selectionIsWholeGroups()) {
+        const gids = [...selectedGroups()];
+        await store.nestGroups(gids, name);
+        clearSelection();
+        flash(`Grouped ${gids.length} groups as “${name}”`);
+      } else {
+        const ids = [...selected()];
+        const parent = createParentGroupId();
+        await store.groupSelected(ids, name, parent);
+        clearSelection();
+        flash(
+          `${parent ? "Sub-grouped" : "Grouped"} ${ids.length} deliverable${ids.length === 1 ? "" : "s"} as “${name}”`,
+        );
+      }
+    } catch (err) {
+      flash(err instanceof Error ? err.message : "Couldn’t create group");
     }
   }
 
@@ -567,6 +893,42 @@ export function ProjectCanvas() {
     setStatusMsg(msg);
     clearTimeout(statusTimer);
     statusTimer = setTimeout(() => setStatusMsg(""), 4000);
+  }
+
+  // ---- undo/redo (per-project canvas; resets on navigation) ----------------
+  const undoStack = createUndoStack();
+  /** Record an action whose effect has already been applied, and toast it. */
+  function record(label: string, undoFn: () => void, redoFn: () => void) {
+    undoStack.push({ label, undo: undoFn, redo: redoFn });
+    pushToast(label, { actionLabel: "Undo", onAction: doUndo });
+  }
+  function doUndo() {
+    const c = undoStack.undo();
+    if (c) pushToast(`Undid: ${c.label}`, { actionLabel: "Redo", onAction: doRedo });
+  }
+  function doRedo() {
+    const c = undoStack.redo();
+    if (c) pushToast(`Redid: ${c.label}`);
+  }
+  /** Rename a deliverable, recording an undo step (no-op when unchanged). */
+  function renameDeliverableU(id: string, prev: string, name: string) {
+    if (name === prev) return;
+    store.renameDeliverable(id, name);
+    record(
+      "Rename deliverable",
+      () => store.renameDeliverable(id, prev),
+      () => store.renameDeliverable(id, name),
+    );
+  }
+  /** Rename a group, recording an undo step (no-op when unchanged). */
+  function renameGroupU(id: string, prev: string, name: string) {
+    if (name === prev) return;
+    store.renameGroup(id, name);
+    record(
+      "Rename group",
+      () => store.renameGroup(id, prev),
+      () => store.renameGroup(id, name),
+    );
   }
 
   // ---- derived state -------------------------------------------------------
@@ -862,7 +1224,9 @@ export function ProjectCanvas() {
     name?: string,
   ): Deliverable {
     const n = name ?? `Deliverable ${store.deliverables().length + 1}`;
-    return store.addDeliverable(n, wx - CARD_W / 2, wy - 60);
+    const d = store.addDeliverable(n, wx - CARD_W / 2, wy - 60);
+    record("Create deliverable", () => store.removeDeliverable(d.id), () => store.restoreDeliverable(d));
+    return d;
   }
 
   /** A committed (non-drag) absolute move, e.g. from auto-arrange — single
@@ -870,6 +1234,22 @@ export function ProjectCanvas() {
   function movePlacedDeliverable(id: string, x: number, y: number) {
     commitDeliverablePosition(id, x, y, true);
   }
+
+  /** Commit a set of id→position writes (undo/redo of a move). */
+  function applyPositions(pos: Record<string, { x: number; y: number }>) {
+    for (const [id, p] of Object.entries(pos)) commitDeliverablePosition(id, p.x, p.y, true);
+  }
+  /** Snapshot the effective positions of a set of deliverables. */
+  function snapshotPositions(ids: Iterable<string>): Record<string, { x: number; y: number }> {
+    const snap: Record<string, { x: number; y: number }> = {};
+    for (const id of ids) {
+      const d = store.byId(id);
+      if (d) snap[id] = posOf("deliverable", id, d.posX, d.posY);
+    }
+    return snap;
+  }
+  // captured at the first frame of a card drag, recorded as one command on drop
+  let cardMoveStart: Record<string, { x: number; y: number }> | null = null;
 
   /** Applies neighbor/grid snapping (per the toggles), then moves the card —
    * or, if it's part of a group, drags the whole group along by the same
@@ -882,9 +1262,15 @@ export function ProjectCanvas() {
     y: number,
     done: boolean,
   ) {
-    const movingIds = dl.groupId
-      ? new Set(store.membersOfGroup(store.rootGroupOf(dl.groupId)))
-      : new Set([dl.id]);
+    // Dragging a card moves only that card (so members can be rearranged
+    // within a group); the whole-group move handle is the group label. A card
+    // that's part of a multi-selection drags the whole selection along.
+    const movingIds =
+      selected().has(dl.id) && selected().size > 1
+        ? new Set(selected())
+        : new Set([dl.id]);
+    // capture the pre-drag positions once, on the first move frame
+    if (!done && !cardMoveStart) cardMoveStart = snapshotPositions(movingIds);
     let snapped = { x, y };
     if (snapObjects()) {
       // exclude cards moving along with the drag from the snap targets
@@ -919,6 +1305,65 @@ export function ProjectCanvas() {
       );
     } else {
       commitDeliverablePosition(dl.id, snapped.x, snapped.y, done);
+    }
+
+    // Single-card drags participate in drag-to-group (dwell) and directional
+    // eject; multi-card drags just reposition.
+    let membershipChanged = false;
+    if (movingIds.size === 1) {
+      const t: DragTarget = { kind: "card", id: dl.id, currentGroupId: dl.groupId ?? null };
+      const itemRect: Rect = { x: snapped.x, y: snapped.y, w: CARD_W, h: thumbHeight(dl) + CARD_HEADER_H };
+      if (!done) {
+        setDragTarget(t);
+        updateDragTargets(t, itemRect);
+      } else {
+        const hg = hoverGroupId();
+        const priorGroup = dl.groupId;
+        if (hg) {
+          store.addToGroup(dl.id, hg);
+          membershipChanged = true;
+          record(
+            "Move into group",
+            () => (priorGroup ? store.addToGroup(dl.id, priorGroup) : store.ungroup(dl.id)),
+            () => store.addToGroup(dl.id, hg),
+          );
+        } else if (ejecting() && priorGroup) {
+          store.ungroup(dl.id);
+          membershipChanged = true;
+          record(
+            "Remove from group",
+            () => store.addToGroup(dl.id, priorGroup),
+            () => store.ungroup(dl.id),
+          );
+        }
+        endDragTargets();
+      }
+    }
+
+    // Push neighbours out of the way of whatever's moving; bake on drop.
+    const obstacle = boundsOf(
+      [...movingIds]
+        .map((id) => store.byId(id))
+        .filter((d): d is Deliverable => !!d)
+        .map(effCardRect),
+    );
+    if (!done) resolveCollisions(movingIds, obstacle);
+    else lockDisplaced();
+
+    // Record the move as one undoable command (unless this drop was really a
+    // membership change, which was recorded above).
+    if (done && cardMoveStart) {
+      const start = cardMoveStart;
+      cardMoveStart = null;
+      if (!membershipChanged) {
+        const end = snapshotPositions(Object.keys(start));
+        const moved = Object.keys(end).some(
+          id => end[id].x !== start[id]?.x || end[id].y !== start[id]?.y,
+        );
+        if (moved) {
+          record("Move", () => applyPositions(start), () => applyPositions(end));
+        }
+      }
     }
   }
 
@@ -1108,6 +1553,43 @@ export function ProjectCanvas() {
     const free = findFreeSpot(store.deliverables(), c.x - CARD_W / 2, c.y - 60);
     const d = createDeliverableAt(free.x + CARD_W / 2, free.y + 60);
     flash(`Added ${d.name} — drop an image on it`);
+  }
+
+  /** Default starter size for a new empty group container (~two cards wide). */
+  const NEW_GROUP_W = CARD_W * 2 + 80;
+  const NEW_GROUP_H = 260;
+
+  /** Create an empty draggable group container at screen center and start
+   *  renaming it (mirrors how "New deliverable" drops a ready-to-edit card). */
+  function newGroupAtCenter() {
+    if (!canCreate()) return;
+    const c = camera.screenToWorld(viewport().w / 2, viewport().h / 2);
+    const label = `Group ${store.groups().length + 1}`;
+    const id = store.createGroup(
+      label,
+      c.x - NEW_GROUP_W / 2,
+      c.y - NEW_GROUP_H / 2,
+      NEW_GROUP_W,
+      NEW_GROUP_H,
+    );
+    flash(`Created group “${label}” — double-click the label to rename`);
+    setRenamingGroupId(id);
+  }
+
+  /** Create a new deliverable that belongs to `groupId`, placed inside the
+   *  group's current bounds (bottom-left, in the down/right growth zone so it
+   *  never lands in the eject region). */
+  function createDeliverableInGroup(groupId: string) {
+    if (!canCreate()) return;
+    const r = groupOutlineRect(groupId);
+    const base = r
+      ? { x: r.x + 14, y: r.y + r.h }
+      : camera.screenToWorld(viewport().w / 2, viewport().h / 2);
+    const free = findFreeSpot(store.deliverables(), base.x, base.y);
+    const n = `Deliverable ${store.deliverables().length + 1}`;
+    const d = store.addDeliverable(n, free.x, free.y, groupId);
+    record("Create deliverable", () => store.removeDeliverable(d.id), () => store.restoreDeliverable(d));
+    flash(`Added ${d.name} to “${store.groupById(groupId)?.label ?? "group"}”`);
   }
 
   let pickerTarget: Deliverable | null = null;
@@ -1373,6 +1855,7 @@ export function ProjectCanvas() {
       return;
     if (reviewId() === d.id) exitReview();
     store.removeDeliverable(d.id);
+    record("Delete deliverable", () => store.restoreDeliverable(d), () => store.removeDeliverable(d.id));
     flash(`${d.name} deleted — restore from History (H)`);
   }
 
@@ -1409,6 +1892,12 @@ export function ProjectCanvas() {
               hint: "N",
               run: () =>
                 at ? createDeliverableAt(at.x, at.y) : newDeliverableAtCenter(),
+            },
+            {
+              label: "New group",
+              icon: "iconoir:folder",
+              hint: "G",
+              run: () => newGroupAtCenter(),
             },
           ]
         : []),
@@ -1462,6 +1951,23 @@ export function ProjectCanvas() {
               icon: "iconoir:media-image-list",
               hint: "C",
               run: toggleCompare,
+            },
+          ]
+        : []),
+      ...(d.versions.length > 0
+        ? [
+            {
+              label: "Download",
+              icon: "iconoir:download",
+              run: () => {
+                // download the version being viewed for the current deliverable,
+                // otherwise the latest version of the card the menu is on
+                const target =
+                  current()?.id === d.id
+                    ? (v ?? d.versions[d.versions.length - 1])
+                    : d.versions[d.versions.length - 1];
+                if (target) downloadFile(target.fileName);
+              },
             },
           ]
         : []),
@@ -1700,6 +2206,13 @@ export function ProjectCanvas() {
       setPaletteOpen((o) => !o);
       return;
     }
+    if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "z") {
+      if (isTyping(e)) return; // let text fields keep native undo
+      e.preventDefault();
+      if (e.shiftKey) doRedo();
+      else doUndo();
+      return;
+    }
     if (paletteOpen() || searchOpen() || isTyping(e)) return;
 
     if (e.key === "/") {
@@ -1766,6 +2279,10 @@ export function ProjectCanvas() {
         case "n":
         case "N":
           if (canCreate()) newDeliverableAtCenter();
+          return;
+        case "g":
+        case "G":
+          if (canCreate()) newGroupAtCenter();
           return;
         case "s":
         case "S":
@@ -1948,7 +2465,7 @@ export function ProjectCanvas() {
                           setNavRenaming(false);
                           const name = e.currentTarget.value.trim();
                           if (name && name !== d().name)
-                            store.renameDeliverable(d().id, name);
+                            renameDeliverableU(d().id, d().name, name);
                         }}
                       />
                     }
@@ -2032,6 +2549,9 @@ export function ProjectCanvas() {
             >
               <Icon icon="iconoir:clock" width="15" />
             </button>
+            <Show when={store.state.graph?.viewer.role !== "guest"}>
+              <AiTrigger />
+            </Show>
             <Show when={current()} fallback={null}>
               {(d) => (
                 <>
@@ -2083,6 +2603,18 @@ export function ProjectCanvas() {
                       <Icon icon="iconoir:media-image-list" width="13" />{" "}
                       Compare
                     </button>
+                  </Show>
+
+                  <Show when={currentVersion()}>
+                    {v => (
+                      <button
+                        class="flex items-center gap-1 text-xs rounded border border-neutral-200 text-neutral-600 hover:bg-neutral-50 px-2.5 py-1.5 cursor-pointer"
+                        title={`Download v${v().number}`}
+                        onClick={() => downloadFile(v().fileName)}
+                      >
+                        <Icon icon="iconoir:download" width="13" /> Download
+                      </button>
+                    )}
                   </Show>
 
                   <button
@@ -2236,11 +2768,14 @@ export function ProjectCanvas() {
                               <div
                                 class="absolute rounded-lg pointer-events-none"
                                 classList={{
-                                  "border-violet-400": !selectedGroups().has(
-                                    g.id,
-                                  ),
+                                  "border-violet-400":
+                                    !selectedGroups().has(g.id) &&
+                                    hoverGroupId() !== g.id,
                                   "border-violet-600 bg-accent-violet/30":
-                                    selectedGroups().has(g.id),
+                                    selectedGroups().has(g.id) &&
+                                    hoverGroupId() !== g.id,
+                                  "border-emerald-500 bg-accent-emerald/30":
+                                    hoverGroupId() === g.id,
                                 }}
                                 style={{
                                   left: `${r().x}px`,
@@ -2289,35 +2824,79 @@ export function ProjectCanvas() {
                                         const name =
                                           e.currentTarget.value.trim();
                                         if (name && name !== g.label)
-                                          store.renameGroup(g.id, name);
+                                          renameGroupU(g.id, g.label, name);
                                       }}
                                     />
                                   }
                                 >
-                                  <button
-                                    class="absolute left-2 top-0 inline-flex items-center gap-1 text-[11px] font-medium rounded px-1.5 py-0.5 cursor-pointer whitespace-nowrap pointer-events-auto"
-                                    classList={{
-                                      "bg-accent-violet text-on-accent-violet hover:bg-accent-violet-hover":
-                                        !selectedGroups().has(g.id),
-                                      "bg-violet-600 text-white":
-                                        selectedGroups().has(g.id),
-                                    }}
+                                  {/* label + add button as one anchored, counter-
+                                      scaled cluster: stays constant screen size,
+                                      single row, and the two never overlap no
+                                      matter the group size or zoom. */}
+                                  <div
+                                    class="absolute left-2 top-0 flex items-center gap-1 whitespace-nowrap pointer-events-none"
                                     style={{
                                       transform: `scale(${1 / camera.cam.zoom}) translateY(-50%)`,
                                       "transform-origin": "0 50%",
                                     }}
-                                    title={`${g.label} — drag to move, double-click to rename`}
-                                    onPointerDown={(e) =>
-                                      onGroupLabelPointerDown(e, g.id)
-                                    }
-                                    onDblClick={(e) => {
-                                      e.stopPropagation();
-                                      if (canEdit()) setRenamingGroupId(g.id);
-                                    }}
                                   >
-                                    <Icon icon="iconoir:link" width="10" />
-                                    {g.label}
-                                  </button>
+                                    <button
+                                      class="inline-flex items-center gap-1 text-[11px] font-medium rounded px-1.5 py-0.5 cursor-pointer pointer-events-auto"
+                                      classList={{
+                                        "bg-accent-violet text-on-accent-violet hover:bg-accent-violet-hover":
+                                          !selectedGroups().has(g.id),
+                                        "bg-violet-600 text-white":
+                                          selectedGroups().has(g.id),
+                                      }}
+                                      title={`${g.label} — drag to move, double-click to rename`}
+                                      onMouseEnter={() =>
+                                        setHovered({ kind: "group", name: g.label })
+                                      }
+                                      onMouseLeave={() => setHovered(null)}
+                                      onPointerDown={(e) =>
+                                        onGroupLabelPointerDown(e, g.id)
+                                      }
+                                      onDblClick={(e) => {
+                                        e.stopPropagation();
+                                        if (canEdit()) setRenamingGroupId(g.id);
+                                      }}
+                                    >
+                                      <Icon icon="iconoir:link" width="10" />
+                                      {g.label}
+                                    </button>
+                                    <Show when={canEdit()}>
+                                      <button
+                                        class="inline-flex items-center justify-center rounded bg-accent-violet text-on-accent-violet hover:bg-accent-violet-hover cursor-pointer pointer-events-auto px-1 py-0.5"
+                                        title="Add a deliverable to this group"
+                                        onPointerDown={(e) => e.stopPropagation()}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          createDeliverableInGroup(g.id);
+                                        }}
+                                      >
+                                        <Icon icon="iconoir:plus" width="11" />
+                                      </button>
+                                    </Show>
+                                  </div>
+                                </Show>
+                                {/* resize handle — container (framed) groups only */}
+                                <Show
+                                  when={
+                                    canEdit() &&
+                                    store.groupById(g.id)?.posX != null
+                                  }
+                                >
+                                  <div
+                                    class="absolute bottom-0 right-0 size-3 rounded-sm bg-violet-400 hover:bg-violet-600 pointer-events-auto cursor-nwse-resize"
+                                    style={{
+                                      transform: `scale(${1 / camera.cam.zoom})`,
+                                      "transform-origin": "100% 100%",
+                                    }}
+                                    title="Resize group"
+                                    onPointerDown={(e) =>
+                                      onGroupResizePointerDown(e, g.id)
+                                    }
+                                  />
                                 </Show>
                               </div>
                             )}
@@ -2348,7 +2927,7 @@ export function ProjectCanvas() {
                             onOpen={enterReview}
                             onMove={handleCardMove}
                             onRename={(dl, name) =>
-                              store.renameDeliverable(dl.id, name)
+                              renameDeliverableU(dl.id, dl.name, name)
                             }
                             onDelete={
                               canDeleteDeliverable()
@@ -2369,6 +2948,9 @@ export function ProjectCanvas() {
                               x: dx / camera.cam.zoom,
                               y: dy / camera.cam.zoom,
                             })}
+                            onHover={(h) =>
+                              setHovered(h ? { kind: "deliverable", name: d.name } : null)
+                            }
                           />
                         );
                       }}
@@ -2878,6 +3460,9 @@ export function ProjectCanvas() {
               <Show
                 when={focusedDeliverable()}
                 fallback={
+                  <Show
+                    when={hovered()}
+                    fallback={
                   <div class="flex items-center gap-1.5 min-w-0 overflow-hidden">
                     <span class="shrink-0 font-medium text-neutral-600">
                       {counts().total} deliverable
@@ -2902,6 +3487,22 @@ export function ProjectCanvas() {
                       </span>
                     </Show>
                   </div>
+                    }
+                  >
+                    {(h) => (
+                      <div class="flex items-center gap-1.5 min-w-0 overflow-hidden">
+                        <Icon
+                          icon={h().kind === "group" ? "iconoir:link" : "iconoir:media-image"}
+                          width="12"
+                          class="shrink-0 text-neutral-400"
+                        />
+                        <span class="shrink-0 font-medium text-neutral-700 truncate max-w-52">
+                          {h().name}
+                        </span>
+                        <span class="shrink-0 text-neutral-400">{h().kind}</span>
+                      </div>
+                    )}
+                  </Show>
                 }
               >
                 {(d) => (
@@ -3015,7 +3616,12 @@ export function ProjectCanvas() {
                 class="flex items-center gap-1 px-2 py-1 rounded hover:bg-panel/10 cursor-pointer"
                 onClick={() => setGroupPromptOpen(true)}
               >
-                <Icon icon="iconoir:link" width="13" /> Group
+                <Icon icon="iconoir:link" width="13" />{" "}
+                {groupButtonAction() === "nest"
+                  ? "Nest"
+                  : createParentGroupId()
+                    ? "Sub-group"
+                    : "Group"}
               </button>
             </Show>
             <Show when={canEdit() && addToExistingGroupAction()}>
@@ -3041,6 +3647,15 @@ export function ProjectCanvas() {
                 onClick={ungroupSelected}
               >
                 <Icon icon="iconoir:link-slash" width="13" /> Ungroup
+              </button>
+            </Show>
+            <Show when={downloadableSelection().length > 0}>
+              <button
+                class="flex items-center gap-1 px-2 py-1 rounded hover:bg-panel/10 cursor-pointer"
+                title="Download selected deliverables"
+                onClick={() => void downloadZip(downloadableSelection())}
+              >
+                <Icon icon="iconoir:download" width="13" /> Download
               </button>
             </Show>
             <Show when={canDeleteDeliverable()}>

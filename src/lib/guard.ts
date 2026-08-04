@@ -278,3 +278,30 @@ export async function resolveVersionProject(
   if (!v) return null;
   return resolveDeliverableProject(v.deliverableId);
 }
+
+/**
+ * Authorize read access to one stored file by its on-disk name, mirroring the
+ * gate in GET /api/files/[name]: version files and project-folder library files
+ * defer to project access; workspace-folder library files require org
+ * membership (guests excluded). Returns a sensible display name for the file.
+ * Throws "Not found"/"Forbidden" like the other guards. Used by the ZIP route.
+ */
+export async function authorizeFileByName(
+  fileName: string,
+  headers?: Headers,
+): Promise<{ displayName: string }> {
+  const projectId = await resolveVersionProject(fileName);
+  if (projectId) {
+    await requireProjectAccess(projectId, undefined, headers);
+    return { displayName: fileName };
+  }
+  const lib = await resolveLibraryFile(fileName);
+  if (!lib) throw new Error("Not found");
+  if (lib.folder.projectId) {
+    await requireProjectAccess(lib.folder.projectId, undefined, headers);
+  } else {
+    const { role } = await requireMember(lib.folder.organizationId, headers);
+    if (role === "guest") throw new Error("Forbidden");
+  }
+  return { displayName: lib.file.name };
+}

@@ -44,6 +44,8 @@ export function DeliverableCard(props: {
   hidden?: boolean;
   /** viewer can open but not drag or rename (guest role) */
   readOnly?: boolean;
+  /** mouse entered/left the card — drives the status-bar hover readout */
+  onHover?: (hovering: boolean) => void;
 }) {
   const [editing, setEditing] = createSignal(false);
   props.registerActions?.(props.d.id, { startRename: () => setEditing(true) });
@@ -108,6 +110,8 @@ export function DeliverableCard(props: {
         "contain-intrinsic-size": `${CARD_W}px ${thumbHeight(props.d) + CARD_HEADER_H}px`,
       }}
       tabindex="0"
+      onMouseEnter={() => props.onHover?.(true)}
+      onMouseLeave={() => props.onHover?.(false)}
       onPointerDown={onPointerDown}
       onDblClick={e => {
         e.stopPropagation();

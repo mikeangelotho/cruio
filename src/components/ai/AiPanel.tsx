@@ -40,10 +40,17 @@ function pageLabel(pathname: string): { icon: string; text: string } | null {
  * unrelated widget on top of the page.
  */
 export function AiPanel() {
-  const user = createAsync(() => sessionQuery());
-  const orgs = createAsync(() => myOrgsQuery());
-  const { isGuest } = useViewerRole(() => user() ?? undefined, () => orgs());
   const location = useLocation();
+  // This panel mounts at the app root, on every route. Hidden routes are the
+  // signed-out surfaces (/sign-in, /sign-up, …); never fetch auth-gated data
+  // there. myOrgsQuery throws redirect("/sign-in") when signed out, so calling
+  // it on the sign-in page itself would redirect-loop the page.
+  const hidden = createMemo(() => HIDDEN.some(p => location.pathname.startsWith(p)));
+  const user = createAsync(() => sessionQuery());
+  const orgs = createAsync(() =>
+    !hidden() && user() ? myOrgsQuery() : Promise.resolve(undefined),
+  );
+  const { isGuest } = useViewerRole(() => user() ?? undefined, () => orgs());
 
   // Two-frame delay before the "entered" class applies, so the transition
   // actually animates from the closed state instead of snapping in.
@@ -81,9 +88,7 @@ export function AiPanel() {
   const [conversations] = createResource(historyTick, () => listMyConversations());
 
   // Guests get no AI surface at all — this gates both rendering and Ctrl+I.
-  const allowed = createMemo(
-    () => !!user() && !isGuest() && !HIDDEN.some(p => location.pathname.startsWith(p)),
-  );
+  const allowed = createMemo(() => !!user() && !isGuest() && !hidden());
 
   return (
     <Show when={allowed() && aiPanelOpen()}>

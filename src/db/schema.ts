@@ -28,7 +28,7 @@ export const projects = sqliteTable("projects", {
     .references(() => organization.id),
   name: text("name").notNull(),
   entityId: text("entity_id").references(() => entities.id),
-  phase: text("phase").notNull().default("pre_production"),
+  status: text("status").notNull().default("todo"),
   createdBy: text("created_by")
     .notNull()
     .references(() => user.id),
@@ -48,6 +48,12 @@ export const deliverableGroups = sqliteTable("deliverable_groups", {
     .references(() => projects.id),
   label: text("label").notNull().default(""),
   parentGroupId: text("parent_group_id"),
+  // Own frame for a manually-created ("empty") group container. Null for groups
+  // created from cards, whose outline is derived from member bounds.
+  posX: real("pos_x"),
+  posY: real("pos_y"),
+  w: real("w"),
+  h: real("h"),
   createdAt: integer("created_at").notNull(),
 });
 

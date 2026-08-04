@@ -104,7 +104,7 @@ CREATE TABLE IF NOT EXISTS projects (
   organization_id TEXT NOT NULL REFERENCES organization(id),
   name TEXT NOT NULL,
   entity_id TEXT REFERENCES entities(id),
-  phase TEXT NOT NULL DEFAULT 'pre_production',
+  status TEXT NOT NULL DEFAULT 'todo',
   created_by TEXT NOT NULL REFERENCES user(id),
   created_at INTEGER NOT NULL,
   archived_at INTEGER,
@@ -115,6 +115,10 @@ CREATE TABLE IF NOT EXISTS deliverable_groups (
   project_id TEXT NOT NULL REFERENCES projects(id),
   label TEXT NOT NULL DEFAULT '',
   parent_group_id TEXT,
+  pos_x REAL,
+  pos_y REAL,
+  w REAL,
+  h REAL,
   created_at INTEGER NOT NULL
 );
 CREATE TABLE IF NOT EXISTS deliverables (
@@ -396,6 +400,12 @@ async function migrate() {
     if (!cols.includes("parent_group_id")) {
       await client.execute("ALTER TABLE deliverable_groups ADD COLUMN parent_group_id TEXT");
     }
+    if (!cols.includes("pos_x")) {
+      await client.execute("ALTER TABLE deliverable_groups ADD COLUMN pos_x REAL");
+      await client.execute("ALTER TABLE deliverable_groups ADD COLUMN pos_y REAL");
+      await client.execute("ALTER TABLE deliverable_groups ADD COLUMN w REAL");
+      await client.execute("ALTER TABLE deliverable_groups ADD COLUMN h REAL");
+    }
   }
 
   if (await tableExists("canvas_objects")) {
@@ -420,6 +430,19 @@ async function migrate() {
     if (!cols.includes("archived_at")) {
       await client.execute("ALTER TABLE projects ADD COLUMN archived_at INTEGER");
       await client.execute("ALTER TABLE projects ADD COLUMN archived_by TEXT");
+    }
+    // legacy `phase` (pre_production/iterations/publishing) → task-aligned
+    // `status` (todo/in_progress/done). The phase concept is retired; project
+    // status is now moved manually and gated by tasks.
+    if (cols.includes("phase") && !cols.includes("status")) {
+      await client.execute("ALTER TABLE projects RENAME COLUMN phase TO status");
+      await client.execute(
+        "UPDATE projects SET status = CASE status " +
+          "WHEN 'pre_production' THEN 'todo' " +
+          "WHEN 'iterations' THEN 'in_progress' " +
+          "WHEN 'publishing' THEN 'done' " +
+          "ELSE 'todo' END",
+      );
     }
     if (cols.includes("client_id") && !cols.includes("entity_id")) {
       await client.execute("ALTER TABLE projects RENAME COLUMN client_id TO entity_id");

@@ -96,7 +96,7 @@ export const ACTIONS: Action[] = [
       return projects.map(p => ({
         id: p.id,
         name: p.name,
-        phase: p.phase,
+        status: p.status,
         entityName: p.entityName,
       }));
     },
@@ -115,7 +115,7 @@ export const ACTIONS: Action[] = [
       const g = await getProjectGraph(projectId);
       if (!g) return { error: "Project not found." };
       return {
-        project: { id: g.project.id, name: g.project.name, phase: g.project.phase },
+        project: { id: g.project.id, name: g.project.name, status: g.project.status },
         deliverables: g.deliverables.map(d => ({
           id: d.id,
           name: d.name,

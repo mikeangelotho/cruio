@@ -18,6 +18,8 @@ export function TagPicker(props: {
   canManage?: boolean;
   trigger?: (ctx: { toggle: () => void }) => JSX.Element;
   align?: "left" | "right";
+  /** escape an `overflow-hidden` ancestor (e.g. a project card) by portaling the panel */
+  portal?: boolean;
 }) {
   const [draftColor, setDraftColor] = createSignal<TagColor>("neutral");
   const isSelected = (id: string) => props.selected.some(t => t.id === id);
@@ -48,19 +50,21 @@ export function TagPicker(props: {
     <NavMenu
       align={props.align ?? "left"}
       panelClass="w-56"
+      portal={props.portal}
       trigger={({ toggle: t }) =>
         props.trigger ? (
           props.trigger({ toggle: t })
         ) : (
           <button
-            class="flex items-center gap-0.5 text-[10px] text-neutral-500 border border-dashed border-neutral-300 rounded-full px-1.5 py-0.5 hover:border-neutral-400 hover:text-neutral-700 hover:bg-neutral-50 cursor-pointer"
+            type="button"
+            class="flex items-center justify-center size-5 rounded-md text-neutral-400 bg-muted hover:bg-neutral-200 hover:text-neutral-600 cursor-pointer"
             title="Add tags"
             onClick={e => {
               e.stopPropagation();
               t();
             }}
           >
-            <Icon icon="iconoir:plus" width="10" /> Tag
+            <Icon icon="iconoir:label" width="13" />
           </button>
         )
       }
@@ -114,6 +118,7 @@ export function TagPicker(props: {
                   }}
                 />
                 <button
+                  type="button"
                   class="shrink-0 text-[11px] text-on-brand bg-brand hover:bg-brand-hover rounded px-2 py-1 cursor-pointer"
                   title="Create tag"
                   onClick={submitCreate}

@@ -71,6 +71,8 @@ export function EntityOptions(props: {
   triggerIcon?: string;
   triggerClass?: string;
   align?: "left" | "right";
+  /** portal the panel so it escapes clipping ancestors (overflow-clip pages) */
+  portal?: boolean;
 }) {
   const sections = () => props.sections ?? ["rename", "archived", "delete"];
   const has = (s: Section) => sections().includes(s);
@@ -95,6 +97,7 @@ export function EntityOptions(props: {
   return (
     <NavMenu
       align={props.align ?? "right"}
+      portal={props.portal}
       panelClass="w-64"
       trigger={({ toggle }) => (
         <button

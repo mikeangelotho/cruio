@@ -2,12 +2,12 @@ import { Icon } from "@iconify-icon/solid";
 import { aiPanelOpen, toggleAiPanel } from "../../lib/ai/panelState";
 
 /**
- * The footer's "Ask AI" button — icon + short label, same neutral hover
- * language as every other AppFooter control (`text-neutral-500
- * hover:text-neutral-800 hover:bg-neutral-200/50`). Lives in the layout
- * flow, not floating on top of it, so it can never sit over the canvas's own
- * zoom/fit controls. Carries a label (unlike its icon-only siblings) since
- * it's a primary entry point rather than a secondary utility action.
+ * The "Ask AI" button — icon + short label, using the same neutral hover
+ * language as the surrounding nav controls (`text-neutral-500
+ * hover:text-neutral-800 hover:bg-neutral-200/50`). Lives in the top nav: on
+ * the main views to the right of the search bar, on the canvas to the right of
+ * the action-menu buttons. Carries a label (unlike its icon-only siblings)
+ * since it's a primary entry point rather than a secondary utility action.
  */
 export function AiTrigger() {
   return (

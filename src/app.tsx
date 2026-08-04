@@ -3,6 +3,7 @@ import { FileRoutes } from "@solidjs/start/router";
 import { Suspense } from "solid-js";
 import { ScopeProvider } from "./components/ScopeProvider";
 import { AiPanel } from "./components/ai/AiPanel";
+import { ToastHost } from "./components/ToastHost";
 import "./app.css";
 
 export default function App() {
@@ -12,6 +13,7 @@ export default function App() {
         <Suspense>
           <ScopeProvider>
             <div class="h-screen bg-canvas">{props.children}</div>
+            <ToastHost />
             {/* The panel itself: fixed-position, takes no layout space. Its
                 trigger lives in AppFooter (real chrome, in the layout flow);
                 the panel is mounted here instead so chat state survives

@@ -6,23 +6,22 @@ import { authClient } from "../lib/auth-client";
 import { useViewerRole } from "../lib/viewer";
 import { Avatar } from "./Avatar";
 import { NavMenu } from "./NavMenu";
-import { AiTrigger } from "./ai/AiTrigger";
 import { theme, toggleTheme } from "../lib/theme";
 
 /**
  * The single app status bar, used on every screen (main pages and the
- * canvas alike). It always renders the user menu (sign out) on the left and
- * the brand mark centered; each screen fills the slots around them:
+ * canvas alike). It renders the user menu (sign out) on the left; each screen
+ * fills the slots around it:
  *   - `start`: page-specific info shown left, next to the user menu
  *     (e.g. project counts, or the canvas's deliverable/status readout).
  *   - `children`: right-aligned slot (e.g. a flash message or keyboard hints).
- * The logo is absolutely centered so it stays put regardless of slot widths.
+ * The brand mark lives top-left in AppNav (not here).
  */
 export function AppFooter(props: { start?: JSX.Element; children?: JSX.Element }) {
   const navigate = useNavigate();
   const user = createAsync(() => requireUserQuery());
   const orgs = createAsync(() => myOrgsQuery());
-  const { activeOrg, myRole, isGuest } = useViewerRole(user, orgs);
+  const { activeOrg, myRole } = useViewerRole(user, orgs);
 
   async function signOut() {
     await authClient.signOut();
@@ -94,17 +93,8 @@ export function AppFooter(props: { start?: JSX.Element; children?: JSX.Element }
         </Show>
         {props.start}
       </div>
-      <a
-        href="/"
-        class="absolute left-1/2 -translate-x-1/2 opacity-20 hover:opacity-100 transition-opacity ease-in-out duration-150"
-      >
-        <img class="dark:invert" style="height: 16px;" src="/CRIO_Logo-2026.svg" />
-      </a>
       <div class="flex items-center gap-2.5 shrink-0 justify-end">
         {props.children}
-        <Show when={!isGuest()}>
-          <AiTrigger />
-        </Show>
       </div>
     </footer>
   );

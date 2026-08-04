@@ -94,7 +94,12 @@ export function createProjectStore(projectId: string) {
     );
   }
 
-  function addDeliverable(name: string, posX: number, posY: number): Deliverable {
+  function addDeliverable(
+    name: string,
+    posX: number,
+    posY: number,
+    groupId: string | null = null,
+  ): Deliverable {
     const d: Deliverable = {
       id: newId(),
       projectId,
@@ -103,7 +108,8 @@ export function createProjectStore(projectId: string) {
       status: "draft",
       posX,
       posY,
-      groupId: null,
+      groupId,
+      groupLabel: groupId ? (groupById(groupId)?.label ?? null) : null,
       createdAt: Date.now(),
       tags: [],
       versions: [],
@@ -111,7 +117,7 @@ export function createProjectStore(projectId: string) {
       approvals: [],
     };
     setState("graph", "deliverables", produce(list => list.push(d)));
-    void api.createDeliverable(d.id, projectId, name, posX, posY);
+    void api.createDeliverable(d.id, projectId, name, posX, posY, "", groupId);
     return d;
   }
 
@@ -148,11 +154,19 @@ export function createProjectStore(projectId: string) {
     void api.renameDeliverable(id, name);
   }
 
-  /** Group deliverables as size/format variants under one label. */
-  async function groupSelected(ids: string[], label: string) {
-    const groupId = await api.groupDeliverables(ids, label);
+  /** Group deliverables under one label. When `parentGroupId` is passed the new
+   * group is nested under it (a sub-group made from cards already in a group). */
+  async function groupSelected(ids: string[], label: string, parentGroupId: string | null = null) {
+    // client-generated id so undo/redo of a grouping stays symmetric
+    const groupId = newId();
     batch(() => {
-      setState("graph", "groups", produce(list => list.push({ id: groupId, label, parentGroupId: null })));
+      setState(
+        "graph",
+        "groups",
+        produce(list =>
+          list.push({ id: groupId, label, parentGroupId, posX: null, posY: null, w: null, h: null }),
+        ),
+      );
       for (const id of ids) {
         mutateDeliverable(id, d => {
           d.groupId = groupId;
@@ -160,13 +174,21 @@ export function createProjectStore(projectId: string) {
         });
       }
     });
+    await api.groupDeliverables(groupId, ids, label, parentGroupId);
+    return groupId;
   }
 
   /** Nest whole groups under a new labeled parent group. */
   async function nestGroups(childGroupIds: string[], label: string) {
-    const parentId = await api.groupGroups(childGroupIds, label);
+    const parentId = newId();
     batch(() => {
-      setState("graph", "groups", produce(list => list.push({ id: parentId, label, parentGroupId: null })));
+      setState(
+        "graph",
+        "groups",
+        produce(list =>
+          list.push({ id: parentId, label, parentGroupId: null, posX: null, posY: null, w: null, h: null }),
+        ),
+      );
       setState(
         "graph",
         "groups",
@@ -174,6 +196,57 @@ export function createProjectStore(projectId: string) {
         produce(g => { g.parentGroupId = parentId; }),
       );
     });
+    await api.groupGroups(parentId, childGroupIds, label);
+    return parentId;
+  }
+
+  /** Create an empty group container with its own frame (position + size). */
+  function createGroup(
+    label: string,
+    posX: number,
+    posY: number,
+    w: number,
+    h: number,
+    parentGroupId: string | null = null,
+  ): string {
+    const id = newId();
+    setState(
+      "graph",
+      "groups",
+      produce(list => list.push({ id, label, parentGroupId, posX, posY, w, h })),
+    );
+    void api.createGroup(id, projectId, label, posX, posY, w, h, parentGroupId);
+    return id;
+  }
+
+  /** Move/resize an empty-container group's frame. `sync=false` skips the server
+   *  write (per-frame drag); the final commit persists. */
+  function setGroupFrame(
+    groupId: string,
+    posX: number,
+    posY: number,
+    w: number,
+    h: number,
+    sync = true,
+  ) {
+    setState(
+      "graph",
+      "groups",
+      g => g.id === groupId,
+      produce(g => { g.posX = posX; g.posY = posY; g.w = w; g.h = h; }),
+    );
+    if (sync) void api.setGroupFrame(groupId, posX, posY, w, h);
+  }
+
+  /** Reparent a group under another group, or to the top level (parentId null). */
+  function setGroupParent(childGroupId: string, parentGroupId: string | null) {
+    setState(
+      "graph",
+      "groups",
+      g => g.id === childGroupId,
+      produce(g => { g.parentGroupId = parentGroupId; }),
+    );
+    void api.setGroupParent(childGroupId, parentGroupId);
   }
 
   /** Dissolve one group level (leaf releases cards, parent releases child groups). */
@@ -210,8 +283,8 @@ export function createProjectStore(projectId: string) {
         g => g.id === groupId,
         produce(g => { g.label = label; }),
       );
-      // denormalized on direct members only — a parent group's rename has no
-      // direct members (deliverables only ever point at a leaf group)
+      // denormalized on this group's direct member deliverables (a group may
+      // also hold sub-groups, whose own members carry their own groupLabel)
       setState(
         "graph",
         "deliverables",
@@ -327,6 +400,19 @@ export function createProjectStore(projectId: string) {
     void api.deleteDeliverable(id);
   }
 
+  /** Re-add a soft-deleted deliverable locally + restore it server-side (undo of
+   *  a delete, redo of a create). */
+  function restoreDeliverable(d: Deliverable) {
+    setState(
+      "graph",
+      "deliverables",
+      produce(list => {
+        if (!list.some(x => x.id === d.id)) list.push(d);
+      }),
+    );
+    void api.restoreDeliverable(d.id);
+  }
+
   /** Soft-delete a version and mirror the server's status recompute locally. */
   function removeVersion(deliverableId: string, versionId: string) {
     mutateDeliverable(deliverableId, d => {
@@ -355,9 +441,6 @@ export function createProjectStore(projectId: string) {
       d.versions.push(version);
       d.status = "in_review";
     });
-    if (state.graph && state.graph.project.phase === "pre_production") {
-      setState("graph", "project", "phase", "iterations");
-    }
   }
 
   function addAnnotation(deliverableId: string, versionId: string, x: number, y: number): Annotation {
@@ -457,6 +540,9 @@ export function createProjectStore(projectId: string) {
     membersOfGroup,
     groupSelected,
     nestGroups,
+    createGroup,
+    setGroupFrame,
+    setGroupParent,
     dissolveGroup,
     renameGroup,
     ungroup,
@@ -470,6 +556,7 @@ export function createProjectStore(projectId: string) {
     personalPosOf,
     setPersonalPosition,
     removeDeliverable,
+    restoreDeliverable,
     removeVersion,
     addVersion,
     addAnnotation,
