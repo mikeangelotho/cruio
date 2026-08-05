@@ -31,6 +31,8 @@ export function AppNav(props: { onOrgSwitch?: () => void }) {
   const scope = useScope();
   // inline "New entity" creation from the entity dropdown
   const [addingEntity, setAddingEntity] = createSignal(false);
+  // mobile: the inline search collapses to an icon that opens the modal variant
+  const [searchOpen, setSearchOpen] = createSignal(false);
 
   async function addEntity(name: string, close: () => void) {
     const trimmed = name.trim();
@@ -58,8 +60,8 @@ export function AppNav(props: { onOrgSwitch?: () => void }) {
     }`;
 
   return (
-    <nav class="min-h-12 px-4 flex items-center gap-4 bg-surface border-b border-hairline">
-      <div class="flex-1 flex items-center gap-3 min-w-0">
+    <nav class="min-h-12 px-3 sm:px-4 flex items-center gap-2 sm:gap-4 bg-surface border-b border-hairline">
+      <div class="flex-1 flex items-center gap-2 sm:gap-3 min-w-0">
         <a href="/" class="shrink-0 flex items-center" aria-label="Cruio home">
           <img class="dark:invert" style="height: 16px;" src="/CRIO_Logo-2026.svg" />
         </a>
@@ -73,7 +75,7 @@ export function AppNav(props: { onOrgSwitch?: () => void }) {
                   onClick={toggle}
                 >
                   <SquareAvatar name={o().name} size={21} />
-                  <span class="text-xs truncate max-w-32">{o().name}</span>
+                  <span class="hidden sm:inline text-xs truncate max-w-32">{o().name}</span>
                   <Icon icon="iconoir:nav-arrow-down" width="10" class="shrink-0 text-neutral-400" />
                 </button>
               )}
@@ -151,7 +153,7 @@ export function AppNav(props: { onOrgSwitch?: () => void }) {
                   onClick={toggle}
                 >
                   <EntityAvatar name={scope.entity()?.name || "•"} size={21} />
-                  <span class="text-xs truncate max-w-32">{scope.entity()?.name || "All"}</span>
+                  <span class="hidden sm:inline text-xs truncate max-w-32">{scope.entity()?.name || "All"}</span>
                   <Icon
                     icon="iconoir:arrow-separate-vertical"
                     width="10"
@@ -171,6 +173,9 @@ export function AppNav(props: { onOrgSwitch?: () => void }) {
                   >
                     <EntityAvatar name="•" size={18} />
                     <span class="flex-1 truncate">All Entities</span>
+                    <Show when={!scope.entity()}>
+                      <Icon icon="iconoir:check" width="12" class="text-neutral-400" />
+                    </Show>
                   </button>
                   <For each={l()}>
                     {c => (
@@ -183,6 +188,9 @@ export function AppNav(props: { onOrgSwitch?: () => void }) {
                       >
                         <EntityAvatar name={c.name} size={18} />
                         <span class="flex-1 truncate">{c.name}</span>
+                        <Show when={scope.entity()?.id === c.id}>
+                          <Icon icon="iconoir:check" width="12" class="text-neutral-400" />
+                        </Show>
                       </button>
                     )}
                   </For>
@@ -221,26 +229,44 @@ export function AppNav(props: { onOrgSwitch?: () => void }) {
           )}
         </Show>
 
-        <div class="flex items-center gap-5 shrink-0 ml-1">
+        <div class="flex items-center gap-3 sm:gap-5 shrink-0 ml-1">
           <Show when={!isGuest()}>
-            <A href="/tasks" class={linkClass("/tasks")}>
+            <A href="/tasks" class={linkClass("/tasks")} title="Tasks">
               <Icon icon="iconoir:task-list" width="14" />
-              Tasks
+              <span class="hidden md:inline">Tasks</span>
             </A>
           </Show>
-          <A href="/" class={linkClass("/")}>
+          <A href="/" class={linkClass("/")} title="Projects">
             <Icon icon="iconoir:folder" width="14" />
-            Projects
+            <span class="hidden md:inline">Projects</span>
           </A>
-          <A href="/library" class={linkClass("/library")}>
+          <A href="/library" class={linkClass("/library")} title="Library">
             <Icon icon="iconoir:media-image-folder" width="14" />
-            Library
+            <span class="hidden md:inline">Library</span>
           </A>
         </div>
       </div>
 
-      <div class="flex-1 flex items-center gap-2 justify-end min-w-0">
-        <GlobalSearch orgId={() => user()?.activeOrganizationId ?? null} />
+      <div class="flex items-center gap-1.5 sm:gap-2 justify-end shrink-0 md:flex-1 min-w-0">
+        {/* Inline search from md up; a compact icon that opens the modal search below. */}
+        <div class="hidden md:flex flex-1 justify-end min-w-0">
+          <GlobalSearch orgId={() => user()?.activeOrganizationId ?? null} />
+        </div>
+        <button
+          type="button"
+          class="md:hidden shrink-0 grid place-items-center rounded px-1.5 py-1 text-neutral-500 hover:text-neutral-800 hover:bg-neutral-200/50 cursor-pointer"
+          title="Search"
+          aria-label="Search"
+          onClick={() => setSearchOpen(true)}
+        >
+          <Icon icon="iconoir:search" width="15" />
+        </button>
+        <GlobalSearch
+          orgId={() => user()?.activeOrganizationId ?? null}
+          variant="modal"
+          modalOpen={searchOpen()}
+          onModalClose={() => setSearchOpen(false)}
+        />
         <Show when={!isGuest()}>
           <AiTrigger />
         </Show>

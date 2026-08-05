@@ -298,6 +298,9 @@ export const tasks = sqliteTable(
     dueDate: integer("due_date"),
     projectId: text("project_id").references(() => projects.id),
     deliverableId: text("deliverable_id").references(() => deliverables.id),
+    /** set when the task was created from a review comment/thread — links back
+     *  to that annotation (see "Create task from comment"). */
+    annotationId: text("annotation_id"),
     createdBy: text("created_by")
       .notNull()
       .references(() => user.id),

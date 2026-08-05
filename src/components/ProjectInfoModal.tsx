@@ -25,6 +25,10 @@ export function ProjectInfoModal(props: {
   current?: Deliverable;
   /** set when whole group(s) are selected on the board — lists their members */
   selectedGroup?: { label: string; members: Deliverable[] };
+  /** set when opened from a status-bar count label — lists those deliverables,
+   *  each row clickable via onOpenDeliverable */
+  deliverableList?: { label: string; items: Deliverable[] };
+  onOpenDeliverable?: (d: Deliverable) => void;
   currentVersion?: Version;
   openThreadCount: number;
   /** true when `current` is open in review; false when it's merely selected on the board */
@@ -107,7 +111,63 @@ export function ProjectInfoModal(props: {
             {props.deliverables.length} deliverable{props.deliverables.length === 1 ? "" : "s"} total
           </p>
 
-          <Show when={props.selectedGroup}>
+          <Show when={props.deliverableList}>
+            {list => (
+              <div class="mx-4 mb-4 rounded-lg border border-neutral-200 bg-neutral-50/60 p-3">
+                <p class="text-[10px] uppercase tracking-wide text-neutral-400 font-medium mb-2">
+                  {list().label} · {list().items.length} deliverable{list().items.length === 1 ? "" : "s"}
+                </p>
+                <Show
+                  when={list().items.length > 0}
+                  fallback={<p class="text-[11px] text-neutral-400">No deliverables here.</p>}
+                >
+                  <div class="flex flex-col max-h-72 overflow-auto">
+                    <For each={list().items}>
+                      {m => {
+                        const open = m.annotations.filter(a => a.status === "open").length;
+                        const latest = m.versions[m.versions.length - 1];
+                        return (
+                          <button
+                            type="button"
+                            class="text-left py-1.5 -mx-1 px-1 rounded border-b border-neutral-200/60 last:border-b-0 hover:bg-neutral-100/70 cursor-pointer disabled:cursor-default disabled:hover:bg-transparent"
+                            disabled={!props.onOpenDeliverable}
+                            title={props.onOpenDeliverable ? `Go to ${m.name}` : undefined}
+                            onClick={() => props.onOpenDeliverable?.(m)}
+                          >
+                            <div class="flex items-center justify-between gap-2">
+                              <span class="text-sm font-medium text-neutral-800 truncate">{m.name}</span>
+                              <span class={`shrink-0 text-[10px] rounded-full px-1.5 py-px ${STATUS_META[m.status].chip}`}>
+                                {STATUS_META[m.status].label}
+                              </span>
+                            </div>
+                            <div class="mt-1 flex items-center gap-3 flex-wrap text-[11px] text-neutral-500">
+                              <Show when={latest}>
+                                {v => (
+                                  <span class="flex items-center gap-1">
+                                    <Icon icon="iconoir:media-image" width="12" />
+                                    v{v().number} · {v().width}×{v().height}
+                                  </span>
+                                )}
+                              </Show>
+                              <span
+                                class="flex items-center gap-1"
+                                classList={{ "text-orange-600": open > 0 }}
+                              >
+                                <Icon icon="iconoir:chat-bubble" width="12" />
+                                {open} open thread{open === 1 ? "" : "s"}
+                              </span>
+                            </div>
+                          </button>
+                        );
+                      }}
+                    </For>
+                  </div>
+                </Show>
+              </div>
+            )}
+          </Show>
+
+          <Show when={!props.deliverableList && props.selectedGroup}>
             {g => (
               <div class="mx-4 mb-4 rounded-lg border border-neutral-200 bg-neutral-50/60 p-3">
                 <p class="text-[10px] uppercase tracking-wide text-neutral-400 font-medium mb-2 flex items-center gap-1">
@@ -157,7 +217,7 @@ export function ProjectInfoModal(props: {
             )}
           </Show>
 
-          <Show when={!props.selectedGroup && props.current}>
+          <Show when={!props.deliverableList && !props.selectedGroup && props.current}>
             {d => (
               <div class="mx-4 mb-4 rounded-lg border border-neutral-200 bg-neutral-50/60 p-3">
                 <p class="text-[10px] uppercase tracking-wide text-neutral-400 font-medium mb-1.5">

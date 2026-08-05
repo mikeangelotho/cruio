@@ -1,4 +1,5 @@
 import { For, Show, createSignal } from "solid-js";
+import { Icon } from "@iconify-icon/solid";
 import type { CanvasObject, NoteColor } from "../lib/types";
 
 /** Note fills are theme-aware tokens, not frozen Tailwind tints — a note's ink
@@ -59,7 +60,8 @@ export function StickyNote(props: {
     const onUp = (ev: PointerEvent) => {
       el.removeEventListener("pointermove", onMove);
       el.removeEventListener("pointerup", onUp);
-      el.releasePointerCapture(ev.pointerId);
+      el.removeEventListener("pointercancel", onUp);
+      try { el.releasePointerCapture(ev.pointerId); } catch { /* already released */ }
       if (dragged) {
         const wd = props.screenToWorldDelta(ev.clientX - startX, ev.clientY - startY);
         props.onMove(props.o, origX + wd.x, origY + wd.y, true);
@@ -67,6 +69,7 @@ export function StickyNote(props: {
     };
     el.addEventListener("pointermove", onMove);
     el.addEventListener("pointerup", onUp);
+    el.addEventListener("pointercancel", onUp);
   }
 
   const palette = () => NOTE_COLORS[props.o.color] ?? NOTE_COLORS.yellow;
@@ -74,7 +77,7 @@ export function StickyNote(props: {
   return (
     <div
       data-note={props.o.id}
-      class={`absolute select-none rounded-md border shadow-[var(--shadow-note)] cursor-default ${palette().bg} ${palette().border}`}
+      class={`group absolute select-none rounded-md border shadow-[var(--shadow-note)] cursor-default ${palette().bg} ${palette().border}`}
       style={{
         left: `${props.x}px`,
         top: `${props.y}px`,
@@ -92,6 +95,21 @@ export function StickyNote(props: {
         props.onMenu?.(props.o, e.clientX, e.clientY);
       }}
     >
+      {/* ⋯ actions — hover-revealed on desktop, always shown on touch */}
+      <Show when={!editing() && props.onMenu}>
+        <button
+          class="absolute top-1 right-1 z-10 p-0.5 rounded border border-black/10 bg-white/70 text-neutral-500 shadow-sm hover:bg-white cursor-pointer opacity-0 group-hover:opacity-100 [@media(hover:none)]:opacity-100 transition-opacity"
+          title="Note actions"
+          onPointerDown={e => e.stopPropagation()}
+          onClick={e => {
+            e.stopPropagation();
+            const r = e.currentTarget.getBoundingClientRect();
+            props.onMenu!(props.o, r.left, r.bottom + 4);
+          }}
+        >
+          <Icon icon="iconoir:more-horiz" width="13" />
+        </button>
+      </Show>
       <Show
         when={!editing()}
         fallback={

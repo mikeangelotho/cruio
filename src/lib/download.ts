@@ -1,10 +1,11 @@
 import { fileUrl } from "./types";
 
-/** Trigger a browser download of a single stored file (forces attachment). */
-export function downloadFile(fileName: string) {
+/** Trigger a browser download of a single stored file (forces attachment).
+ *  `downloadName` (when given) is the filename the browser saves it as. */
+export function downloadFile(fileName: string, downloadName?: string) {
   const a = document.createElement("a");
   a.href = `${fileUrl(fileName)}?download=1`;
-  a.download = "";
+  a.download = downloadName ?? "";
   document.body.appendChild(a);
   a.click();
   a.remove();

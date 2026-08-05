@@ -2,15 +2,10 @@ import { For, Show, createEffect, createMemo, createSignal, onCleanup, onMount }
 import { Icon } from "@iconify-icon/solid";
 import { Avatar } from "./Avatar";
 import { NavMenu } from "./NavMenu";
+import { StatusControl } from "./StatusControl";
 import { PRIORITIES, priorityMeta } from "../lib/priority";
 import type { TaskPatchInput } from "../lib/task-api";
 import type { Task, TaskLink, TaskLinkType, TaskStatus } from "../lib/types";
-
-const STATUSES: { value: TaskStatus; label: string }[] = [
-  { value: "todo", label: "To do" },
-  { value: "in_progress", label: "In progress" },
-  { value: "done", label: "Done" },
-];
 
 /** One dependency/related group in the task panel: existing links + an add picker. */
 function LinkSection(props: {
@@ -105,6 +100,10 @@ export function TaskPanel(props: {
   projects: { id: string; name: string; entityId: string | null }[];
   onClose: () => void;
   onPatch: (id: string, patch: TaskPatchInput, local: Partial<Task>) => void;
+  /** Status changes route through the page's single guarded mutator (blocker
+   *  confirm + completedAt derivation), not onPatch, so every surface behaves
+   *  identically. */
+  onSetStatus: (task: Task, status: TaskStatus) => void;
   onDelete: (task: Task) => void;
   onOpenProject: (task: Task) => void;
   /** all org tasks (for the link picker + resolving linked titles) */
@@ -139,31 +138,11 @@ export function TaskPanel(props: {
           <div class="absolute inset-0 bg-scrim" onClick={props.onClose} />
           <div class="absolute right-0 top-0 bottom-0 w-[420px] max-w-full bg-panel border-l border-neutral-200 shadow-2xl flex flex-col">
             <div class="px-4 py-3 flex items-center justify-between border-b border-neutral-100">
-              <div class="flex gap-1">
-                <For each={STATUSES}>
-                  {s => (
-                    <button
-                      class="text-[11px] rounded-md px-2 py-1 cursor-pointer"
-                      classList={{
-                        "bg-brand text-on-brand": task().status === s.value,
-                        "text-neutral-500 hover:bg-neutral-100": task().status !== s.value,
-                      }}
-                      onClick={() =>
-                        props.onPatch(
-                          task().id,
-                          { status: s.value },
-                          {
-                            status: s.value,
-                            completedAt: s.value === "done" ? Date.now() : null,
-                          },
-                        )
-                      }
-                    >
-                      {s.label}
-                    </button>
-                  )}
-                </For>
-              </div>
+              <StatusControl
+                status={task().status}
+                onSelect={s => props.onSetStatus(task(), s)}
+                variant="chip"
+              />
               <button
                 class="p-1 rounded text-neutral-400 hover:text-neutral-700 hover:bg-neutral-100 cursor-pointer"
                 title="Close"

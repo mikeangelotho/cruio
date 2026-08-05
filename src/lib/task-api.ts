@@ -23,6 +23,7 @@ const TaskPatch = v.partial(
     dueDate: v.nullable(v.number()),
     projectId: v.nullable(Id),
     deliverableId: v.nullable(Id),
+    annotationId: v.nullable(Id),
   }),
 );
 export type TaskPatchInput = v.InferInput<typeof TaskPatch>;
@@ -164,6 +165,7 @@ export async function createTask(
     dueDate: checkedPatch.dueDate ?? null,
     projectId: checkedPatch.projectId ?? null,
     deliverableId: checkedPatch.deliverableId ?? null,
+    annotationId: checkedPatch.annotationId ?? null,
     createdBy: session.userId,
     createdAt: Date.now(),
   });

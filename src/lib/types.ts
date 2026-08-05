@@ -230,6 +230,8 @@ export interface Task {
   projectName: string | null;
   entityId: string | null;
   deliverableId: string | null;
+  /** set when created from a review comment/thread — links back to it */
+  annotationId: string | null;
   createdBy: string;
   createdAt: number;
   completedAt: number | null;

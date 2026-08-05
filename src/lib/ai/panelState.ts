@@ -12,6 +12,9 @@ export function toggleAiPanel() {
   setAiPanelOpen(o => !o);
 }
 
-export function closeAiPanel() {
+// Minimizing collapses the panel back into the launcher (AiTrigger) without
+// tearing down the conversation: the chat store lives in the always-mounted
+// AiPanel, so only its DOM subtree hides. Reopening restores the same chat.
+export function minimizeAiPanel() {
   setAiPanelOpen(false);
 }

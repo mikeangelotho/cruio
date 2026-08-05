@@ -24,7 +24,7 @@ export function AiTrigger() {
       }}
     >
       <Icon icon="iconoir:sparks" width="13" />
-      <span class="text-[11px]">Ask AI</span>
+      <span class="text-[11px] hidden sm:inline">Ask AI</span>
     </button>
   );
 }

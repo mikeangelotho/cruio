@@ -3,18 +3,7 @@ import { A } from "@solidjs/router";
 import { Icon } from "@iconify-icon/solid";
 import type { Task, TaskStatus } from "../lib/types";
 import { Avatar } from "./Avatar";
-
-/** Inline status metadata — a colored dot + label per workflow state
- * (mirrors the Tasks page). */
-const STATUS_META: Record<TaskStatus, { label: string; dot: string; text: string }> = {
-  todo: { label: "To do", dot: "bg-neutral-300", text: "text-neutral-500" },
-  in_progress: { label: "In progress", dot: "bg-sky-500", text: "text-sky-600" },
-  done: { label: "Done", dot: "bg-emerald-500", text: "text-emerald-600" },
-};
-
-const ORDER: TaskStatus[] = ["todo", "in_progress", "done"];
-/** Cycle todo → in_progress → done → todo (click on the status dot). */
-const nextStatus = (s: TaskStatus): TaskStatus => ORDER[(ORDER.indexOf(s) + 1) % ORDER.length];
+import { StatusControl } from "./StatusControl";
 
 const overdue = (t: Task) =>
   t.dueDate !== null && t.status !== "done" && t.dueDate < Date.now();
@@ -54,7 +43,7 @@ export function DeliverableTasksPanel(props: {
   }
 
   return (
-    <aside class="w-80 shrink-0 h-full flex flex-col border-l border-neutral-200 bg-panel/95 backdrop-blur-sm">
+    <aside class="absolute inset-y-0 right-0 z-20 w-[85vw] max-w-sm shadow-xl sm:static sm:z-auto sm:w-80 sm:max-w-none sm:shadow-none sm:shrink-0 h-full flex flex-col border-l border-neutral-200 bg-panel/95 backdrop-blur-sm">
       <div class="h-10 px-3 flex items-center justify-between border-b border-neutral-100">
         <span class="text-xs font-semibold text-neutral-700">
           {props.projectScope ? "Project tasks" : "Tasks"}
@@ -122,23 +111,14 @@ export function DeliverableTasksPanel(props: {
           <For each={sorted()}>
             {t => (
               <div class="group px-3 py-2.5 border-b border-neutral-100 flex items-start gap-2">
-                <button
-                  class="shrink-0 mt-0.5 flex items-center justify-center size-4 cursor-pointer disabled:cursor-default"
-                  disabled={!props.canManage}
-                  title={
-                    props.canManage
-                      ? `${STATUS_META[t.status].label} — click to advance`
-                      : STATUS_META[t.status].label
-                  }
-                  onClick={() => props.onSetStatus(t, nextStatus(t.status))}
-                >
-                  <Show
-                    when={t.status === "done"}
-                    fallback={<span class={`size-2.5 rounded-full ${STATUS_META[t.status].dot}`} />}
-                  >
-                    <Icon icon="iconoir:check-circle-solid" width="16" class="text-emerald-500" />
-                  </Show>
-                </button>
+                <div class="shrink-0 mt-0.5">
+                  <StatusControl
+                    status={t.status}
+                    onSelect={s => props.onSetStatus(t, s)}
+                    disabled={!props.canManage}
+                    portal
+                  />
+                </div>
 
                 <div class="min-w-0 flex-1">
                   <p
@@ -150,18 +130,19 @@ export function DeliverableTasksPanel(props: {
                   >
                     {t.title}
                   </p>
-                  <div class="mt-1 flex items-center gap-2 text-[10px] text-neutral-400">
-                    <span class={STATUS_META[t.status].text}>{STATUS_META[t.status].label}</span>
-                    <Show when={t.assigneeName}>
-                      <span class="flex items-center gap-1 min-w-0">
-                        <Avatar name={t.assigneeName!} size={13} />
-                        <span class="truncate">{t.assigneeName}</span>
-                      </span>
-                    </Show>
-                    <Show when={t.dueDate}>
-                      <span classList={{ "text-rose-600": overdue(t) }}>{fmtDue(t.dueDate!)}</span>
-                    </Show>
-                  </div>
+                  <Show when={t.assigneeName || t.dueDate}>
+                    <div class="mt-1 flex items-center gap-2 text-[10px] text-neutral-400">
+                      <Show when={t.assigneeName}>
+                        <span class="flex items-center gap-1 min-w-0">
+                          <Avatar name={t.assigneeName!} size={13} />
+                          <span class="truncate">{t.assigneeName}</span>
+                        </span>
+                      </Show>
+                      <Show when={t.dueDate}>
+                        <span classList={{ "text-rose-600": overdue(t) }}>{fmtDue(t.dueDate!)}</span>
+                      </Show>
+                    </div>
+                  </Show>
                 </div>
 
                 <A

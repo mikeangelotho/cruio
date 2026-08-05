@@ -27,7 +27,7 @@ export function NotesPanel(props: {
   const sorted = () => [...props.notes].sort((a, b) => b.createdAt - a.createdAt);
 
   return (
-    <aside class="w-80 shrink-0 h-full flex flex-col border-l border-neutral-200 bg-panel/95 backdrop-blur-sm">
+    <aside class="absolute inset-y-0 right-0 z-20 w-[85vw] max-w-sm shadow-xl sm:static sm:z-auto sm:w-80 sm:max-w-none sm:shadow-none sm:shrink-0 h-full flex flex-col border-l border-neutral-200 bg-panel/95 backdrop-blur-sm">
       <div class="h-10 px-3 flex items-center justify-between border-b border-neutral-100">
         <span class="text-xs font-semibold text-neutral-700">Sticky notes</span>
         <button

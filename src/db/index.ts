@@ -423,6 +423,9 @@ async function migrate() {
     if (!cols.includes("priority")) {
       await client.execute("ALTER TABLE tasks ADD COLUMN priority TEXT NOT NULL DEFAULT 'none'");
     }
+    if (!cols.includes("annotation_id")) {
+      await client.execute("ALTER TABLE tasks ADD COLUMN annotation_id TEXT");
+    }
   }
 
   if (await tableExists("projects")) {

@@ -1,6 +1,6 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import { MODEL, PROTOCOL, anthropic, baseParams, isAnthropic } from "./model";
-import { SYSTEM_PROMPT, pageContext } from "./prompt";
+import { SYSTEM_PROMPT, contextHint, pageContext, type ContextItem } from "./prompt";
 import { ACTIONS_BY_NAME, invokeAction, toolDefinitions } from "../actions";
 import { runOpenAiTurn } from "./openai";
 
@@ -132,6 +132,9 @@ async function anthropicTurn(p: TurnParams): Promise<TurnResult> {
 export async function runAgentLoop(opts: {
   messages: Msg[];
   pathname: string;
+  /** Context chips from the assistant panel; when present they supersede the
+   *  route-derived pageContext (they carry the same screen plus user edits). */
+  context?: ContextItem[];
   emit: (e: LoopEvent) => void;
   signal?: AbortSignal;
 }): Promise<{ messages: Msg[]; stopped: "done" | "aborted" | "error" }> {
@@ -142,7 +145,7 @@ export async function runAgentLoop(opts: {
   // navigation would invalidate the cache each turn. That role is model-gated
   // though, so anything behind AI_BASE_URL gets it appended to the system
   // prompt instead — costs a cache miss, which a local server doesn't have.
-  const hint = pageContext(opts.pathname);
+  const hint = (opts.context && contextHint(opts.context)) || pageContext(opts.pathname);
   if (hint && isAnthropic) {
     messages.push({ role: "system", content: hint } as unknown as Msg);
   }

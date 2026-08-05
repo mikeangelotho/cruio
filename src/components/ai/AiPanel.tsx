@@ -1,32 +1,27 @@
 import { createAsync, useLocation } from "@solidjs/router";
 import { Icon } from "@iconify-icon/solid";
-import { For, Show, createEffect, createMemo, createResource, createSignal, onCleanup, onMount } from "solid-js";
-import { myOrgsQuery, sessionQuery } from "../../lib/org-api";
+import { For, Show, createEffect, createMemo, createResource, createSignal, on, onCleanup, onMount } from "solid-js";
+import { listEntities, myOrgsQuery, sessionQuery } from "../../lib/org-api";
+import { listProjects } from "../../lib/api";
 import { useViewerRole } from "../../lib/viewer";
+import { useScope } from "../ScopeProvider";
 import { useChat } from "../../lib/ai/useChat";
 import { listMyConversations } from "../../lib/ai/conversations";
-import { aiPanelOpen, closeAiPanel, toggleAiPanel } from "../../lib/ai/panelState";
+import { viewContext } from "../../lib/ai/viewContext";
+import type { ContextItem } from "../../lib/ai/prompt";
+import { aiPanelOpen, minimizeAiPanel, toggleAiPanel } from "../../lib/ai/panelState";
 import { timeAgo } from "../../lib/time";
 import { NavMenu } from "../NavMenu";
 import { MessageList } from "./MessageList";
 
 const HIDDEN = ["/sign-in", "/sign-up", "/onboarding", "/invite"];
 
-/** A short, no-fetch label for "what the user is looking at" — mirrors the
- *  route matching in src/lib/ai/prompt.ts:pageContext, but as a chip label
- *  rather than a sentence for the model. */
-function pageLabel(pathname: string): { icon: string; text: string } | null {
-  if (!pathname || pathname === "/") return { icon: "frame", text: "Projects" };
-  if (pathname.startsWith("/p/")) {
-    return pathname.includes("/d/")
-      ? { icon: "eye-empty", text: "Reviewing" }
-      : { icon: "page-star", text: "Project canvas" };
-  }
-  if (pathname.startsWith("/tasks")) return { icon: "check-square", text: "Tasks" };
-  if (pathname.startsWith("/library")) return { icon: "folder", text: "Library" };
-  if (pathname.startsWith("/settings")) return { icon: "settings", text: "Settings" };
-  return null;
-}
+const CTX_ICON: Record<ContextItem["kind"], string> = {
+  project: "iconoir:folder",
+  deliverable: "iconoir:media-image",
+  entity: "iconoir:building",
+};
+const chipKey = (c: ContextItem) => `${c.kind}:${c.id}`;
 
 /**
  * The assistant panel. Rendered once at the Router root (see app.tsx) so its
@@ -71,15 +66,77 @@ export function AiPanel() {
         e.preventDefault();
         toggleAiPanel();
       } else if (e.key === "Escape" && aiPanelOpen()) {
-        closeAiPanel();
+        minimizeAiPanel();
       }
     };
     window.addEventListener("keydown", onKey);
     onCleanup(() => window.removeEventListener("keydown", onKey));
   });
 
-  const chat = useChat(() => location.pathname);
-  const label = createMemo(() => pageLabel(location.pathname));
+  // ---- context chips -------------------------------------------------------
+  // Auto-derived from the current screen (mirrors the search bar's scope): the
+  // project (+ deliverable when reviewing) on the canvas, otherwise the active
+  // entity scope. Removable individually and all-at-once; the removals reset
+  // whenever the screen context changes so chips re-appear on navigation. The
+  // user can also add extra projects/entities, which persist.
+  const scope = useScope();
+  const autoChips = createMemo<ContextItem[]>(() => {
+    const v = viewContext();
+    if (v.project) {
+      const chips: ContextItem[] = [{ kind: "project", id: v.project.id, label: v.project.name }];
+      if (v.deliverable) chips.push({ kind: "deliverable", id: v.deliverable.id, label: v.deliverable.name });
+      return chips;
+    }
+    const ent = scope.entity();
+    return ent ? [{ kind: "entity", id: ent.id, label: ent.name }] : [];
+  });
+  const [removed, setRemoved] = createSignal<Set<string>>(new Set());
+  const [manual, setManual] = createSignal<ContextItem[]>([]);
+  const autoKey = createMemo(() => autoChips().map(chipKey).join("|"));
+  createEffect(on(autoKey, () => setRemoved(new Set())));
+
+  const chips = createMemo<ContextItem[]>(() => {
+    const auto = autoChips().filter(c => !removed().has(chipKey(c)));
+    const extra = manual().filter(m => !auto.some(a => chipKey(a) === chipKey(m)));
+    return [...auto, ...extra];
+  });
+  const presentKeys = () => new Set(chips().map(chipKey));
+
+  function removeChip(c: ContextItem) {
+    const k = chipKey(c);
+    setManual(m => m.filter(x => chipKey(x) !== k));
+    setRemoved(s => new Set(s).add(k));
+  }
+  function clearChips() {
+    const keys = chips().map(chipKey);
+    setManual([]);
+    setRemoved(s => {
+      const n = new Set(s);
+      for (const k of keys) n.add(k);
+      return n;
+    });
+  }
+  function addChip(c: ContextItem) {
+    setRemoved(s => {
+      const n = new Set(s);
+      n.delete(chipKey(c));
+      return n;
+    });
+    setManual(m => (m.some(x => chipKey(x) === chipKey(c)) ? m : [...m, c]));
+  }
+
+  // Lazily fetched when the "add" menu opens (tick-sourced, like history).
+  const [addTick, setAddTick] = createSignal(0);
+  const [addData] = createResource(addTick, async t =>
+    t
+      ? {
+          projects: await listProjects(scope.entity()?.id ?? null),
+          entities: await listEntities(),
+        }
+      : null,
+  );
+
+  const chat = useChat(() => location.pathname, chips);
 
   // Refetched fresh each time the history menu opens, not cached — a bumped
   // source signal is simpler here than reasoning about a resource created
@@ -100,14 +157,6 @@ export function AiPanel() {
       >
         <header class="shrink-0 h-9 pl-3 pr-1.5 flex items-center gap-2 border-b border-neutral-100">
           <span class="text-xs font-medium text-neutral-700">Assistant</span>
-          <Show when={label()}>
-            {l => (
-              <span class="flex items-center gap-1 rounded-full bg-neutral-100 px-2 py-0.5 text-[10px] text-neutral-500">
-                <Icon icon={`iconoir:${l().icon}`} width="10" />
-                {l().text}
-              </span>
-            )}
-          </Show>
           <span class="flex-1" />
           <NavMenu
             anchor="bottom"
@@ -169,12 +218,12 @@ export function AiPanel() {
           </button>
           <button
             type="button"
-            onClick={closeAiPanel}
-            title="Close"
-            aria-label="Close assistant"
+            onClick={minimizeAiPanel}
+            title="Minimize"
+            aria-label="Minimize assistant"
             class="w-6 h-6 grid place-items-center rounded-md text-neutral-500 hover:text-neutral-800 hover:bg-neutral-100 transition-colors"
           >
-            <Icon icon="iconoir:xmark" width="14" />
+            <Icon icon="iconoir:minus" width="14" />
           </button>
         </header>
 
@@ -186,6 +235,107 @@ export function AiPanel() {
               {chat.error()}
             </p>
           </Show>
+
+          <div class="mb-2 flex flex-wrap items-center gap-1">
+            <For each={chips()}>
+              {c => (
+                <span class="flex items-center gap-1 rounded bg-neutral-100 text-neutral-600 px-1.5 py-0.5 text-[10px]">
+                  <Icon icon={CTX_ICON[c.kind]} width="10" class="shrink-0 text-neutral-400" />
+                  <span class="truncate max-w-[120px]">{c.label}</span>
+                  <button
+                    type="button"
+                    class="shrink-0 text-neutral-400 hover:text-neutral-700 cursor-pointer flex items-center"
+                    title="Remove from context"
+                    onClick={() => removeChip(c)}
+                  >
+                    <Icon icon="iconoir:xmark" width="10" />
+                  </button>
+                </span>
+              )}
+            </For>
+
+            <NavMenu
+              anchor="top"
+              panelClass="w-56 max-h-72 overflow-y-auto py-1"
+              trigger={({ toggle }) => (
+                <button
+                  type="button"
+                  title="Add context"
+                  aria-label="Add context"
+                  class="flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] text-neutral-500 hover:text-neutral-800 hover:bg-neutral-100 cursor-pointer"
+                  onClick={() => {
+                    setAddTick(t => t + 1);
+                    toggle();
+                  }}
+                >
+                  <Icon icon="iconoir:plus" width="11" /> Add
+                </button>
+              )}
+            >
+              {({ close }) => (
+                <Show
+                  when={!addData.loading}
+                  fallback={<p class="px-3 py-2 text-xs text-neutral-400">Loading…</p>}
+                >
+                  <p class="px-2 pt-1 pb-0.5 text-[10px] font-medium uppercase tracking-wide text-neutral-400">
+                    Entities
+                  </p>
+                  <For
+                    each={addData()?.entities ?? []}
+                    fallback={<p class="px-3 py-1 text-[11px] text-neutral-400">None</p>}
+                  >
+                    {e => (
+                      <button
+                        type="button"
+                        disabled={presentKeys().has(`entity:${e.id}`)}
+                        class="w-full flex items-center gap-2 px-2 py-1.5 text-left text-xs text-neutral-700 enabled:hover:bg-neutral-50 enabled:cursor-pointer disabled:opacity-40"
+                        onClick={() => {
+                          addChip({ kind: "entity", id: e.id, label: e.name });
+                          close();
+                        }}
+                      >
+                        <Icon icon="iconoir:building" width="12" class="shrink-0 text-neutral-400" />
+                        <span class="flex-1 truncate">{e.name}</span>
+                      </button>
+                    )}
+                  </For>
+                  <p class="px-2 pt-1.5 pb-0.5 text-[10px] font-medium uppercase tracking-wide text-neutral-400">
+                    Projects
+                  </p>
+                  <For
+                    each={addData()?.projects ?? []}
+                    fallback={<p class="px-3 py-1 text-[11px] text-neutral-400">None</p>}
+                  >
+                    {p => (
+                      <button
+                        type="button"
+                        disabled={presentKeys().has(`project:${p.id}`)}
+                        class="w-full flex items-center gap-2 px-2 py-1.5 text-left text-xs text-neutral-700 enabled:hover:bg-neutral-50 enabled:cursor-pointer disabled:opacity-40"
+                        onClick={() => {
+                          addChip({ kind: "project", id: p.id, label: p.name });
+                          close();
+                        }}
+                      >
+                        <Icon icon="iconoir:folder" width="12" class="shrink-0 text-neutral-400" />
+                        <span class="flex-1 truncate">{p.name}</span>
+                      </button>
+                    )}
+                  </For>
+                </Show>
+              )}
+            </NavMenu>
+
+            <Show when={chips().length > 0}>
+              <button
+                type="button"
+                class="text-[10px] text-neutral-400 hover:text-neutral-700 cursor-pointer"
+                title="Clear all context"
+                onClick={clearChips}
+              >
+                Clear
+              </button>
+            </Show>
+          </div>
 
           <form
             class="rounded-lg border border-neutral-200 bg-canvas focus-within:border-sky-500 transition-colors"

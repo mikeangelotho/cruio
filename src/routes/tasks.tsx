@@ -18,6 +18,7 @@ import { Avatar, EntityAvatar } from "../components/Avatar";
 import { ContextMenu, type MenuState } from "../components/ContextMenu";
 import { NavMenu } from "../components/NavMenu";
 import { TaskPanel } from "../components/TaskPanel";
+import { StatusControl } from "../components/StatusControl";
 import { Callout } from "../components/Callout";
 import { FilterBar } from "../components/FilterBar";
 import {
@@ -38,6 +39,9 @@ import { listProjects } from "../lib/api";
 import { listEntities, myOrgsQuery, requireUserQuery } from "../lib/org-api";
 import { newId } from "../lib/id";
 import { PRIORITIES, priorityMeta } from "../lib/priority";
+import { statusLocalPatch, TASK_STATUS_META, TASK_STATUS_ORDER } from "../lib/task-status";
+import { StatusConflictModal } from "../components/StatusConflictModal";
+import { createStatusConfirm } from "../lib/status-confirm";
 import { useViewerRole } from "../lib/viewer";
 import { onAiInvalidate } from "../lib/ai/invalidate";
 import type { Project, Task, TaskLink, TaskLinkType, TaskPriority, TaskStatus } from "../lib/types";
@@ -54,13 +58,6 @@ const GROUPS: { status: TaskStatus; label: string }[] = [
   { status: "in_progress", label: "In progress" },
   { status: "done", label: "Done" },
 ];
-
-/** Inline status control metadata — a colored dot + label per workflow state. */
-const STATUS_META: Record<TaskStatus, { label: string; dot: string; text: string }> = {
-  todo: { label: "To do", dot: "bg-neutral-300", text: "text-neutral-500" },
-  in_progress: { label: "In progress", dot: "bg-sky-500", text: "text-sky-600" },
-  done: { label: "Done", dot: "bg-emerald-500", text: "text-emerald-600" },
-};
 
 type ViewMode = "list" | "board";
 type GroupBy = "status" | "priority" | "assignee" | "project" | "entity";
@@ -239,6 +236,9 @@ export default function TasksPage() {
 
   // ---- undo/redo (per-screen; resets on navigation) ------------------------
   const undo = createUndoStack();
+  // Conflict prompt for marking blocked tasks done (single instance; modal
+  // rendered once below).
+  const conflict = createStatusConfirm();
   /** Record a just-performed action (its effect has already been applied) and
    *  surface an Undo toast. */
   function record(label: string, undoFn: () => void, redoFn: () => void) {
@@ -293,15 +293,21 @@ export default function TasksPage() {
     restoreTask(task.id).catch(fail);
   }
 
-  function setStatus(t: Task, status: TaskStatus) {
+  /** Apply a status change with no guard (already-confirmed / non-done paths). */
+  function applyStatus(t: Task, status: TaskStatus) {
+    applyPatch(t.id, { status }, statusLocalPatch(status));
+  }
+  async function setStatus(t: Task, status: TaskStatus) {
     if (status === "done" && isBlocked(t)) {
-      const names = openBlockers(t).map(b => b.title).join(", ");
-      if (!window.confirm(`“${t.title}” is still blocked by: ${names}. Mark it done anyway?`)) return;
+      const ok = await conflict.confirm({
+        title: "Task is blocked",
+        description: `“${t.title}” is still blocked by unfinished tasks. Mark it done anyway?`,
+        tasks: openBlockers(t).map(b => ({ id: b.id, title: b.title, status: b.status })),
+        confirmLabel: "Mark done anyway",
+      });
+      if (!ok) return;
     }
-    applyPatch(t.id, { status }, {
-      status,
-      completedAt: status === "done" ? Date.now() : null,
-    });
+    applyStatus(t, status);
   }
 
   function addTask(title: string, status: TaskStatus) {
@@ -323,6 +329,7 @@ export default function TasksPage() {
       projectName: null,
       entityId: null,
       deliverableId: null,
+      annotationId: null,
       createdBy: user()?.userId ?? "",
       createdAt: Date.now(),
       completedAt: null,
@@ -353,6 +360,7 @@ export default function TasksPage() {
       projectName: null,
       entityId: null,
       deliverableId: null,
+      annotationId: null,
       createdBy: user()?.userId ?? "",
       createdAt: Date.now(),
       completedAt: null,
@@ -393,6 +401,7 @@ export default function TasksPage() {
       projectName: p.name,
       entityId: p.entityId,
       deliverableId: null,
+      annotationId: null,
       createdBy: user()?.userId ?? "",
       createdAt: Date.now(),
       completedAt: null,
@@ -419,11 +428,24 @@ export default function TasksPage() {
   }
   const clearSelection = () => setSelected(new Set<string>());
 
-  function bulkMarkDone() {
-    for (const id of selected()) {
-      const t = items().find(x => x.id === id);
-      if (t && t.status !== "done") setStatus(t, "done");
+  async function bulkSetStatus(status: TaskStatus) {
+    const chosen = [...selected()]
+      .map(id => items().find(x => x.id === id))
+      .filter((t): t is Task => !!t);
+    // One prompt for the whole batch when marking blocked tasks done.
+    if (status === "done") {
+      const blocked = chosen.filter(isBlocked);
+      if (blocked.length) {
+        const ok = await conflict.confirm({
+          title: "Some tasks are blocked",
+          description: `${blocked.length} of the selected task${blocked.length === 1 ? " is" : "s are"} still blocked by unfinished tasks. Mark all selected done anyway?`,
+          tasks: blocked.map(b => ({ id: b.id, title: b.title, status: b.status })),
+          confirmLabel: "Mark all done",
+        });
+        if (!ok) return;
+      }
     }
+    for (const t of chosen) if (t.status !== status) applyStatus(t, status);
     clearSelection();
   }
   function bulkSetPriority(p: TaskPriority) {
@@ -689,51 +711,6 @@ export default function TasksPage() {
     </NavMenu>
   );
 
-  // Inline status picker — a compact dot+label pill that moves a task between
-  // workflow states without the meatball (useful under non-status groupings).
-  const statusPicker = (t: Task) => (
-    <NavMenu
-      panelClass="w-36"
-      trigger={({ toggle }) => (
-        <button
-          class="shrink-0 flex items-center gap-1 rounded px-1.5 py-0.5 hover:bg-neutral-100 cursor-pointer"
-          title={`Status: ${STATUS_META[t.status].label}`}
-          onClick={e => {
-            e.stopPropagation();
-            toggle();
-          }}
-        >
-          <span class={`size-1.5 rounded-full ${STATUS_META[t.status].dot}`} />
-          <span class={`text-[10px] font-medium ${STATUS_META[t.status].text}`}>
-            {STATUS_META[t.status].label}
-          </span>
-        </button>
-      )}
-    >
-      {({ close }) => (
-        <div class="p-1" onClick={e => e.stopPropagation()}>
-          <For each={GROUPS}>
-            {g => (
-              <button
-                class="w-full flex items-center gap-2 px-2 py-1.5 rounded text-left text-xs text-neutral-700 hover:bg-neutral-50 cursor-pointer"
-                onClick={() => {
-                  close();
-                  setStatus(t, g.status);
-                }}
-              >
-                <span class={`size-1.5 rounded-full ${STATUS_META[g.status].dot}`} />
-                <span class="flex-1">{g.label}</span>
-                <Show when={t.status === g.status}>
-                  <Icon icon="iconoir:check" width="12" class="text-neutral-400" />
-                </Show>
-              </button>
-            )}
-          </For>
-        </div>
-      )}
-    </NavMenu>
-  );
-
   const blockedBadge = (t: Task) => (
     <Show when={isBlocked(t)}>
       <span
@@ -748,6 +725,7 @@ export default function TasksPage() {
   const taskRow = (t: Task) => (
     <div
       ref={el => rowRefs.set(t.id, el)}
+      data-selectable
       class="group px-3 py-2 flex items-center gap-2 hover:bg-neutral-50 cursor-pointer"
       classList={{
         "bg-accent-amber": highlightId() === t.id,
@@ -774,22 +752,6 @@ export default function TasksPage() {
         <Show when={selected().has(t.id)}>
           <Icon icon="iconoir:check" width="9" />
         </Show>
-      </button>
-
-      <button
-        class="shrink-0 w-4 h-4 rounded-full border flex items-center justify-center cursor-pointer"
-        classList={{
-          "border-neutral-300 hover:border-emerald-500 text-transparent hover:text-emerald-500":
-            t.status !== "done",
-          "border-emerald-500 bg-emerald-500 text-white": t.status === "done",
-        }}
-        title={t.status === "done" ? "Reopen" : "Mark done"}
-        onClick={e => {
-          e.stopPropagation();
-          setStatus(t, t.status === "done" ? "todo" : "done");
-        }}
-      >
-        <Icon icon="iconoir:check" width="10" />
       </button>
 
       {priorityPicker(t)}
@@ -834,13 +796,19 @@ export default function TasksPage() {
       </Show>
 
       <Show when={t.projectName}>
-        <span class="shrink-0 text-[10px] text-neutral-500 bg-muted rounded px-1.5 py-0.5 truncate max-w-32">
+        <span class="hidden sm:inline-block shrink-0 text-[10px] text-neutral-500 bg-muted rounded px-1.5 py-0.5 truncate max-w-32">
           {t.projectName}
         </span>
       </Show>
 
-      {statusPicker(t)}
+      <StatusControl
+        status={t.status}
+        onSelect={s => setStatus(t, s)}
+        stopPropagation
+        align="right"
+      />
 
+      <span class="hidden sm:flex items-center shrink-0">
       <Show
         when={editingDueId() === t.id}
         fallback={
@@ -890,6 +858,7 @@ export default function TasksPage() {
           onBlur={() => setEditingDueId(null)}
         />
       </Show>
+      </span>
 
       <Show when={t.assigneeName}>
         <Avatar name={t.assigneeName!} size={18} />
@@ -911,6 +880,7 @@ export default function TasksPage() {
   const boardCard = (t: Task) => (
     <div
       ref={el => rowRefs.set(t.id, el)}
+      data-selectable
       draggable={true}
       onDragStart={() => setDragId(t.id)}
       onDragEnd={() => setDragId(null)}
@@ -974,13 +944,13 @@ export default function TasksPage() {
       <div class="rounded-lg overflow-clip w-full flex flex-col h-full border border-line">
         <AppNav onOrgSwitch={() => void refetch()} />
 
-        <main class="flex-1 overflow-y-auto p-8">
+        <div class="shrink-0 px-4 sm:px-8 pt-8 pb-4 bg-canvas border-b border-line">
           <div class="w-full">
-            <div class="flex items-center justify-between mb-3">
-              <div>
-                <div class="flex items-center gap-3">
+            <div class="flex items-center justify-between gap-2 mb-4">
+              <div class="min-w-0">
+                <div class="flex items-center gap-3 min-w-0">
                   <EntityAvatar name={scope.entity()?.name || "•"} size={32} />
-                  <h1 class="text-lg font-semibold text-neutral-800">
+                  <h1 class="text-lg font-semibold text-neutral-800 truncate">
                     {scope.entity()?.name || "All"} Tasks
                   </h1>
                 </div>
@@ -999,7 +969,7 @@ export default function TasksPage() {
                 </Show>
               </div>
               <button
-                class="flex items-center gap-1 text-xs bg-brand text-on-brand rounded-md px-3 py-1.5 hover:bg-neutral-700 cursor-pointer"
+                class="shrink-0 flex items-center gap-1 text-xs bg-brand text-on-brand rounded-md px-3 py-1.5 hover:bg-neutral-700 cursor-pointer"
                 onClick={startNewTask}
               >
                 <Icon icon="iconoir:plus" width="14" /> New task
@@ -1048,7 +1018,18 @@ export default function TasksPage() {
                 placeholder: "Filter tasks…",
               }}
             />
+          </div>
+        </div>
 
+        <main
+          class="flex-1 overflow-y-auto px-4 sm:px-8 pt-5 pb-8"
+          onClick={(e) => {
+            // click on empty space (not a row/card) clears any selection
+            if (selected().size && !(e.target as HTMLElement).closest("[data-selectable]"))
+              clearSelection();
+          }}
+        >
+          <div class="w-full">
             <Show when={error()}>
               <p class="mb-4 text-xs text-on-accent-rose bg-accent-rose border border-accent-rose-line rounded px-3 py-2">
                 {error()}
@@ -1166,11 +1147,11 @@ export default function TasksPage() {
             </Show>
 
             <Show when={view() === "board" && items().length > 0}>
-              <div class="flex gap-4 items-start">
+              <div class="flex gap-4 items-start overflow-x-auto">
                 <For each={boardColumns()}>
                   {col => (
                     <div
-                      class="flex-1 min-w-0 rounded-lg p-2"
+                      class="flex-1 min-w-[240px] rounded-lg p-2"
                       classList={{ "bg-accent-sky/60 outline outline-dashed outline-accent-sky-line": dragOverStatus() === col.status }}
                       onDragOver={e => {
                         e.preventDefault();
@@ -1250,14 +1231,39 @@ export default function TasksPage() {
       </div>
 
       <Show when={selected().size > 0}>
-        <div class="fixed bottom-5 left-1/2 -translate-x-1/2 z-30 flex items-center gap-1.5 bg-brand text-on-brand rounded-lg shadow-2xl px-3 py-2 text-xs">
+        <div class="fixed bottom-16 sm:bottom-5 left-1/2 -translate-x-1/2 z-30 flex flex-wrap items-center justify-center gap-1.5 max-w-[95vw] bg-brand text-on-brand rounded-lg shadow-2xl px-3 py-2 text-xs">
           <span class="px-2 font-medium">{selected().size} selected</span>
-          <button
-            class="flex items-center gap-1 rounded-md px-2 py-1 hover:bg-panel/10 cursor-pointer"
-            onClick={bulkMarkDone}
+          <NavMenu
+            anchor="top"
+            panelClass="w-40"
+            trigger={({ toggle }) => (
+              <button
+                class="flex items-center gap-1 rounded-md px-2 py-1 hover:bg-panel/10 cursor-pointer"
+                onClick={toggle}
+              >
+                <Icon icon="iconoir:circle" width="13" /> Status
+              </button>
+            )}
           >
-            <Icon icon="iconoir:check" width="13" /> Mark done
-          </button>
+            {({ close }) => (
+              <div class="p-1">
+                <For each={TASK_STATUS_ORDER}>
+                  {s => (
+                    <button
+                      class="w-full flex items-center gap-2 px-2 py-1.5 rounded text-left text-xs text-neutral-700 hover:bg-neutral-50 cursor-pointer"
+                      onClick={() => {
+                        close();
+                        void bulkSetStatus(s);
+                      }}
+                    >
+                      <span class={`size-1.5 rounded-full ${TASK_STATUS_META[s].dot}`} />
+                      {TASK_STATUS_META[s].label}
+                    </button>
+                  )}
+                </For>
+              </div>
+            )}
+          </NavMenu>
           <NavMenu
             anchor="top"
             panelClass="w-40"
@@ -1337,12 +1343,22 @@ export default function TasksPage() {
       </Show>
 
       <ContextMenu state={ctxMenu()} onClose={() => setCtxMenu(null)} />
+      <StatusConflictModal
+        open={!!conflict.state()}
+        title={conflict.state()?.title ?? ""}
+        description={conflict.state()?.description ?? ""}
+        tasks={conflict.state()?.tasks ?? []}
+        confirmLabel={conflict.state()?.confirmLabel ?? "Confirm"}
+        onConfirm={() => conflict.settle(true)}
+        onCancel={() => conflict.settle(false)}
+      />
       <TaskPanel
         task={panelTask()}
         assignees={assignees() ?? []}
         projects={projectsList() ?? []}
         onClose={() => setPanelId(null)}
         onPatch={applyPatch}
+        onSetStatus={setStatus}
         onDelete={removeTask}
         onOpenProject={openProjectFor}
         allTasks={items()}

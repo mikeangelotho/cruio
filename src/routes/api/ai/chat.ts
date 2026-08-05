@@ -7,6 +7,7 @@ import { getSession } from "../../../lib/guard";
 import { runAsActor } from "../../../lib/actor";
 import type { OrgRole } from "../../../lib/permissions";
 import { runAgentLoop, type LoopEvent } from "../../../lib/ai/loop";
+import type { ContextItem } from "../../../lib/ai/prompt";
 import { MODEL, aiConfigured } from "../../../lib/ai/model";
 
 type Msg = Anthropic.Beta.BetaMessageParam;
@@ -48,6 +49,7 @@ export async function POST({ request }: { request: Request }) {
     message?: string;
     conversationId?: string | null;
     pathname?: string;
+    context?: ContextItem[];
   } | null;
 
   const text = body?.message?.trim();
@@ -154,6 +156,7 @@ export async function POST({ request }: { request: Request }) {
             runAgentLoop({
               messages: [...history, userMessage],
               pathname: body?.pathname ?? "/",
+              context: Array.isArray(body?.context) ? body!.context : undefined,
               emit,
               signal: abort.signal,
             }),

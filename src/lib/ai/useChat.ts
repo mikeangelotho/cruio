@@ -2,6 +2,7 @@ import { revalidate } from "@solidjs/router";
 import { createSignal } from "solid-js";
 import { createStore, produce } from "solid-js/store";
 import { loadConversation } from "./conversations";
+import type { ContextItem } from "./prompt";
 
 // Client-side chat state. Talks to POST /api/ai/chat, which streams SSE.
 // The server owns the real conversation (raw Anthropic content blocks); this
@@ -31,7 +32,7 @@ const NEXT_STEPS_RE = /\n?Next: (.+)$/;
 
 export type Chat = ReturnType<typeof useChat>;
 
-export function useChat(pathname: () => string) {
+export function useChat(pathname: () => string, context?: () => ContextItem[]) {
   // A store, not a signal: every streamed delta patches a specific path
   // (message[idx].text, message[idx].tools[byId].status, ...) rather than
   // replacing the message object wholesale. Replacing the object was the bug
@@ -103,6 +104,7 @@ export function useChat(pathname: () => string) {
           message: text,
           conversationId: conversationId(),
           pathname: pathname(),
+          context: context?.() ?? [],
         }),
         signal: abort.signal,
       });

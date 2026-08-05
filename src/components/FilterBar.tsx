@@ -65,7 +65,7 @@ export function FilterBar(props: {
     (props.toggles?.length ?? 0) > 0;
 
   return (
-    <div class="flex items-center gap-2 mb-5 flex-wrap">
+    <div class="flex items-center gap-2 flex-wrap">
       <Show when={props.segmented}>
         {seg => (
           <div class="flex items-center bg-neutral-100 rounded-md p-0.5">

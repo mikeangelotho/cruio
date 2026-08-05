@@ -17,6 +17,8 @@ export function ThreadSidebar(props: {
   onSelect: (id: string | null) => void;
   onComment: (annotationId: string, body: string) => void;
   onResolve: (annotationId: string, status: AnnotationStatus) => void;
+  /** create a task linked to this review thread (omit to hide the action) */
+  onCreateTask?: (a: Annotation) => void;
 }) {
   let composerRef: HTMLTextAreaElement | undefined;
 
@@ -35,7 +37,7 @@ export function ThreadSidebar(props: {
   }
 
   return (
-    <aside class="w-80 shrink-0 h-full flex flex-col border-l border-neutral-200 bg-panel/95 backdrop-blur-sm">
+    <aside class="absolute inset-y-0 right-0 z-20 w-[85vw] max-w-sm shadow-xl sm:static sm:z-auto sm:w-80 sm:max-w-none sm:shadow-none sm:shrink-0 h-full flex flex-col border-l border-neutral-200 bg-panel/95 backdrop-blur-sm">
       <div class="h-10 px-3 flex items-center justify-between border-b border-neutral-100">
         <span class="text-xs font-semibold text-neutral-700">
           Threads
@@ -169,6 +171,16 @@ export function ThreadSidebar(props: {
                                 <Icon icon="iconoir:send-diagonal" width="12" /> Comment
                               </button>
                             </div>
+
+                            <Show when={props.onCreateTask && a.comments.length > 0}>
+                              <button
+                                class="self-start flex items-center gap-1 text-[11px] text-neutral-500 hover:text-neutral-800 cursor-pointer"
+                                title="Create a task linked to this thread"
+                                onClick={() => props.onCreateTask!(a)}
+                              >
+                                <Icon icon="iconoir:task-list" width="12" /> Create task
+                              </button>
+                            </Show>
 
                             <Show when={a.status === "open"}>
                               <div class="mt-1 pt-2 border-t border-neutral-100">

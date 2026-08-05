@@ -35,15 +35,20 @@ import { TagPicker } from "../components/TagPicker";
 import { NavMenu } from "../components/NavMenu";
 import { FilterBar } from "../components/FilterBar";
 import { createTag, listTags, setProjectTags } from "../lib/tag-api";
+import { listProjectTasks, updateTask } from "../lib/task-api";
 import { fileUrl } from "../lib/types";
-import type { Project, Tag, TagColor } from "../lib/types";
+import type { Project, Tag, TagColor, Task } from "../lib/types";
 import {
   PROJECT_STATUS_META,
-  PROJECT_STATUS_ORDER,
   canSetStatus,
   rank,
   type ProjectStatus,
+  type TaskCounts,
 } from "../lib/project-status";
+import { TASK_STATUS_META } from "../lib/task-status";
+import { StatusControl } from "../components/StatusControl";
+import { StatusConflictModal } from "../components/StatusConflictModal";
+import { createStatusConfirm } from "../lib/status-confirm";
 
 export const route = {
   preload: () => {
@@ -118,6 +123,47 @@ export default function Home() {
       () => setStatusRaw(p.id, prev, next),
       () => setStatusRaw(p.id, next, prev),
     );
+  }
+
+  // Conflict prompts (advancing a project past unfinished tasks). One instance;
+  // the modal is rendered once at the bottom of the page.
+  const conflict = createStatusConfirm();
+  async function moveProject(
+    p: Project,
+    current: ProjectStatus,
+    target: ProjectStatus,
+    counts: TaskCounts,
+  ) {
+    if (target === current) return;
+    // Backward / satisfied moves apply straight away.
+    if (canSetStatus(current, target, counts)) {
+      applyProjectStatus(p, target);
+      return;
+    }
+    // Otherwise list the tasks that aren't at the target yet and confirm a
+    // cascade — the server gate would reject the project move until they are.
+    let tasks: Task[] = [];
+    try {
+      tasks = await listProjectTasks(p.id);
+    } catch {
+      /* fall back to an empty list — the confirm still explains the cascade */
+    }
+    const incomplete = tasks.filter(t => rank(t.status) < rank(target));
+    const label = TASK_STATUS_META[target].label;
+    const n = incomplete.length;
+    const ok = await conflict.confirm({
+      title: `Move project to ${label}?`,
+      description:
+        n === 0
+          ? `Mark this project ${label}?`
+          : `${n} task${n === 1 ? "" : "s"} ${n === 1 ? "isn't" : "aren't"} ${label} yet. Mark ${n === 1 ? "it" : "them all"} ${label} and advance the project?`,
+      tasks: incomplete.map(t => ({ id: t.id, title: t.title, status: t.status })),
+      confirmLabel: n === 0 ? "Confirm" : `Mark all ${label}`,
+    });
+    if (!ok) return;
+    await Promise.all(incomplete.map(t => updateTask(t.id, { status: target })));
+    applyProjectStatus(p, target);
+    void refetch();
   }
   // Compact review-status rollup for the card — only non-zero statuses.
   const statusRollup = (p: Project) =>
@@ -443,70 +489,18 @@ export default function Home() {
   // can only advance into a status once all its tasks have reached it).
   const statusPill = (p: Project) => {
     const st = () => projectStatus(p);
-    const meta = () => PROJECT_STATUS_META[st()];
     const counts = () => p.taskCounts ?? { todo: 0, in_progress: 0, done: 0 };
-    const pill = (interactive: boolean) => (
-      <span
-        class={`inline-flex items-center gap-1 text-[11px] font-medium px-1.5 py-0.5 rounded ${meta().chip}${
-          interactive ? " cursor-pointer" : ""
-        }`}
-      >
-        <span class={`size-1.5 rounded-full ${meta().dot}`} />
-        {meta().label}
-        <Show when={interactive}>
-          <Icon icon="iconoir:nav-arrow-down" width="11" class="opacity-60" />
-        </Show>
-      </span>
-    );
+    // Same control tasks use. Advancing past unfinished tasks isn't disabled —
+    // it opens a conflict modal that offers to cascade the tasks (moveProject).
     return (
-      <Show when={isAdmin()} fallback={pill(false)}>
-        <NavMenu
-          portal
-          panelClass="w-44"
-          trigger={({ toggle }) => (
-            <button
-              type="button"
-              title={`Status: ${meta().label}`}
-              onClick={(e) => {
-                e.stopPropagation();
-                toggle();
-              }}
-            >
-              {pill(true)}
-            </button>
-          )}
-        >
-          {({ close }) => (
-            <div class="p-1" onClick={(e) => e.stopPropagation()}>
-              <For each={PROJECT_STATUS_ORDER}>
-                {(opt) => {
-                  const allowed = () => canSetStatus(st(), opt, counts());
-                  const m = PROJECT_STATUS_META[opt];
-                  return (
-                    <button
-                      type="button"
-                      disabled={!allowed()}
-                      title={allowed() ? undefined : `All tasks must reach ${m.label} first`}
-                      class="w-full flex items-center gap-2 px-2 py-1.5 rounded text-left text-xs text-neutral-700 enabled:hover:bg-neutral-50 enabled:cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-                      onClick={() => {
-                        if (!allowed()) return;
-                        close();
-                        applyProjectStatus(p, opt);
-                      }}
-                    >
-                      <span class={`size-1.5 rounded-full ${m.dot}`} />
-                      <span class="flex-1">{m.label}</span>
-                      <Show when={st() === opt}>
-                        <Icon icon="iconoir:check" width="12" class="text-neutral-400" />
-                      </Show>
-                    </button>
-                  );
-                }}
-              </For>
-            </div>
-          )}
-        </NavMenu>
-      </Show>
+      <StatusControl
+        status={st()}
+        onSelect={(opt) => void moveProject(p, st(), opt, counts())}
+        disabled={!isAdmin()}
+        variant="chip"
+        portal
+        stopPropagation
+      />
     );
   };
 
@@ -547,6 +541,7 @@ export default function Home() {
 
   const projectCard = (p: Project) => (
     <div
+      data-selectable
       class="group text-left border rounded-lg bg-panel overflow-hidden hover:shadow-sm transition-all cursor-pointer"
       classList={{
         "border-sky-500 ring-2 ring-sky-500": selected().has(p.id),
@@ -566,10 +561,6 @@ export default function Home() {
         >
           <img src={fileUrl(p.cover!)} alt="" class="w-full h-full object-cover" draggable={false} />
         </Show>
-        <span class="absolute bottom-2 left-2 flex items-center gap-1 bg-black/55 text-white text-[10px] px-1.5 py-0.5 rounded-full backdrop-blur-sm">
-          <Icon icon="iconoir:media-image-list" width="11" />
-          {p.deliverableCount ?? 0}
-        </span>
         {selectBox(p, "absolute top-2 left-2")}
       </div>
 
@@ -590,8 +581,24 @@ export default function Home() {
         {/* overall project status (task-gated) */}
         <div class="mt-2">{statusPill(p)}</div>
 
-        {/* review-status rollup across the project's deliverables */}
-        <div class="mt-1.5">{statusRollupRow(p)}</div>
+        {/* asset count + review-status rollup — the card's bottom label */}
+        <div class="mt-1.5 flex items-center gap-2 flex-wrap text-[11px] text-neutral-400">
+          <span class="flex items-center gap-1 shrink-0 text-neutral-500">
+            <Icon icon="iconoir:media-image-list" width="11" />
+            {p.deliverableCount ?? 0} asset{(p.deliverableCount ?? 0) === 1 ? "" : "s"}
+          </span>
+          <Show when={statusRollup(p).length > 0}>
+            <span class="text-neutral-300">·</span>
+            <For each={statusRollup(p)}>
+              {(s) => (
+                <span class="flex items-center gap-1 text-neutral-500">
+                  <span class={`size-1.5 rounded-full ${s.dot}`} />
+                  {s.count} {s.label}
+                </span>
+              )}
+            </For>
+          </Show>
+        </div>
 
         <div class="mt-2.5 flex items-center gap-1.5 flex-wrap">
           <TagChips tags={projectTags(p)} />
@@ -603,6 +610,7 @@ export default function Home() {
 
   const projectRow = (p: Project) => (
     <div
+      data-selectable
       class="group flex items-center gap-3 px-3 py-2.5 hover:bg-neutral-50 cursor-pointer"
       classList={{ "bg-accent-sky": selected().has(p.id) }}
       onClick={() => navigate(`/p/${p.id}`)}
@@ -612,7 +620,7 @@ export default function Home() {
       }}
     >
       {selectBox(p, "shrink-0")}
-      <div class="relative w-14 h-9 shrink-0 rounded bg-neutral-50 border border-neutral-100 overflow-hidden flex items-center justify-center">
+      <div class="relative w-14 h-9 shrink-0 rounded bg-neutral-50 border border-neutral-100 overflow-hidden hidden sm:flex items-center justify-center">
         <Show
           when={p.cover}
           fallback={<Icon icon="iconoir:media-image" width="16" class="text-neutral-300" />}
@@ -620,8 +628,8 @@ export default function Home() {
           <img src={fileUrl(p.cover!)} alt="" class="w-full h-full object-cover" draggable={false} />
         </Show>
       </div>
-      <span class="text-sm font-medium text-neutral-800 truncate min-w-0 w-48 shrink-0">{p.name}</span>
-      <span class="shrink-0 flex items-center gap-1 text-[11px] text-neutral-400">
+      <span class="text-sm font-medium text-neutral-800 truncate min-w-0 flex-1 sm:flex-none sm:w-48">{p.name}</span>
+      <span class="shrink-0 hidden sm:flex items-center gap-1 text-[11px] text-neutral-400">
         <Icon icon="iconoir:media-image-list" width="12" />
         {p.deliverableCount ?? 0}
       </span>
@@ -632,7 +640,7 @@ export default function Home() {
         {tagArea(p)}
       </div>
       <Show when={!scope.entity() && groupMode() !== "entity" && p.entityName}>
-        <span class="shrink-0 bg-muted text-neutral-500 text-xs py-0.5 px-1.5 rounded truncate max-w-28">
+        <span class="hidden sm:inline-block shrink-0 bg-muted text-neutral-500 text-xs py-0.5 px-1.5 rounded truncate max-w-28">
           {p.entityName}
         </span>
       </Show>
@@ -650,12 +658,12 @@ export default function Home() {
           }}
         />
 
-        <main class="flex-1 overflow-y-auto p-8">
+        <div class="shrink-0 px-4 sm:px-8 pt-8 pb-4 bg-canvas border-b border-line">
           <div class="w-full">
-            <div class="flex items-center justify-between mb-6">
-              <div class="flex items-center gap-3">
+            <div class="flex items-center justify-between gap-2 mb-4">
+              <div class="flex items-center gap-3 min-w-0">
               <EntityAvatar name={scope.entity()?.name || "•"} size={32} />
-              <h1 class="text-lg font-semibold text-neutral-800">{scope.entity()?.name || "All"} Projects</h1>
+              <h1 class="text-lg font-semibold text-neutral-800 truncate">{scope.entity()?.name || "All"} Projects</h1>
               <Show when={isAdmin()}>
                 <EntityOptions
                   entity={scope.entity()}
@@ -672,7 +680,7 @@ export default function Home() {
               <Show when={isAdmin()}>
                 <button
                   ref={newProjectBtnRef}
-                  class="flex items-center gap-1 text-xs bg-brand text-on-brand rounded-md px-3 py-1.5 hover:bg-neutral-700 cursor-pointer"
+                  class="shrink-0 flex items-center gap-1 text-xs bg-brand text-on-brand rounded-md px-3 py-1.5 hover:bg-neutral-700 cursor-pointer"
                   onClick={() => setCreating((c) => !c)}
                 >
                   <Icon icon="iconoir:plus" width="14" /> New project
@@ -722,12 +730,23 @@ export default function Home() {
                 placeholder: "Filter projects…",
               }}
             />
+          </div>
+        </div>
 
+        <main
+          class="flex-1 overflow-y-auto px-4 sm:px-8 pt-5 pb-8"
+          onClick={(e) => {
+            // click on empty space (not a card/row) clears any selection
+            if (selected().size && !(e.target as HTMLElement).closest("[data-selectable]"))
+              clearSelection();
+          }}
+        >
+          <div class="w-full">
             <Show when={creating()}>
               <form
                 ref={createFormRef}
                 onSubmit={submit}
-                class="relative mb-6 p-4 border border-neutral-200 rounded-lg bg-panel flex gap-3 items-end"
+                class="relative mb-6 p-4 border border-neutral-200 rounded-lg bg-panel flex flex-col sm:flex-row gap-3 sm:items-end"
               >
                 <button
                   type="button"
@@ -896,8 +915,17 @@ export default function Home() {
         />
       </div>
       <ContextMenu state={ctxMenu()} onClose={() => setCtxMenu(null)} />
+      <StatusConflictModal
+        open={!!conflict.state()}
+        title={conflict.state()?.title ?? ""}
+        description={conflict.state()?.description ?? ""}
+        tasks={conflict.state()?.tasks ?? []}
+        confirmLabel={conflict.state()?.confirmLabel ?? "Confirm"}
+        onConfirm={() => conflict.settle(true)}
+        onCancel={() => conflict.settle(false)}
+      />
       <Show when={selected().size > 0}>
-        <div class="fixed bottom-5 left-1/2 -translate-x-1/2 z-30 flex items-center gap-1.5 bg-brand text-on-brand rounded-lg shadow-2xl px-3 py-2 text-xs">
+        <div class="fixed bottom-16 sm:bottom-5 left-1/2 -translate-x-1/2 z-30 flex flex-wrap items-center justify-center gap-1.5 max-w-[95vw] bg-brand text-on-brand rounded-lg shadow-2xl px-3 py-2 text-xs">
           <span class="px-2 font-medium">{selected().size} selected</span>
           <button
             class="flex items-center gap-1 px-2 py-1 rounded hover:bg-panel/10 cursor-pointer"

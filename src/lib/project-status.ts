@@ -10,7 +10,7 @@ import type { TaskStatus } from "./types";
  */
 export type ProjectStatus = TaskStatus; // "todo" | "in_progress" | "done"
 
-export const PROJECT_STATUS_ORDER: ProjectStatus[] = ["todo", "in_progress", "done"];
+const PROJECT_STATUS_ORDER: ProjectStatus[] = ["todo", "in_progress", "done"];
 
 /** Position of a status in the lifecycle (todo 0 < in_progress 1 < done 2). */
 export const rank = (s: ProjectStatus) => PROJECT_STATUS_ORDER.indexOf(s);
@@ -35,7 +35,7 @@ export type TaskCounts = { todo: number; in_progress: number; done: number };
  * beyond). A project with no tasks isn't gated, so any target is allowed →
  * "done".
  */
-export function highestAllowedStatus(c: TaskCounts): ProjectStatus {
+function highestAllowedStatus(c: TaskCounts): ProjectStatus {
   const total = c.todo + c.in_progress + c.done;
   if (total === 0) return "done";
   if (c.todo === 0 && c.in_progress === 0) return "done";

@@ -77,11 +77,12 @@ export function DeliverableCard(props: {
     const onUp = (ev: PointerEvent) => {
       el.removeEventListener("pointermove", onMove);
       el.removeEventListener("pointerup", onUp);
-      el.releasePointerCapture(ev.pointerId);
+      el.removeEventListener("pointercancel", onUp);
+      try { el.releasePointerCapture(ev.pointerId); } catch { /* already released */ }
       if (dragged) {
         const wd = props.screenToWorldDelta(ev.clientX - startX, ev.clientY - startY);
         props.onMove(props.d, origX + wd.x, origY + wd.y, true);
-      } else {
+      } else if (ev.type !== "pointercancel") {
         // a clean click highlights (plain) or extends the set (shift);
         // double-click (native dblclick, fired after this) opens — see onDblClick
         props.onSelect?.(props.d, { additive });
@@ -89,6 +90,7 @@ export function DeliverableCard(props: {
     };
     el.addEventListener("pointermove", onMove);
     el.addEventListener("pointerup", onUp);
+    el.addEventListener("pointercancel", onUp);
   }
 
   return (
@@ -157,7 +159,7 @@ export function DeliverableCard(props: {
           never hidden behind a hover-only footer control. */}
       <Show when={props.onMenu}>
         <button
-          class="absolute top-1.5 right-1.5 z-10 p-0.5 rounded border border-neutral-200 bg-panel/90 text-neutral-400 shadow-sm hover:text-neutral-700 hover:bg-panel cursor-pointer transition-opacity"
+          class="absolute top-1.5 right-1.5 z-10 p-0.5 rounded border border-neutral-200 bg-panel/90 text-neutral-400 shadow-sm hover:text-neutral-700 hover:bg-panel cursor-pointer transition-opacity [@media(hover:none)]:opacity-100"
           classList={{
             "opacity-0 group-hover:opacity-100": !props.selected && !props.active,
             "opacity-100": !!props.selected || !!props.active,

@@ -11,7 +11,7 @@ import {
   onMount,
   untrack,
 } from "solid-js";
-import { useNavigate, useParams, A } from "@solidjs/router";
+import { useNavigate, useParams, A, createAsync } from "@solidjs/router";
 import { Icon } from "@iconify-icon/solid";
 import { createCamera } from "../lib/canvas/camera";
 import { DotGrid } from "../lib/canvas/DotGrid";
@@ -33,6 +33,9 @@ import { fileUrl } from "../lib/types";
 import type { Tag, TagColor } from "../lib/types";
 import { createTag, listTags } from "../lib/tag-api";
 import { createTask, listProjectTasks, updateTask } from "../lib/task-api";
+import { statusLocalPatch } from "../lib/task-status";
+import { setViewContext } from "../lib/ai/viewContext";
+import { myOrgsQuery, requireUserQuery } from "../lib/org-api";
 import { listProjectFiles } from "../lib/library-api";
 import { deliverableStage } from "../lib/stage";
 import { newId } from "../lib/id";
@@ -124,6 +127,7 @@ export function ProjectCanvas() {
       projectName: store.state.graph?.project.name ?? null,
       entityId: store.state.graph?.project.entityId ?? null,
       deliverableId,
+      annotationId: null,
       createdBy: v?.userId ?? "",
       createdAt: Date.now(),
       completedAt: null,
@@ -143,13 +147,8 @@ export function ProjectCanvas() {
   const addPanelTask = (title: string) =>
     addDeliverableTask(current()?.id ?? null, title);
   function setDeliverableTaskStatus(task: Task, status: TaskStatus) {
-    setTasks((list) =>
-      list.map((t) =>
-        t.id === task.id
-          ? { ...t, status, completedAt: status === "done" ? Date.now() : null }
-          : t,
-      ),
-    );
+    const local = statusLocalPatch(status);
+    setTasks((list) => list.map((t) => (t.id === task.id ? { ...t, ...local } : t)));
     updateTask(task.id, { status }).catch(failTasks);
   }
 
@@ -166,6 +165,18 @@ export function ProjectCanvas() {
   const [tasksOpen, setTasksOpen] = createSignal(false);
   const [libraryOpen, setLibraryOpen] = createSignal(false);
   const [infoOpen, setInfoOpen] = createSignal(false);
+  // When a status-bar count label is clicked, the info modal opens focused on
+  // that filtered list of deliverables. Cleared whenever the modal closes, so
+  // opening it any other way (info button, ⌘I) shows the normal summary.
+  const [listFocus, setListFocus] =
+    createSignal<{ label: string; items: Deliverable[] } | null>(null);
+  createEffect(() => {
+    if (!infoOpen()) setListFocus(null);
+  });
+  function openDeliverableList(label: string, items: Deliverable[]) {
+    setListFocus({ label, items });
+    setInfoOpen(true);
+  }
   const [sidebarOpen, setSidebarOpen] = createSignal(true);
   // The right sidebar hosts one panel at a time (history / notes / tasks /
   // library / the review thread list). Toggling one closes the rest.
@@ -688,7 +699,8 @@ export function ProjectCanvas() {
     const onUp = (ev: PointerEvent) => {
       el.removeEventListener("pointermove", onMove);
       el.removeEventListener("pointerup", onUp);
-      el.releasePointerCapture(ev.pointerId);
+      el.removeEventListener("pointercancel", onUp);
+      try { el.releasePointerCapture(ev.pointerId); } catch { /* already released */ }
       if (dragged) {
         const wd = {
           x: (ev.clientX - lastX) / camera.cam.zoom,
@@ -715,12 +727,13 @@ export function ProjectCanvas() {
         }
         endDragTargets();
         lockDisplaced();
-      } else {
+      } else if (ev.type !== "pointercancel") {
         toggleGroupSelect(groupId);
       }
     };
     el.addEventListener("pointermove", onMove);
     el.addEventListener("pointerup", onUp);
+    el.addEventListener("pointercancel", onUp);
   }
 
   /** Bottom-right resize of a container group's frame (framed groups only). */
@@ -752,11 +765,13 @@ export function ProjectCanvas() {
     const onUp = (ev: PointerEvent) => {
       el.removeEventListener("pointermove", onMove);
       el.removeEventListener("pointerup", onUp);
-      el.releasePointerCapture(ev.pointerId);
+      el.removeEventListener("pointercancel", onUp);
+      try { el.releasePointerCapture(ev.pointerId); } catch { /* already released */ }
       apply(ev, true);
     };
     el.addEventListener("pointermove", onMove);
     el.addEventListener("pointerup", onUp);
+    el.addEventListener("pointercancel", onUp);
   }
 
   /** True when the current selection is exactly the members of the selected groups. */
@@ -803,17 +818,44 @@ export function ProjectCanvas() {
     return groupIds.size === 1 && !anyUngrouped ? [...groupIds][0] : null;
   });
 
+  // Workspace (org) name for download filenames — not carried on the project
+  // graph, so resolve it from the org list matched to the active org.
+  const dlUser = createAsync(() => requireUserQuery());
+  const dlOrgs = createAsync(() => myOrgsQuery());
+  const workspaceName = () =>
+    dlOrgs()?.find((o) => o.id === dlUser()?.activeOrganizationId)?.name ?? "";
+
+  /** A download filename reflecting the full hierarchy:
+   *  Workspace_Entity_Project_Group_Deliverable_vN.ext (blank parts dropped). */
+  const sanitizePart = (s: string) =>
+    s.trim().replace(/[^\p{L}\p{N}._-]+/gu, "-").replace(/^-+|-+$/g, "");
+  function downloadFileName(d: Deliverable, v: { number: number; fileName: string }): string {
+    const graph = store.state.graph;
+    const dot = v.fileName.lastIndexOf(".");
+    const ext = dot >= 0 ? v.fileName.slice(dot) : "";
+    const base = [
+      workspaceName(),
+      graph?.project.entityName ?? "",
+      graph?.project.name ?? "",
+      d.groupLabel ?? "",
+      d.name,
+      `v${v.number}`,
+    ]
+      .map((p) => sanitizePart(String(p || "")))
+      .filter(Boolean)
+      .join("_");
+    return `${base}${ext}`;
+  }
+
   /** Selected deliverables that have a downloadable version, mapped to the ZIP
-   * payload (latest version file, named after the deliverable). */
+   * payload (latest version file, named for the full hierarchy). */
   const downloadableSelection = createMemo<{ name: string; displayName: string }[]>(() =>
     [...selected()]
       .map((id) => store.byId(id))
       .filter((d): d is Deliverable => !!d && d.versions.length > 0)
       .map((d) => {
         const v = d.versions[d.versions.length - 1];
-        const dot = v.fileName.lastIndexOf(".");
-        const ext = dot >= 0 ? v.fileName.slice(dot) : "";
-        return { name: v.fileName, displayName: `${d.name}${ext}` };
+        return { name: v.fileName, displayName: downloadFileName(d, v) };
       }),
   );
 
@@ -938,6 +980,19 @@ export function ProjectCanvas() {
     reviewId() ? store.byId(reviewId()!) : undefined,
   );
 
+  // Publish what's in view for the assistant panel's context chips (it mounts
+  // outside the canvas and only sees ids from the URL, not names). Cleared on
+  // navigate away so chips fall back to entity scope.
+  createEffect(() => {
+    const project = store.state.graph?.project;
+    const d = current();
+    setViewContext({
+      project: project ? { id: project.id, name: project.name } : undefined,
+      deliverable: d ? { id: d.id, name: d.name } : undefined,
+    });
+  });
+  onCleanup(() => setViewContext({}));
+
   // role-adaptive gating (server enforces the same matrix on every call)
   const canCreate = () => store.can("deliverable", "create");
   const canEdit = () => store.can("deliverable", "update");
@@ -959,6 +1014,27 @@ export function ProjectCanvas() {
       }).catch((err) =>
         window.alert(String(err instanceof Error ? err.message : err)),
       ),
+    );
+  }
+
+  /** Create a task linked to a review thread — the task carries the source
+   *  comment (as its description) and the annotationId back-link. */
+  function createTaskFromComment(a: Annotation) {
+    const graph = store.state.graph;
+    if (!graph) return;
+    const first = a.comments[0]?.body ?? "";
+    const suggested = first ? first.slice(0, 80) : "Follow up on comment";
+    const title = window.prompt("Task title", suggested)?.trim();
+    if (!title) return;
+    void import("../lib/task-api").then(({ createTask }) =>
+      createTask(newId(), title, {
+        projectId: graph.project.id,
+        deliverableId: a.deliverableId,
+        annotationId: a.id,
+        description: first ? `From review comment: “${first}”` : "",
+      })
+        .then(() => flash("Task created from comment"))
+        .catch((err) => window.alert(String(err instanceof Error ? err.message : err))),
     );
   }
 
@@ -1460,6 +1536,14 @@ export function ProjectCanvas() {
     camera.flyTo(target);
   }
 
+  /** Flies the camera to a deliverable card and highlights it — the primary
+   * action for the status-bar list modal (stay on the board, don't navigate). */
+  function jumpToDeliverable(d: Deliverable) {
+    const target = camera.fitRect(effCardRect(d), viewport().w, viewport().h, 200);
+    camera.flyTo(target);
+    highlightCard(d.id);
+  }
+
   function deleteNoteFromPanel(note: CanvasObject) {
     if (!window.confirm("Delete this sticky note?")) return;
     store.removeNote(note.id);
@@ -1613,13 +1697,29 @@ export function ProjectCanvas() {
     return { x: e.clientX - r.left, y: e.clientY - r.top };
   };
 
-  /** Drag-to-pan, shared by the middle mouse button and held-spacebar+left-click. */
+  // Touch bookkeeping for one-finger pan / two-finger pinch. Card/note drags
+  // stopPropagation, so pointers reaching the container are empty-canvas touches.
+  const activePointers = new Map<number, { x: number; y: number }>();
+  let pinch: { prevDist: number; prevMid: { x: number; y: number } } | null = null;
+  // Cleanup for an in-progress one-finger pan, so a second finger can pre-empt
+  // it and take over as a pinch.
+  let cancelActivePan: (() => void) | null = null;
+  const ptDist = (a: { x: number; y: number }, b: { x: number; y: number }) =>
+    Math.hypot(a.x - b.x, a.y - b.y);
+  const ptMid = (a: { x: number; y: number }, b: { x: number; y: number }) => ({
+    x: (a.x + b.x) / 2,
+    y: (a.y + b.y) / 2,
+  });
+
+  /** Drag-to-pan: middle mouse, held-space+left, or a single touch on empty canvas. */
   function beginPan(e: PointerEvent) {
+    refreshRect();
     const start = localPoint(e);
     let last = start;
     container.setPointerCapture(e.pointerId);
 
     const onMove = (ev: PointerEvent) => {
+      if (pinch) return; // a second finger landed — pinch owns the gesture now
       if (!panEnabled()) return;
       const p = localPoint(ev);
       setPanning(true);
@@ -1627,14 +1727,57 @@ export function ProjectCanvas() {
       camera.panBy(p.x - last.x, p.y - last.y);
       last = p;
     };
-    const onUp = (ev: PointerEvent) => {
+    // ev present = real pointerup/cancel; absent = pre-empted by a pinch.
+    const onUp = (ev?: PointerEvent) => {
       container.removeEventListener("pointermove", onMove);
       container.removeEventListener("pointerup", onUp);
-      container.releasePointerCapture(ev.pointerId);
+      container.removeEventListener("pointercancel", onUp);
+      if (ev) {
+        activePointers.delete(ev.pointerId);
+        try { container.releasePointerCapture(ev.pointerId); } catch { /* already released */ }
+      }
       setPanning(false);
+      cancelActivePan = null;
+    };
+    cancelActivePan = () => onUp();
+    container.addEventListener("pointermove", onMove);
+    container.addEventListener("pointerup", onUp);
+    container.addEventListener("pointercancel", onUp);
+  }
+
+  /** Two-finger pinch: zoom about the midpoint + pan with it. Driven off the
+   *  same correct camera primitives as the wheel. */
+  function beginPinch() {
+    markInteracting();
+    const [p0, p1] = [...activePointers.values()];
+    pinch = { prevDist: ptDist(p0, p1), prevMid: ptMid(p0, p1) };
+
+    const onMove = (ev: PointerEvent) => {
+      if (!activePointers.has(ev.pointerId)) return;
+      activePointers.set(ev.pointerId, localPoint(ev));
+      if (!pinch || activePointers.size < 2) return;
+      const [a, b] = [...activePointers.values()];
+      const d = ptDist(a, b);
+      const m = ptMid(a, b);
+      markInteracting();
+      if (pinch.prevDist > 0) camera.zoomAt(m.x, m.y, d / pinch.prevDist, 0.05, 64);
+      camera.panBy(m.x - pinch.prevMid.x, m.y - pinch.prevMid.y);
+      pinch.prevDist = d;
+      pinch.prevMid = m;
+    };
+    const onUp = (ev: PointerEvent) => {
+      activePointers.delete(ev.pointerId);
+      try { container.releasePointerCapture(ev.pointerId); } catch { /* already released */ }
+      if (activePointers.size < 2) {
+        container.removeEventListener("pointermove", onMove);
+        container.removeEventListener("pointerup", onUp);
+        container.removeEventListener("pointercancel", onUp);
+        pinch = null;
+      }
     };
     container.addEventListener("pointermove", onMove);
     container.addEventListener("pointerup", onUp);
+    container.addEventListener("pointercancel", onUp);
   }
 
   /** World-space rect of the marquee, using whichever corners span the box. */
@@ -1658,12 +1801,26 @@ export function ProjectCanvas() {
    * pan — panning now lives on the wheel). In review mode a drag still just
    * suppresses the click-to-pin below; it doesn't pan or select anything. */
   function onPointerDown(e: PointerEvent) {
+    // Touch: one finger pans the empty canvas; a second finger starts a pinch.
+    // (Cards/notes stopPropagation, so touches reaching here are on the board.)
+    if (e.pointerType === "touch") {
+      refreshRect();
+      activePointers.set(e.pointerId, localPoint(e));
+      container.setPointerCapture(e.pointerId);
+      if (activePointers.size >= 2) {
+        cancelActivePan?.(); // hand the one-finger pan off to the pinch
+        beginPinch();
+        return;
+      }
+      return beginPan(e);
+    }
     if (e.button === 1) {
       e.preventDefault(); // no middle-click autoscroll
       return beginPan(e);
     }
     if (e.button !== 0) return;
     if (spaceHeld()) return beginPan(e);
+    refreshRect();
     const start = localPoint(e);
     let dragged = false;
 
@@ -1693,7 +1850,12 @@ export function ProjectCanvas() {
     const onUp = (ev: PointerEvent) => {
       container.removeEventListener("pointermove", onMove);
       container.removeEventListener("pointerup", onUp);
-      container.releasePointerCapture(ev.pointerId);
+      container.removeEventListener("pointercancel", onUp);
+      try { container.releasePointerCapture(ev.pointerId); } catch { /* already released */ }
+      if (ev.type === "pointercancel") {
+        setMarquee(null);
+        return;
+      }
       if (dragged) {
         setMarquee(null);
         return;
@@ -1713,9 +1875,12 @@ export function ProjectCanvas() {
         return;
       }
 
-      // a clean click on empty workspace canvas deselects everything
+      // a clean click on empty workspace canvas deselects and dismisses any
+      // open context menu / info modal
       if (!reviewId()) {
         clearSelection();
+        setCtxMenu(null);
+        setInfoOpen(false);
         return;
       }
 
@@ -1737,6 +1902,7 @@ export function ProjectCanvas() {
     };
     container.addEventListener("pointermove", onMove);
     container.addEventListener("pointerup", onUp);
+    container.addEventListener("pointercancel", onUp);
   }
 
   function onDblClick(e: MouseEvent) {
@@ -1966,7 +2132,7 @@ export function ProjectCanvas() {
                   current()?.id === d.id
                     ? (v ?? d.versions[d.versions.length - 1])
                     : d.versions[d.versions.length - 1];
-                if (target) downloadFile(target.fileName);
+                if (target) downloadFile(target.fileName, downloadFileName(d, target));
               },
             },
           ]
@@ -2048,6 +2214,39 @@ export function ProjectCanvas() {
   function openMenuAt(e: MouseEvent, entries: MenuEntry[]) {
     const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
     setCtxMenu({ x: r.left, y: r.bottom + 4, entries });
+  }
+
+  /** Group actions — groups had no menu before; exposes them for right-click,
+   *  the group-label ⋯ kebab, and the selection toolbar's More menu. */
+  function groupMenuEntries(g: { id: string; label: string }): MenuEntry[] {
+    if (!canEdit()) return [];
+    return [
+      { label: "Rename group", icon: "iconoir:edit-pencil", run: () => setRenamingGroupId(g.id) },
+      { label: "Add deliverable", icon: "iconoir:plus", run: () => createDeliverableInGroup(g.id) },
+      { separator: true },
+      {
+        label: "Ungroup",
+        icon: "iconoir:link-slash",
+        run: () => {
+          store.dissolveGroup(g.id);
+          flash(`Ungrouped “${g.label}”`);
+        },
+      },
+    ];
+  }
+
+  /** The per-item actions for the current selection — surfaced in the selection
+   *  toolbar's ⋯ "More" menu so right-click actions are reachable on touch. */
+  function selectionMoreEntries(): MenuEntry[] {
+    if (selectedGroups().size === 1 && selectionIsWholeGroups()) {
+      const g = store.groupById([...selectedGroups()][0]);
+      return g ? groupMenuEntries(g) : [];
+    }
+    if (selected().size === 1 && selectedGroups().size === 0) {
+      const d = store.byId([...selected()][0]);
+      return d ? deliverableMenuEntries(d) : [];
+    }
+    return [];
   }
 
   function deliverableMenuEntries(d: Deliverable): MenuEntry[] {
@@ -2555,6 +2754,14 @@ export function ProjectCanvas() {
             <Show when={current()} fallback={null}>
               {(d) => (
                 <>
+                  {/* Full review action list — the touch path (no right-click). */}
+                  <button
+                    class="flex items-center p-1.5 rounded text-neutral-500 hover:text-neutral-800 hover:bg-neutral-200/50 cursor-pointer"
+                    title="Deliverable actions"
+                    onClick={(e) => openMenuAt(e, reviewMenuEntries(d()))}
+                  >
+                    <Icon icon="iconoir:more-horiz" width="15" />
+                  </button>
                   {/* version tabs */}
                   <div class="flex items-center gap-0.5 bg-muted rounded p-0.5">
                     <For each={d().versions}>
@@ -2610,7 +2817,7 @@ export function ProjectCanvas() {
                       <button
                         class="flex items-center gap-1 text-xs rounded border border-neutral-200 text-neutral-600 hover:bg-neutral-50 px-2.5 py-1.5 cursor-pointer"
                         title={`Download v${v().number}`}
-                        onClick={() => downloadFile(v().fileName)}
+                        onClick={() => downloadFile(v().fileName, downloadFileName(d(), v()))}
                       >
                         <Icon icon="iconoir:download" width="13" /> Download
                       </button>
@@ -2717,10 +2924,11 @@ export function ProjectCanvas() {
         </nav>
 
         {/* ---- main ---- */}
-        <div class="flex-1 flex min-h-0">
+        <div class="relative flex-1 flex min-h-0">
           <div
             ref={container}
             class="relative flex-1 overflow-hidden bg-canvas select-none"
+            style={{ "touch-action": "none" }}
             classList={{
               "cursor-copy": noteTool() && !spaceHeld(),
               "cursor-grabbing": panning(),
@@ -2860,6 +3068,13 @@ export function ProjectCanvas() {
                                         e.stopPropagation();
                                         if (canEdit()) setRenamingGroupId(g.id);
                                       }}
+                                      onContextMenu={(e) => {
+                                        e.preventDefault();
+                                        e.stopPropagation();
+                                        const entries = groupMenuEntries(g);
+                                        if (entries.length)
+                                          setCtxMenu({ x: e.clientX, y: e.clientY, entries });
+                                      }}
                                     >
                                       <Icon icon="iconoir:link" width="10" />
                                       {g.label}
@@ -2875,6 +3090,17 @@ export function ProjectCanvas() {
                                         }}
                                       >
                                         <Icon icon="iconoir:plus" width="11" />
+                                      </button>
+                                      <button
+                                        class="inline-flex items-center justify-center rounded bg-accent-violet text-on-accent-violet hover:bg-accent-violet-hover cursor-pointer pointer-events-auto px-1 py-0.5"
+                                        title="Group actions"
+                                        onPointerDown={(e) => e.stopPropagation()}
+                                        onClick={(e) => {
+                                          e.stopPropagation();
+                                          openMenuAt(e, groupMenuEntries(g));
+                                        }}
+                                      >
+                                        <Icon icon="iconoir:more-horiz" width="11" />
                                       </button>
                                     </Show>
                                   </div>
@@ -3225,6 +3451,25 @@ export function ProjectCanvas() {
                           </kbd>
                         </button>
                       </Show>
+                      <Show when={canCreate()}>
+                        <button
+                          class="rounded-md w-full flex items-center gap-2 px-3 py-2 text-left text-xs text-neutral-600 hover:bg-neutral-50 cursor-pointer"
+                          onClick={() => {
+                            close();
+                            newGroupAtCenter();
+                          }}
+                        >
+                          <Icon
+                            icon="iconoir:folder"
+                            width="14"
+                            class="shrink-0 text-neutral-500"
+                          />
+                          <span class="flex-1">New group</span>
+                          <kbd class="text-[9px] font-semibold text-neutral-400 bg-neutral-100 border border-neutral-200 rounded px-1 py-px">
+                            G
+                          </kbd>
+                        </button>
+                      </Show>
                       <Show when={canNote()}>
                         <button
                           class="rounded-md w-full flex items-center gap-2 px-3 py-2 text-left text-xs text-neutral-600 hover:bg-neutral-50 cursor-pointer"
@@ -3398,6 +3643,9 @@ export function ProjectCanvas() {
                                   status,
                                 )
                               }
+                              onCreateTask={
+                                canTask() ? createTaskFromComment : undefined
+                              }
                             />
                           </Show>
                         }
@@ -3464,27 +3712,60 @@ export function ProjectCanvas() {
                     when={hovered()}
                     fallback={
                   <div class="flex items-center gap-1.5 min-w-0 overflow-hidden">
-                    <span class="shrink-0 font-medium text-neutral-600">
+                    <button
+                      class="shrink-0 font-medium text-neutral-600 hover:text-neutral-900 cursor-pointer"
+                      title="Show all deliverables"
+                      onClick={() =>
+                        openDeliverableList("All deliverables", store.deliverables())
+                      }
+                    >
                       {counts().total} deliverable
                       {counts().total === 1 ? "" : "s"}
-                    </span>
+                    </button>
                     <Show when={counts().inReview > 0}>
-                      <span class="shrink-0 flex items-center gap-1 text-[10px] font-medium rounded-full px-1.5 py-px bg-accent-sky text-on-accent-sky">
+                      <button
+                        class="shrink-0 hidden sm:flex items-center gap-1 text-[10px] font-medium rounded-full px-1.5 py-px bg-accent-sky text-on-accent-sky hover:brightness-95 cursor-pointer"
+                        title="Show deliverables in review"
+                        onClick={() =>
+                          openDeliverableList(
+                            "In review",
+                            store.deliverables().filter(d => d.status === "in_review"),
+                          )
+                        }
+                      >
                         <span class="size-1.5 rounded-full bg-sky-500" />
                         {counts().inReview} in review
-                      </span>
+                      </button>
                     </Show>
                     <Show when={counts().revisions > 0}>
-                      <span class="shrink-0 flex items-center gap-1 text-[10px] font-medium rounded-full px-1.5 py-px bg-accent-amber text-on-accent-amber">
+                      <button
+                        class="shrink-0 hidden sm:flex items-center gap-1 text-[10px] font-medium rounded-full px-1.5 py-px bg-accent-amber text-on-accent-amber hover:brightness-95 cursor-pointer"
+                        title="Show deliverables needing revisions"
+                        onClick={() =>
+                          openDeliverableList(
+                            "Need revisions",
+                            store.deliverables().filter(d => d.status === "revisions_requested"),
+                          )
+                        }
+                      >
                         <span class="size-1.5 rounded-full bg-amber-500" />
                         {counts().revisions} need revisions
-                      </span>
+                      </button>
                     </Show>
                     <Show when={counts().approved > 0}>
-                      <span class="shrink-0 flex items-center gap-1 text-[10px] font-medium rounded-full px-1.5 py-px bg-accent-emerald text-on-accent-emerald">
+                      <button
+                        class="shrink-0 hidden sm:flex items-center gap-1 text-[10px] font-medium rounded-full px-1.5 py-px bg-accent-emerald text-on-accent-emerald hover:brightness-95 cursor-pointer"
+                        title="Show approved deliverables"
+                        onClick={() =>
+                          openDeliverableList(
+                            "Approved",
+                            store.deliverables().filter(d => d.status === "approved"),
+                          )
+                        }
+                      >
                         <span class="size-1.5 rounded-full bg-emerald-500" />
                         {counts().approved} approved
-                      </span>
+                      </button>
                     </Show>
                   </div>
                     }
@@ -3517,7 +3798,7 @@ export function ProjectCanvas() {
                     </span>
                     <Show when={focusedVersion()}>
                       {(v) => (
-                        <span class="shrink-0 flex items-center gap-1.5">
+                        <span class="shrink-0 hidden sm:flex items-center gap-1.5">
                           <span class="text-[10px] font-medium text-neutral-600 bg-neutral-200/70 rounded px-1 py-px">
                             v{v().number}
                           </span>
@@ -3528,7 +3809,7 @@ export function ProjectCanvas() {
                       )}
                     </Show>
                     <span
-                      class="shrink-0 flex items-center gap-1 text-[10px] font-medium rounded-full px-1.5 py-px"
+                      class="shrink-0 hidden sm:flex items-center gap-1 text-[10px] font-medium rounded-full px-1.5 py-px"
                       classList={{
                         "bg-accent-orange text-on-accent-orange":
                           focusedOpenThreadCount() > 0,
@@ -3585,7 +3866,7 @@ export function ProjectCanvas() {
       <ContextMenu state={ctxMenu()} onClose={() => setCtxMenu(null)} />
 
       <Show when={!current() && selected().size > 0}>
-        <div class="absolute bottom-16 left-1/2 -translate-x-1/2 z-30 flex items-center gap-1.5 bg-brand text-on-brand rounded-lg shadow-2xl px-3 py-2 text-xs">
+        <div class="absolute bottom-16 left-1/2 -translate-x-1/2 z-30 flex flex-wrap items-center justify-center gap-1.5 max-w-[95vw] bg-brand text-on-brand rounded-lg shadow-2xl px-3 py-2 text-xs">
           <Show
             when={!groupPromptOpen()}
             fallback={
@@ -3658,6 +3939,15 @@ export function ProjectCanvas() {
                 <Icon icon="iconoir:download" width="13" /> Download
               </button>
             </Show>
+            <Show when={selectionMoreEntries().length > 0}>
+              <button
+                class="flex items-center gap-1 px-2 py-1 rounded hover:bg-panel/10 cursor-pointer"
+                title="More actions"
+                onClick={(e) => openMenuAt(e, selectionMoreEntries())}
+              >
+                <Icon icon="iconoir:more-horiz" width="13" /> More
+              </button>
+            </Show>
             <Show when={canDeleteDeliverable()}>
               <button
                 class="flex items-center gap-1 px-2 py-1 rounded text-on-brand-danger hover:bg-panel/10 cursor-pointer"
@@ -3686,6 +3976,11 @@ export function ProjectCanvas() {
             deliverables={store.deliverables()}
             current={focusedDeliverable()}
             selectedGroup={selectedGroupInfo()}
+            deliverableList={listFocus() ?? undefined}
+            onOpenDeliverable={d => {
+              setInfoOpen(false);
+              jumpToDeliverable(d);
+            }}
             currentVersion={focusedVersion()}
             openThreadCount={focusedOpenThreadCount()}
             reviewing={!!current()}

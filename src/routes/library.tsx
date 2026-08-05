@@ -528,7 +528,7 @@ export default function LibraryPage() {
       </div>
       <ContextMenu state={ctxMenu()} onClose={() => setCtxMenu(null)} />
       <Show when={selected().size > 0}>
-        <div class="fixed bottom-5 left-1/2 -translate-x-1/2 z-30 flex items-center gap-1.5 bg-brand text-on-brand rounded-lg shadow-2xl px-3 py-2 text-xs">
+        <div class="fixed bottom-16 sm:bottom-5 left-1/2 -translate-x-1/2 z-30 flex flex-wrap items-center justify-center gap-1.5 max-w-[95vw] bg-brand text-on-brand rounded-lg shadow-2xl px-3 py-2 text-xs">
           <span class="px-2 font-medium">{selected().size} selected</span>
           <button
             class="flex items-center gap-1 px-2 py-1 rounded hover:bg-panel/10 cursor-pointer"

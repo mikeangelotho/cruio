@@ -335,11 +335,14 @@ export function GlobalSearch(props: GlobalSearchProps) {
     );
   }
 
-  function ScopeChip() {
+  function ScopeChip(props: { full?: boolean }) {
     return (
       <Show when={activeScope()}>
         {s => (
-          <span class="shrink-0 flex items-center gap-1 text-[11px] bg-neutral-100 text-neutral-600 rounded px-1.5 py-0.5 max-w-[45%]">
+          <span
+            class="shrink-0 flex items-center gap-1 text-[11px] bg-neutral-100 text-neutral-600 rounded px-1.5 py-0.5"
+            classList={{ "max-w-full": props.full, "max-w-[45%]": !props.full }}
+          >
             <Icon
               icon={s().kind === "project" ? "iconoir:folder" : "iconoir:building"}
               width="11"
@@ -389,9 +392,15 @@ export function GlobalSearch(props: GlobalSearchProps) {
             class="w-[520px] max-w-[90vw] bg-panel rounded-xl shadow-2xl border border-neutral-200 overflow-hidden"
             onClick={e => e.stopPropagation()}
           >
+            {/* Scope chip on its own row so it never squeezes the input on a
+                narrow (mobile) modal. */}
+            <Show when={activeScope()}>
+              <div class="flex items-center px-3 pt-2.5">
+                <ScopeChip full />
+              </div>
+            </Show>
             <div class="flex items-center gap-2 px-3 py-2.5 border-b border-neutral-100">
               <Icon icon="iconoir:search" width="15" class="text-neutral-400" />
-              <ScopeChip />
               <SearchField />
               <span class="text-[10px] text-neutral-400 bg-neutral-100 rounded px-1 py-0.5">Esc</span>
             </div>

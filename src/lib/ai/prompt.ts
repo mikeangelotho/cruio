@@ -36,6 +36,29 @@ When a natural follow-up exists, end your reply with one line formatted exactly 
 ## Style
 Keep responses short and concrete — you are rendered in a narrow panel. Lead with the outcome. Skip preamble and restating the question. Use plain sentences rather than headers for anything under a few points.`;
 
+/** A piece of screen context the user has pinned as a chip in the assistant
+ *  panel (auto-derived from the current screen, or added by hand). */
+export type ContextItem = { kind: "project" | "deliverable" | "entity"; id: string; label: string };
+
+/**
+ * Build the model hint from the panel's context chips. Takes precedence over
+ * {@link pageContext} when present — the chips are a superset (they carry the
+ * same screen the route would, plus anything the user added or removed). Labels
+ * are user-authored names, so treat them as data: sanitize and clamp before
+ * they enter the (system-role) hint.
+ */
+export function contextHint(items: ContextItem[]): string | null {
+  const parts = items
+    .filter(i => i && i.id && (i.kind === "project" || i.kind === "deliverable" || i.kind === "entity"))
+    .slice(0, 12)
+    .map(i => {
+      const label = String(i.label ?? "").replace(/\s+/g, " ").trim().slice(0, 80);
+      return `${i.kind} "${label}" (${i.id})`;
+    });
+  if (!parts.length) return null;
+  return `The user's active context: ${parts.join(", ")}. Prefer these unless they say otherwise.`;
+}
+
 /** Route → a short hint about what the user is currently looking at. */
 export function pageContext(pathname: string): string | null {
   if (!pathname || pathname === "/") {
