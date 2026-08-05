@@ -149,11 +149,19 @@ export function AiPanel() {
 
   return (
     <Show when={allowed() && aiPanelOpen()}>
+      {/* Mobile: dim + blur the busy background so the panel reads as a distinct
+          layer (tap to minimize). Desktop keeps the content visible — separation
+          there comes from the stronger shadow + ring below. */}
+      <div
+        class="fixed inset-0 z-30 bg-scrim backdrop-blur-sm sm:hidden"
+        aria-hidden="true"
+        onClick={minimizeAiPanel}
+      />
       <div
         ref={panelEl}
         role="dialog"
         aria-label="Assistant"
-        class="fixed bottom-12 right-4 z-30 w-[380px] max-w-[calc(100vw-2rem)] h-[min(560px,calc(100vh-6rem))] flex flex-col bg-panel border border-neutral-200 rounded-lg shadow-xl overflow-hidden transition-[opacity,transform] duration-150 ease-out"
+        class="fixed bottom-12 right-4 z-40 w-[380px] max-w-[calc(100vw-2rem)] h-[min(560px,calc(100vh-6rem))] flex flex-col bg-panel border border-neutral-200 rounded-lg shadow-2xl ring-1 ring-black/10 dark:ring-white/15 overflow-hidden transition-[opacity,transform] duration-150 ease-out"
       >
         <header class="shrink-0 h-9 pl-3 pr-1.5 flex items-center gap-2 border-b border-neutral-100">
           <span class="text-xs font-medium text-neutral-700">Assistant</span>
