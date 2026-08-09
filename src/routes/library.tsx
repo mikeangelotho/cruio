@@ -20,6 +20,9 @@ import {
 } from "../lib/library-api";
 import { myOrgsQuery, requireUserQuery } from "../lib/org-api";
 import { downloadFile, downloadZip } from "../lib/download";
+import { confirm, promptText } from "../lib/confirm";
+import { getPref, setPref } from "../lib/prefs";
+import { pushToast, setToastRaised } from "../lib/toast";
 import { fileUrl, type LibraryFile, type LibraryFolder } from "../lib/types";
 
 export const route = {
@@ -49,8 +52,15 @@ export default function LibraryPage() {
   const [dragOver, setDragOver] = createSignal(false);
   const [uploading, setUploading] = createSignal(0);
   const [highlightFileId, setHighlightFileId] = createSignal<string | null>(null);
-  const [view, setView] = createSignal<"grid" | "list">("grid");
+  const [view, setView] = createSignal<"grid" | "list">(
+    getPref("cruio_library_view", "grid") as "grid" | "list",
+  );
+  createEffect(() => setPref("cruio_library_view", view()));
   const [selected, setSelected] = createSignal<Set<string>>(new Set());
+  // anchor for shift-range selection; drag set for drag-to-folder.
+  const [lastSelectedId, setLastSelectedId] = createSignal<string | null>(null);
+  const [draggingIds, setDraggingIds] = createSignal<Set<string>>(new Set());
+  const [dragFolder, setDragFolder] = createSignal<string | null>(null);
 
   function toggleSelect(id: string) {
     setSelected(s => {
@@ -59,9 +69,140 @@ export default function LibraryPage() {
       else n.add(id);
       return n;
     });
+    setLastSelectedId(id);
   }
   const clearSelection = () => setSelected(new Set<string>());
   const selectedFiles = () => (listing()?.files ?? []).filter(f => selected().has(f.id));
+  // Canvas mirrors (versionId set) are managed from the board — exclude from
+  // library-side move/delete so those stay a canvas-only concern.
+  const movableSelected = () => selectedFiles().filter(f => !f.versionId);
+
+  // Unified selection, matching the projects/canvas model: plain click selects
+  // one (via a short timer so a double-click can open instead), shift = range,
+  // Cmd/Ctrl or the checkbox = toggle multi.
+  let clickTimer: ReturnType<typeof setTimeout> | undefined;
+  function selectOne(id: string) {
+    setSelected(new Set([id]));
+    setLastSelectedId(id);
+  }
+  function selectRangeTo(id: string) {
+    const files = visibleFiles();
+    const a = files.findIndex(f => f.id === lastSelectedId());
+    const b = files.findIndex(f => f.id === id);
+    if (a < 0 || b < 0) return selectOne(id);
+    const [lo, hi] = a < b ? [a, b] : [b, a];
+    setSelected(new Set(files.slice(lo, hi + 1).map(f => f.id)));
+  }
+  function onFileSingleClick(file: LibraryFile, e: MouseEvent) {
+    if (e.shiftKey) {
+      clearTimeout(clickTimer);
+      return selectRangeTo(file.id);
+    }
+    if (e.metaKey || e.ctrlKey) {
+      clearTimeout(clickTimer);
+      return toggleSelect(file.id);
+    }
+    clearTimeout(clickTimer);
+    clickTimer = setTimeout(() => selectOne(file.id), 200);
+  }
+  function onFileDblClick(file: LibraryFile) {
+    clearTimeout(clickTimer);
+    openFile(file);
+  }
+
+  // Lift toasts above the bottom bulk bar while a selection is active.
+  createEffect(() => setToastRaised(selected().size > 0));
+  onCleanup(() => setToastRaised(false));
+
+  function startFileDrag(file: LibraryFile, e: DragEvent) {
+    const ids = selected().has(file.id) ? new Set(selected()) : new Set([file.id]);
+    setDraggingIds(ids);
+    if (e.dataTransfer) e.dataTransfer.effectAllowed = "move";
+  }
+  async function dropOnFolder(folderId: string) {
+    const ids = draggingIds();
+    setDraggingIds(new Set());
+    setDragFolder(null);
+    const files = (listing()?.files ?? []).filter(
+      f => ids.has(f.id) && !f.versionId && f.folderId !== folderId,
+    );
+    if (!files.length) return;
+    await run(async () => {
+      for (const f of files) await moveFile(f.id, folderId);
+    });
+    clearSelection();
+    pushToast(`Moved ${files.length} file${files.length === 1 ? "" : "s"}`);
+  }
+
+  function openMoveMenu(x: number, y: number) {
+    const movable = movableSelected();
+    if (!movable.length) {
+      setError("Canvas files are managed from the board — select uploaded files to move.");
+      return;
+    }
+    const folders = (listing()?.folders ?? []).filter(f => f.id !== selectedFolder());
+    setCtxMenu({
+      x,
+      y,
+      entries: [
+        ...folders.map(f => ({
+          label: `Move to ${f.name}`,
+          icon: "iconoir:folder",
+          run: () => void moveSelectedTo(f.id),
+        })),
+        ...(folders.length ? [{ separator: true } as const] : []),
+        {
+          label: "New folder…",
+          icon: "iconoir:folder-plus",
+          run: () => void moveToNewFolder(),
+        },
+      ],
+    });
+  }
+  async function moveSelectedTo(folderId: string) {
+    const movable = movableSelected();
+    await run(async () => {
+      for (const f of movable) await moveFile(f.id, folderId);
+    });
+    clearSelection();
+    pushToast(`Moved ${movable.length} file${movable.length === 1 ? "" : "s"}`);
+  }
+  async function moveToNewFolder() {
+    const name = (await promptText({
+      title: "New folder",
+      label: "Folder name",
+      confirmLabel: "Create & move",
+    }))?.trim();
+    if (!name) return;
+    const movable = movableSelected();
+    await run(async () => {
+      const folder = await createFolder(name);
+      for (const f of movable) await moveFile(f.id, folder.id);
+      setSelectedFolder(folder.id);
+    });
+    clearSelection();
+    pushToast(`Moved ${movable.length} file${movable.length === 1 ? "" : "s"} to ${name}`);
+  }
+  async function deleteSelected() {
+    const movable = movableSelected();
+    if (!movable.length) {
+      setError("Canvas files are deleted from the board, not the library.");
+      return;
+    }
+    if (
+      !(await confirm({
+        title: `Delete ${movable.length} file${movable.length === 1 ? "" : "s"}?`,
+        confirmLabel: "Delete",
+        danger: true,
+      }))
+    )
+      return;
+    await run(async () => {
+      for (const f of movable) await deleteFile(f.id);
+    });
+    clearSelection();
+    pushToast(`Deleted ${movable.length} file${movable.length === 1 ? "" : "s"}`);
+  }
   function downloadSelected() {
     void downloadZip(selectedFiles().map(f => ({ name: f.fileName, displayName: f.name })));
   }
@@ -186,8 +327,12 @@ export default function LibraryPage() {
         {
           label: "Rename folder",
           icon: "iconoir:edit-pencil",
-          run: () => {
-            const name = window.prompt("Folder name", f.name)?.trim();
+          run: async () => {
+            const name = (await promptText({
+              title: "Rename folder",
+              label: "Folder name",
+              initial: f.name,
+            }))?.trim();
             if (name && name !== f.name) void run(() => renameFolder(f.id, name));
           },
         },
@@ -196,8 +341,16 @@ export default function LibraryPage() {
           label: "Delete folder",
           icon: "iconoir:trash",
           danger: true,
-          run: () => {
-            if (!window.confirm(`Delete ${f.name}? The folder must be empty.`)) return;
+          run: async () => {
+            if (
+              !(await confirm({
+                title: "Delete folder",
+                description: `Delete “${f.name}”? The folder must be empty.`,
+                confirmLabel: "Delete",
+                danger: true,
+              }))
+            )
+              return;
             if (selectedFolder() === f.id) setSelectedFolder(null);
             void run(() => deleteFolder(f.id));
           },
@@ -241,8 +394,12 @@ export default function LibraryPage() {
               {
                 label: "Rename",
                 icon: "iconoir:edit-pencil",
-                run: () => {
-                  const name = window.prompt("File name", file.name)?.trim();
+                run: async () => {
+                  const name = (await promptText({
+                    title: "Rename file",
+                    label: "File name",
+                    initial: file.name,
+                  }))?.trim();
                   if (name && name !== file.name) void run(() => renameFile(file.id, name));
                 },
               },
@@ -256,8 +413,16 @@ export default function LibraryPage() {
                 label: "Delete file",
                 icon: "iconoir:trash",
                 danger: true,
-                run: () => {
-                  if (!window.confirm(`Delete ${file.name}?`)) return;
+                run: async () => {
+                  if (
+                    !(await confirm({
+                      title: "Delete file",
+                      description: `Delete “${file.name}”?`,
+                      confirmLabel: "Delete",
+                      danger: true,
+                    }))
+                  )
+                    return;
                   void run(() => deleteFile(file.id));
                 },
               },
@@ -267,7 +432,7 @@ export default function LibraryPage() {
     });
   }
 
-  function onFileClick(file: LibraryFile) {
+  function openFile(file: LibraryFile) {
     const folder = (listing()?.folders ?? []).find(f => f.id === file.folderId);
     if (file.versionId && folder?.projectId) {
       navigate(`/p/${folder.projectId}/d/${file.deliverableId}`);
@@ -289,13 +454,27 @@ export default function LibraryPage() {
     <button
       class="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md text-left text-xs cursor-pointer"
       classList={{
-        "bg-neutral-200/70 text-neutral-800 font-medium": selectedFolder() === f.id,
-        "text-neutral-600 hover:bg-neutral-200/40": selectedFolder() !== f.id,
+        "bg-neutral-200/70 text-neutral-800 font-medium": selectedFolder() === f.id && dragFolder() !== f.id,
+        "text-neutral-600 hover:bg-neutral-200/40": selectedFolder() !== f.id && dragFolder() !== f.id,
+        "bg-accent-sky text-on-accent-sky ring-1 ring-accent-sky-line": dragFolder() === f.id,
       }}
-      onClick={() => setSelectedFolder(selectedFolder() === f.id ? null : f.id)}
+      onClick={() => {
+        setSelectedFolder(selectedFolder() === f.id ? null : f.id);
+        setRailOpen(false);
+      }}
       onContextMenu={e => {
         e.preventDefault();
         openFolderMenu(f, e.clientX, e.clientY);
+      }}
+      onDragOver={e => {
+        if (draggingIds().size === 0) return;
+        e.preventDefault();
+        setDragFolder(f.id);
+      }}
+      onDragLeave={() => setDragFolder(d => (d === f.id ? null : d))}
+      onDrop={e => {
+        e.preventDefault();
+        void dropOnFolder(f.id);
       }}
     >
       <Icon icon={icon} width="13" class="text-neutral-400 shrink-0" />
@@ -313,21 +492,37 @@ export default function LibraryPage() {
   const fileEntityName = (file: LibraryFile) =>
     (listing()?.folders ?? []).find(f => f.id === file.folderId)?.entityName ?? null;
 
+  // Folder rail is a slide-in drawer on mobile; this drives it (ignored at sm+).
+  const [railOpen, setRailOpen] = createSignal(false);
+
   return (
     <div class="p-1 h-full bg-canvas">
       <div class="rounded-lg overflow-clip w-full flex flex-col h-full border border-line">
         <AppNav onOrgSwitch={() => void refetch()} />
 
-        <div class="flex-1 flex min-h-0">
-          {/* folder rail */}
-          <aside class="w-56 shrink-0 border-r border-hairline bg-panel p-3 overflow-y-auto">
+        <div class="flex-1 flex min-h-0 relative">
+          {/* mobile scrim behind the folder drawer */}
+          <Show when={railOpen()}>
+            <div
+              class="absolute inset-0 z-20 bg-scrim sm:hidden"
+              onClick={() => setRailOpen(false)}
+            />
+          </Show>
+          {/* folder rail — a slide-in drawer on mobile, a static column from sm up */}
+          <aside
+            class="w-56 shrink-0 border-r border-hairline bg-panel p-3 overflow-y-auto absolute inset-y-0 left-0 z-30 shadow-xl sm:static sm:z-auto sm:shadow-none transition-transform"
+            classList={{ "-translate-x-full sm:translate-x-0": !railOpen() }}
+          >
             <button
               class="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md text-left text-xs cursor-pointer mb-2"
               classList={{
                 "bg-neutral-200/70 text-neutral-800 font-medium": selectedFolder() === null,
                 "text-neutral-600 hover:bg-neutral-200/40": selectedFolder() !== null,
               }}
-              onClick={() => setSelectedFolder(null)}
+              onClick={() => {
+                setSelectedFolder(null);
+                setRailOpen(false);
+              }}
             >
               <Icon icon="iconoir:media-image-folder" width="13" class="text-neutral-400" />
               All files
@@ -382,8 +577,13 @@ export default function LibraryPage() {
 
           {/* file grid */}
           <main
-            class="flex-1 overflow-y-auto p-6"
+            class="flex-1 min-w-0 overflow-y-auto p-3 sm:p-6"
             classList={{ "bg-accent-sky/40": dragOver() }}
+            onClick={e => {
+              // click on empty space (not a file card) clears the selection
+              if (selected().size && !(e.target as HTMLElement).closest("[data-file-card]"))
+                clearSelection();
+            }}
             onDragOver={e => {
               if (!canUpload() || !uploadTargetId()) return;
               e.preventDefault();
@@ -398,10 +598,17 @@ export default function LibraryPage() {
               if (e.dataTransfer?.files.length) void uploadFiles(e.dataTransfer.files, target);
             }}
           >
-            <div class="flex items-center justify-between mb-4">
-              <div class="flex items-center gap-3">
+            <div class="flex items-center justify-between gap-2 flex-wrap mb-4">
+              <div class="flex items-center gap-2 sm:gap-3 min-w-0">
+                <button
+                  class="sm:hidden shrink-0 p-1.5 rounded-md text-neutral-500 hover:bg-neutral-100 cursor-pointer"
+                  title="Folders"
+                  onClick={() => setRailOpen(true)}
+                >
+                  <Icon icon="iconoir:sidebar-collapse" width="18" />
+                </button>
                 <EntityAvatar name={scope.entity()?.name || "•"} size={32} />
-                <h1 class="text-lg font-semibold text-neutral-800">
+                <h1 class="text-lg font-semibold text-neutral-800 truncate">
                   {currentFolder()?.name ?? "Library"}
                 </h1>
                 <Show when={uploading() > 0}>
@@ -481,7 +688,10 @@ export default function LibraryPage() {
                           file={file}
                           layout="list"
                           entityName={scope.entity() ? null : fileEntityName(file)}
-                          onClick={() => onFileClick(file)}
+                          onClick={e => onFileSingleClick(file, e)}
+                          onDblClick={() => onFileDblClick(file)}
+                          draggable={canUpload()}
+                          onDragStart={e => startFileDrag(file, e)}
                           onContextMenu={e => openFileMenu(file, e.clientX, e.clientY)}
                           highlighted={highlightFileId() === file.id}
                           selected={selected().has(file.id)}
@@ -498,7 +708,10 @@ export default function LibraryPage() {
                       <FileCard
                         file={file}
                         entityName={scope.entity() ? null : fileEntityName(file)}
-                        onClick={() => onFileClick(file)}
+                        onClick={e => onFileSingleClick(file, e)}
+                        onDblClick={() => onFileDblClick(file)}
+                        draggable={canUpload()}
+                        onDragStart={e => startFileDrag(file, e)}
                         onContextMenu={e => openFileMenu(file, e.clientX, e.clientY)}
                         highlighted={highlightFileId() === file.id}
                         selected={selected().has(file.id)}
@@ -536,6 +749,25 @@ export default function LibraryPage() {
           >
             <Icon icon="iconoir:download" width="13" /> Download
           </button>
+          <Show when={canUpload()}>
+            <button
+              class="flex items-center gap-1 px-2 py-1 rounded hover:bg-panel/10 cursor-pointer"
+              title="Move selected files to a folder"
+              onClick={e => {
+                const r = (e.currentTarget as HTMLElement).getBoundingClientRect();
+                openMoveMenu(r.left, r.top - 8);
+              }}
+            >
+              <Icon icon="iconoir:folder" width="13" /> Move to folder
+            </button>
+            <button
+              class="flex items-center gap-1 px-2 py-1 rounded text-on-brand-danger hover:bg-panel/10 cursor-pointer"
+              title="Delete selected files"
+              onClick={() => void deleteSelected()}
+            >
+              <Icon icon="iconoir:trash" width="13" /> Delete
+            </button>
+          </Show>
           <button
             class="p-1 rounded hover:bg-panel/10 cursor-pointer"
             title="Clear selection"

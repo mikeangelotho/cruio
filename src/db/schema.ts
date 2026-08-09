@@ -68,6 +68,8 @@ export const deliverables = sqliteTable("deliverables", {
   posX: real("pos_x").notNull().default(0),
   posY: real("pos_y").notNull().default(0),
   groupId: text("group_id").references(() => deliverableGroups.id),
+  // JSON: custom attached metadata { links:[{label,url}], fields:[{key,value}] }
+  metadata: text("metadata").notNull().default("{}"),
   createdAt: integer("created_at").notNull(),
   // soft delete: hidden from the app but restorable from the history panel
   deletedAt: integer("deleted_at"),
@@ -187,6 +189,33 @@ export const approvals = sqliteTable("approvals", {
   note: text("note").notNull().default(""),
   createdAt: integer("created_at").notNull(),
 });
+
+// Public, tokenized read-only share links for people with no Cruio account.
+// A link points at one subject (a deliverable or a project canvas); anyone with
+// the token gets a read-only view until it's revoked or expires.
+export const shareLinks = sqliteTable(
+  "share_links",
+  {
+    id: text("id").primaryKey(),
+    token: text("token").notNull(),
+    // "deliverable" | "project"
+    subjectType: text("subject_type").notNull(),
+    subjectId: text("subject_id").notNull(),
+    organizationId: text("organization_id")
+      .notNull()
+      .references(() => organization.id),
+    createdBy: text("created_by")
+      .notNull()
+      .references(() => user.id),
+    createdAt: integer("created_at").notNull(),
+    revokedAt: integer("revoked_at"),
+    expiresAt: integer("expires_at"),
+  },
+  (table) => [
+    uniqueIndex("uidx_share_links_token").on(table.token),
+    index("idx_share_links_subject").on(table.subjectType, table.subjectId),
+  ],
+);
 
 // Per-project access for org members with the `guest` role.
 export const projectShares = sqliteTable(

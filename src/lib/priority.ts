@@ -15,7 +15,7 @@ export const PRIORITIES: {
   { value: "high", label: "High", icon: "iconoir:flag-outline", color: "text-orange-500", border: "border-l-orange-400", bg: "bg-accent-orange/50" },
   { value: "medium", label: "Medium", icon: "iconoir:flag-outline", color: "text-amber-500", border: "border-l-amber-400", bg: "bg-accent-amber/50" },
   { value: "low", label: "Low", icon: "iconoir:flag-outline", color: "text-sky-500", border: "border-l-sky-400", bg: "bg-accent-sky/50" },
-  { value: "none", label: "No priority", icon: "iconoir:flag-outline", color: "text-neutral-300", border: "border-l-transparent", bg: "" },
+  { value: "none", label: "No priority", icon: "iconoir:flag-outline", color: "text-neutral-400", border: "border-l-transparent", bg: "" },
 ];
 
 export function priorityMeta(p: TaskPriority) {

@@ -10,6 +10,7 @@ import {
   requireUserQuery,
 } from "../../lib/org-api";
 import { useViewerRole } from "../../lib/viewer";
+import { confirm } from "../../lib/confirm";
 import { SettingsNav } from "../../components/SettingsNav";
 import { AppFooter } from "../../components/AppFooter";
 import { EntityOptions } from "../../components/EntityOptions";
@@ -62,9 +63,17 @@ export default function EntitiesPage() {
   async function remove(id: string, name: string, projectCount: number) {
     const note =
       projectCount > 0
-        ? `Delete ${name}? ${projectCount} project${projectCount === 1 ? "" : "s"} will be left without an entity.`
-        : `Delete ${name}?`;
-    if (!window.confirm(note)) return;
+        ? `${projectCount} project${projectCount === 1 ? "" : "s"} will be left without an entity.`
+        : "This can't be undone.";
+    if (
+      !(await confirm({
+        title: `Delete ${name}?`,
+        description: note,
+        confirmLabel: "Delete",
+        danger: true,
+      }))
+    )
+      return;
     setError("");
     try {
       await deleteEntity(id);

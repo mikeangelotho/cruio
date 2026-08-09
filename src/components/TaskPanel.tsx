@@ -158,6 +158,13 @@ export function TaskPanel(props: {
                 rows={title().length > 48 ? 2 : 1}
                 value={title()}
                 onInput={e => setTitle(e.currentTarget.value)}
+                onKeyDown={e => {
+                  // Enter saves (and blurs); Shift+Enter still inserts a newline.
+                  if (e.key === "Enter" && !e.shiftKey) {
+                    e.preventDefault();
+                    e.currentTarget.blur();
+                  }
+                }}
                 onBlur={() => {
                   const trimmed = title().trim();
                   if (trimmed && trimmed !== task().title) {
@@ -170,14 +177,16 @@ export function TaskPanel(props: {
 
               <div class="mt-4 grid grid-cols-[80px_1fr] gap-y-3 text-xs items-center">
                 <span class="text-neutral-400">Priority</span>
-                <div class="flex gap-1">
+                <div class="flex items-center gap-1">
                   <For each={PRIORITIES}>
                     {p => (
                       <button
-                        class="p-1.5 rounded-md cursor-pointer"
+                        class="p-1.5 rounded-md cursor-pointer border"
                         classList={{
-                          "bg-neutral-100": task().priority === p.value,
-                          "hover:bg-neutral-50": task().priority !== p.value,
+                          "bg-neutral-100 border-neutral-300 ring-1 ring-neutral-300":
+                            task().priority === p.value,
+                          "border-transparent hover:bg-neutral-50":
+                            task().priority !== p.value,
                         }}
                         title={p.label}
                         onClick={() =>
@@ -188,6 +197,9 @@ export function TaskPanel(props: {
                       </button>
                     )}
                   </For>
+                  <span class="ml-2 text-[11px] text-neutral-500">
+                    {priorityMeta(task().priority).label}
+                  </span>
                 </div>
 
                 <span class="text-neutral-400">Assignee</span>

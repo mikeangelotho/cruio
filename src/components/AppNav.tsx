@@ -9,6 +9,7 @@ import {
   sessionQuery,
 } from "../lib/org-api";
 import { authClient } from "../lib/auth-client";
+import { openWorkloadCounts } from "../lib/api";
 import { useViewerRole } from "../lib/viewer";
 import { EntityAvatar, SquareAvatar } from "./Avatar";
 import { GlobalSearch } from "./GlobalSearch";
@@ -29,6 +30,13 @@ export function AppNav(props: { onOrgSwitch?: () => void }) {
     () => listEntities(),
   );
   const scope = useScope();
+  // "To do" counts for the nav badges (open tasks / deliverables needing work),
+  // scoped to the current entity so the numbers match the page you're on —
+  // keyed on (org, entity) so switching scope refetches.
+  const [workload] = createResource(
+    () => ({ org: user()?.activeOrganizationId ?? null, entity: scope.entity()?.id ?? null }),
+    src => (src.org ? openWorkloadCounts(src.entity) : Promise.resolve({ tasks: 0, deliverables: 0 })),
+  );
   // inline "New entity" creation from the entity dropdown
   const [addingEntity, setAddingEntity] = createSignal(false);
   // mobile: the inline search collapses to an icon that opens the modal variant
@@ -231,14 +239,32 @@ export function AppNav(props: { onOrgSwitch?: () => void }) {
 
         <div class="flex items-center gap-3 sm:gap-5 shrink-0 ml-1">
           <Show when={!isGuest()}>
-            <A href="/tasks" class={linkClass("/tasks")} title="Tasks">
+            <A
+              href="/tasks"
+              class={linkClass("/tasks")}
+              title={`${workload()?.tasks ?? 0} task${workload()?.tasks === 1 ? "" : "s"} to do`}
+            >
               <Icon icon="iconoir:task-list" width="14" />
               <span class="hidden md:inline">Tasks</span>
+              <Show when={(workload()?.tasks ?? 0) > 0}>
+                <span class="ml-0.5 inline-flex items-center justify-center min-w-4 h-4 px-1 rounded-full bg-brand text-on-brand text-[10px] font-medium leading-none">
+                  {workload()!.tasks}
+                </span>
+              </Show>
             </A>
           </Show>
-          <A href="/" class={linkClass("/")} title="Projects">
+          <A
+            href="/"
+            class={linkClass("/")}
+            title={`${workload()?.deliverables ?? 0} deliverable${workload()?.deliverables === 1 ? "" : "s"} to do`}
+          >
             <Icon icon="iconoir:folder" width="14" />
             <span class="hidden md:inline">Projects</span>
+            <Show when={(workload()?.deliverables ?? 0) > 0}>
+              <span class="ml-0.5 inline-flex items-center justify-center min-w-4 h-4 px-1 rounded-full bg-neutral-200 text-neutral-600 text-[10px] font-medium leading-none">
+                {workload()!.deliverables}
+              </span>
+            </Show>
           </A>
           <A href="/library" class={linkClass("/library")} title="Library">
             <Icon icon="iconoir:media-image-folder" width="14" />

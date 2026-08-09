@@ -34,6 +34,7 @@ import {
   type TaskPatchInput,
 } from "../lib/task-api";
 import { createUndoStack } from "../lib/undo";
+import { getBoolPref, getPref, setBoolPref, setPref } from "../lib/prefs";
 import { pushToast } from "../lib/toast";
 import { listProjects } from "../lib/api";
 import { listEntities, myOrgsQuery, requireUserQuery } from "../lib/org-api";
@@ -42,6 +43,7 @@ import { PRIORITIES, priorityMeta } from "../lib/priority";
 import { statusLocalPatch, TASK_STATUS_META, TASK_STATUS_ORDER } from "../lib/task-status";
 import { StatusConflictModal } from "../components/StatusConflictModal";
 import { createStatusConfirm } from "../lib/status-confirm";
+import { confirm } from "../lib/confirm";
 import { useViewerRole } from "../lib/viewer";
 import { onAiInvalidate } from "../lib/ai/invalidate";
 import type { Project, Task, TaskLink, TaskLinkType, TaskPriority, TaskStatus } from "../lib/types";
@@ -175,12 +177,20 @@ export default function TasksPage() {
     });
   }
 
-  const [view, setView] = createSignal<ViewMode>("list");
-  const [groupBy, setGroupBy] = createSignal<GroupBy>("project");
-  const [sortBy, setSortBy] = createSignal<SortBy>("created");
+  // View/sort/filter prefs persist per-browser (localStorage) across reloads.
+  const [view, setView] = createSignal<ViewMode>(getPref("cruio_tasks_view", "list") as ViewMode);
+  const [groupBy, setGroupBy] = createSignal<GroupBy>(getPref("cruio_tasks_group", "project") as GroupBy);
+  const [sortBy, setSortBy] = createSignal<SortBy>(getPref("cruio_tasks_sort", "created") as SortBy);
   const [search, setSearch] = createSignal("");
-  const [onlyMine, setOnlyMine] = createSignal(false);
-  const [onlyOverdue, setOnlyOverdue] = createSignal(false);
+  const [onlyMine, setOnlyMine] = createSignal(getBoolPref("cruio_tasks_onlymine"));
+  const [onlyOverdue, setOnlyOverdue] = createSignal(getBoolPref("cruio_tasks_onlyoverdue"));
+  const [hideDone, setHideDone] = createSignal(getBoolPref("cruio_tasks_hidedone"));
+  createEffect(() => setPref("cruio_tasks_view", view()));
+  createEffect(() => setPref("cruio_tasks_group", groupBy()));
+  createEffect(() => setPref("cruio_tasks_sort", sortBy()));
+  createEffect(() => setBoolPref("cruio_tasks_onlymine", onlyMine()));
+  createEffect(() => setBoolPref("cruio_tasks_onlyoverdue", onlyOverdue()));
+  createEffect(() => setBoolPref("cruio_tasks_hidedone", hideDone()));
   const [collapsed, setCollapsed] = createSignal<Set<string>>(new Set());
   const [selected, setSelected] = createSignal<Set<string>>(new Set());
   const [panelId, setPanelId] = createSignal<string | null>(null);
@@ -458,9 +468,16 @@ export default function TasksPage() {
     }
     clearSelection();
   }
-  function bulkDelete() {
+  async function bulkDelete() {
     const ids = selected();
-    if (!window.confirm(`Delete ${ids.size} task${ids.size === 1 ? "" : "s"}?`)) return;
+    if (
+      !(await confirm({
+        title: `Delete ${ids.size} task${ids.size === 1 ? "" : "s"}?`,
+        confirmLabel: "Delete",
+        danger: true,
+      }))
+    )
+      return;
     for (const id of ids) {
       const t = items().find(x => x.id === id);
       if (t) removeTask(t);
@@ -599,6 +616,7 @@ export default function TasksPage() {
     if (q) list = list.filter(t => t.title.toLowerCase().includes(q));
     if (onlyMine()) list = list.filter(t => t.assigneeId === user()?.userId);
     if (onlyOverdue()) list = list.filter(overdue);
+    if (hideDone()) list = list.filter(t => t.status !== "done");
     const by = sortBy();
     const sorted = [...list];
     sorted.sort((a, b) => {
@@ -1011,6 +1029,7 @@ export default function TasksPage() {
                   onToggle: () => setOnlyOverdue(v => !v),
                   activeClass: "bg-accent-rose text-on-accent-rose",
                 },
+                { label: "Hide done", active: hideDone(), onToggle: () => setHideDone(v => !v) },
               ]}
               search={{
                 value: search(),
@@ -1147,11 +1166,11 @@ export default function TasksPage() {
             </Show>
 
             <Show when={view() === "board" && items().length > 0}>
-              <div class="flex gap-4 items-start overflow-x-auto">
+              <div class="flex gap-4 items-start overflow-x-auto pb-2">
                 <For each={boardColumns()}>
                   {col => (
                     <div
-                      class="flex-1 min-w-[240px] rounded-lg p-2"
+                      class="flex-1 min-w-[240px] max-w-[360px] rounded-xl p-2 bg-neutral-100/60 border border-neutral-150 transition-colors"
                       classList={{ "bg-accent-sky/60 outline outline-dashed outline-accent-sky-line": dragOverStatus() === col.status }}
                       onDragOver={e => {
                         e.preventDefault();

@@ -10,6 +10,7 @@ import type {
   CanvasObject,
   Decision,
   Deliverable,
+  DeliverableMetadata,
   NoteColor,
   ProjectGraph,
   Tag,
@@ -110,6 +111,7 @@ export function createProjectStore(projectId: string) {
       posY,
       groupId,
       groupLabel: groupId ? (groupById(groupId)?.label ?? null) : null,
+      metadata: { links: [], fields: [] },
       createdAt: Date.now(),
       tags: [],
       versions: [],
@@ -121,12 +123,57 @@ export function createProjectStore(projectId: string) {
     return d;
   }
 
+  /** Duplicate a deliverable (name + " copy") offset from the original, carrying
+   *  its spec, tags, group, and latest version. Returns the new deliverable. */
+  function duplicateDeliverable(sourceId: string): Deliverable | null {
+    const src = byId(sourceId);
+    if (!src) return null;
+    const OFFSET = 32;
+    const newDelId = newId();
+    const latest = src.versions[src.versions.length - 1];
+    const newVerId = latest ? newId() : null;
+    const copy: Deliverable = {
+      id: newDelId,
+      projectId,
+      name: `${src.name} copy`,
+      spec: src.spec,
+      status: "draft",
+      posX: src.posX + OFFSET,
+      posY: src.posY + OFFSET,
+      groupId: src.groupId,
+      groupLabel: src.groupLabel,
+      metadata: {
+        links: [...src.metadata.links],
+        fields: [...src.metadata.fields],
+      },
+      createdAt: Date.now(),
+      tags: [...src.tags],
+      versions:
+        latest && newVerId
+          ? [{ ...latest, id: newVerId, deliverableId: newDelId, number: 1, createdAt: Date.now() }]
+          : [],
+      annotations: [],
+      approvals: [],
+    };
+    setState("graph", "deliverables", produce(list => list.push(copy)));
+    void api.duplicateDeliverable(newDelId, sourceId, newVerId, OFFSET, OFFSET);
+    return copy;
+  }
+
   /** Replace a deliverable's tag set (optimistic; server reconciles on reload). */
   function setDeliverableTags(id: string, tagList: Tag[]) {
     mutateDeliverable(id, d => {
       d.tags = tagList;
     });
     void tagApi.setDeliverableTags(id, tagList.map(t => t.id));
+  }
+
+  /** Replace a deliverable's custom metadata (reference links + key/value). */
+  function setDeliverableMetadata(id: string, metadata: DeliverableMetadata) {
+    mutateDeliverable(id, d => {
+      d.metadata = metadata;
+    });
+    void api.setDeliverableMetadata(id, metadata);
   }
 
   function moveDeliverable(id: string, posX: number, posY: number, sync = true) {
@@ -152,6 +199,12 @@ export function createProjectStore(projectId: string) {
       d.name = name;
     });
     void api.renameDeliverable(id, name);
+  }
+
+  /** Rename the project (optimistic; the graph's project.name drives the header). */
+  function setProjectName(name: string) {
+    setState("graph", "project", "name", name);
+    void api.renameProject(projectId, name);
   }
 
   /** Group deliverables under one label. When `parentGroupId` is passed the new
@@ -313,6 +366,82 @@ export function createProjectStore(projectId: string) {
     void api.addDeliverableToGroup(deliverableId, groupId);
   }
 
+  /** groupId + every descendant group id. */
+  function groupWithDescendants(groupId: string): Set<string> {
+    const ids = new Set([groupId]);
+    let grew = true;
+    while (grew) {
+      grew = false;
+      for (const g of groups()) {
+        if (g.parentGroupId && ids.has(g.parentGroupId) && !ids.has(g.id)) {
+          ids.add(g.id);
+          grew = true;
+        }
+      }
+    }
+    return ids;
+  }
+
+  /** Drop derived (frameless) group rows that have no members and no sub-groups —
+   * keeps deleted/emptied groups out of the "Add to group" lists. Framed
+   * containers (posX set) are intentionally preserved. */
+  function pruneEmptyDerivedGroups() {
+    setState(
+      "graph",
+      "groups",
+      produce(list => {
+        for (let i = list.length - 1; i >= 0; i--) {
+          const g = list[i];
+          if (g.posX !== null) continue;
+          const hasMembers = deliverables().some(d => d.groupId === g.id);
+          const hasChildGroups = list.some(x => x.parentGroupId === g.id);
+          if (!hasMembers && !hasChildGroups) list.splice(i, 1);
+        }
+      }),
+    );
+  }
+
+  /** Remove a group row locally + server (reparents children up). Members are
+   * handled by the caller — used after a bulk deliverable delete. */
+  function removeGroupRow(groupId: string) {
+    batch(() => {
+      setState(
+        "graph",
+        "groups",
+        g => g.parentGroupId === groupId,
+        produce(g => { g.parentGroupId = null; }),
+      );
+      setState("graph", "groups", produce(list => {
+        const i = list.findIndex(g => g.id === groupId);
+        if (i >= 0) list.splice(i, 1);
+      }));
+    });
+    void api.deleteGroup(groupId);
+  }
+
+  /** Delete a whole group: soft-delete its member deliverables and remove the
+   * group row (and descendant group rows). Returns the deleted members so a
+   * caller can offer undo. */
+  function deleteGroup(groupId: string): Deliverable[] {
+    const ids = groupWithDescendants(groupId);
+    const members = deliverables().filter(d => d.groupId && ids.has(d.groupId));
+    batch(() => {
+      setState("graph", "deliverables", produce(list => {
+        for (let i = list.length - 1; i >= 0; i--) {
+          if (members.some(m => m.id === list[i].id)) list.splice(i, 1);
+        }
+      }));
+      setState("graph", "groups", produce(list => {
+        for (let i = list.length - 1; i >= 0; i--) {
+          if (ids.has(list[i].id)) list.splice(i, 1);
+        }
+      }));
+    });
+    for (const m of members) void api.deleteDeliverable(m.id);
+    void api.deleteGroup(groupId);
+    return members;
+  }
+
   // ---- canvas objects (sticky notes) --------------------------------------
 
   const canvasObjects = () => state.graph?.canvasObjects ?? [];
@@ -397,6 +526,8 @@ export function createProjectStore(projectId: string) {
         if (i >= 0) list.splice(i, 1);
       }),
     );
+    // keep an emptied derived group from lingering in add-to-group menus
+    pruneEmptyDerivedGroups();
     void api.deleteDeliverable(id);
   }
 
@@ -530,10 +661,13 @@ export function createProjectStore(projectId: string) {
     can,
     reload: load,
     addDeliverable,
+    duplicateDeliverable,
     moveDeliverable,
     moveGroup,
     renameDeliverable,
+    setProjectName,
     setDeliverableTags,
+    setDeliverableMetadata,
     groups,
     groupById,
     rootGroupOf,
@@ -544,6 +678,8 @@ export function createProjectStore(projectId: string) {
     setGroupFrame,
     setGroupParent,
     dissolveGroup,
+    deleteGroup,
+    removeGroupRow,
     renameGroup,
     ungroup,
     addToGroup,

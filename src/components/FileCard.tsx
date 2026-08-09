@@ -30,7 +30,11 @@ export function FileCard(props: {
   /** owning folder's entity — shown as an avatar under "All Entities" scope */
   entityName?: string | null;
   onClick?: (e: MouseEvent) => void;
+  onDblClick?: (e: MouseEvent) => void;
   onContextMenu?: (e: MouseEvent) => void;
+  /** drag-to-folder support (parent stashes the drag set) */
+  draggable?: boolean;
+  onDragStart?: (e: DragEvent) => void;
   /** briefly flagged when arriving here from a search result */
   highlighted?: boolean;
   /** multi-select state + toggle (hover-revealed checkbox) */
@@ -68,9 +72,13 @@ export function FileCard(props: {
   if (props.layout === "list") {
     return (
       <div
+        data-file-card
         class="group flex items-center gap-3 px-3 py-2 hover:bg-neutral-50 cursor-pointer select-none"
         classList={{ "bg-accent-sky": props.selected, "ring-2 ring-sky-400": props.highlighted }}
+        draggable={props.draggable}
+        onDragStart={e => props.onDragStart?.(e)}
         onClick={e => props.onClick?.(e)}
+        onDblClick={e => props.onDblClick?.(e)}
         onContextMenu={e => {
           e.preventDefault();
           props.onContextMenu?.(e);
@@ -108,9 +116,17 @@ export function FileCard(props: {
 
   return (
     <div
-      class="group text-left border border-neutral-200 rounded-lg bg-panel hover:border-neutral-300 hover:shadow-sm transition-all cursor-pointer overflow-clip select-none"
-      classList={{ "ring-2 ring-sky-400": props.highlighted }}
+      data-file-card
+      class="group text-left border rounded-lg bg-panel hover:shadow-sm transition-all cursor-pointer overflow-clip select-none"
+      classList={{
+        "ring-2 ring-sky-400": props.highlighted,
+        "border-sky-500": props.selected,
+        "border-neutral-200 hover:border-neutral-300": !props.selected,
+      }}
+      draggable={props.draggable}
+      onDragStart={e => props.onDragStart?.(e)}
       onClick={e => props.onClick?.(e)}
+      onDblClick={e => props.onDblClick?.(e)}
       onContextMenu={e => {
         e.preventDefault();
         props.onContextMenu?.(e);

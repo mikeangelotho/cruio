@@ -1,7 +1,7 @@
 import { For, Show } from "solid-js";
 import { Portal } from "solid-js/web";
 import { Icon } from "@iconify-icon/solid";
-import { toasts, dismissToast } from "../lib/toast";
+import { toasts, dismissToast, toastRaised } from "../lib/toast";
 
 /**
  * Single app-wide toast stack (bottom-center), mounted once in the app root so
@@ -11,7 +11,10 @@ import { toasts, dismissToast } from "../lib/toast";
 export function ToastHost() {
   return (
     <Portal>
-      <div class="fixed bottom-16 left-1/2 -translate-x-1/2 z-[60] flex flex-col items-center gap-2 pointer-events-none">
+      <div
+        class="fixed left-1/2 -translate-x-1/2 z-[60] flex flex-col items-center gap-2 pointer-events-none transition-[bottom] duration-150"
+        classList={{ "bottom-16": !toastRaised(), "bottom-32": toastRaised() }}
+      >
         <For each={toasts()}>
           {t => (
             <div class="pointer-events-auto flex items-center gap-3 bg-brand text-on-brand rounded-lg shadow-2xl px-3 py-2 text-xs max-w-[90vw]">

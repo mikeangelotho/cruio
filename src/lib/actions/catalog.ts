@@ -1,7 +1,18 @@
 import { randomUUID } from "node:crypto";
 import * as v from "valibot";
 import { NoArgs, Text, Uuid, defineAction, type Action } from "./define";
-import { getProjectGraph, listArchivedProjects, listHistory, listProjects } from "../api";
+import {
+  archiveProject,
+  createDeliverable,
+  getProjectGraph,
+  listArchivedProjects,
+  listHistory,
+  listProjects,
+  renameDeliverable,
+  renameProject,
+  setDeliverableMetadata,
+  setProjectStatus,
+} from "../api";
 import { getMyOrganizations, getSessionUser, listEntities, listMembers } from "../org-api";
 import { globalSearch } from "../search-api";
 import { listTags } from "../tag-api";
@@ -14,15 +25,13 @@ import {
   updateTask,
 } from "../task-api";
 
-// Phase 1 action set: enough to prove the whole chain (read, search, and a
-// mutation) end to end. Grows to full coverage in Phase 4.
-//
-// The five list_library/list_project_files/list_project_history/list_members/
-// list_archived_projects actions below are a deliberate, scoped exception:
-// every "use server" function already does its own authorization/validation,
-// so wrapping a READ function is just exposing an existing capability, not
-// new logic. No new mutations are added here — that stays gated behind the
-// (not yet built) approval flow.
+// The agent's tool catalog — reads, search, and the mutations the assistant is
+// allowed to perform on the user's behalf. Every wrapped "use server" function
+// does its own authorization/validation, so exposing one here just surfaces an
+// existing capability to the model; the role gate still runs server-side on each
+// call (e.g. rename_project rejects for non-admins). Destructive, irreversible
+// operations (permanent project delete, deliverable/version delete) are
+// deliberately NOT exposed — archive is the reversible alternative the AI gets.
 
 const Status = v.picklist(["todo", "in_progress", "done"]);
 const Priority = v.picklist(["none", "low", "medium", "high", "urgent"]);
@@ -309,6 +318,104 @@ export const ACTIONS: Action[] = [
       return { id: taskId, updated: Object.keys(patch) };
     },
     summarize: r => `updated ${(r as { updated: string[] }).updated.join(", ")}`,
+  }),
+
+  defineAction({
+    name: "rename_project",
+    title: "Rename a project",
+    description:
+      "Change a project's name. Resolve projectId with list_projects or search first — do not guess ids. Requires admin/owner; the server rejects it otherwise.",
+    schema: v.object({ projectId: Uuid, name: Text(120) }),
+    mutates: true,
+    permission: { resource: "project", action: "update" },
+    run: async ({ projectId, name }) => {
+      await renameProject(projectId, name);
+      return { id: projectId, name };
+    },
+    summarize: r => `renamed to “${(r as { name: string }).name}”`,
+  }),
+
+  defineAction({
+    name: "set_project_status",
+    title: "Set project status",
+    description:
+      "Move a project to todo, in_progress, or done. The server gates advancing past tasks that aren't there yet — if it rejects, relay that the project's tasks must reach that status first.",
+    schema: v.object({ projectId: Uuid, status: Status }),
+    mutates: true,
+    permission: { resource: "project", action: "update" },
+    run: async ({ projectId, status }) => {
+      await setProjectStatus(projectId, status);
+      return { id: projectId, status };
+    },
+    summarize: r => `status → ${(r as { status: string }).status}`,
+  }),
+
+  defineAction({
+    name: "archive_project",
+    title: "Archive a project",
+    description:
+      "Archive a project — it leaves the active lists but stays restorable from the Archived section. Requires admin/owner. This is reversible; there is no permanent-delete tool.",
+    schema: v.object({ projectId: Uuid }),
+    mutates: true,
+    permission: { resource: "project", action: "delete" },
+    run: async ({ projectId }) => {
+      await archiveProject(projectId);
+      return { id: projectId, archived: true };
+    },
+    summarize: () => "archived",
+  }),
+
+  defineAction({
+    name: "create_deliverable",
+    title: "Create a deliverable",
+    description:
+      "Add a new (empty) deliverable to a project's canvas. Resolve projectId with list_projects/get_project first. It starts as a draft with no versions.",
+    schema: v.object({ projectId: Uuid, name: Text(120) }),
+    mutates: true,
+    permission: { resource: "deliverable", action: "create" },
+    run: async ({ projectId, name }) => {
+      const id = randomUUID();
+      await createDeliverable(id, projectId, name, 0, 0, "", null);
+      return { id, name };
+    },
+    summarize: r => (r as { name: string }).name,
+  }),
+
+  defineAction({
+    name: "rename_deliverable",
+    title: "Rename a deliverable",
+    description:
+      "Change a deliverable's name. Resolve deliverableId with get_project or search first — do not guess ids.",
+    schema: v.object({ deliverableId: Uuid, name: Text(120) }),
+    mutates: true,
+    permission: { resource: "deliverable", action: "update" },
+    run: async ({ deliverableId, name }) => {
+      await renameDeliverable(deliverableId, name);
+      return { id: deliverableId, name };
+    },
+    summarize: r => `renamed to “${(r as { name: string }).name}”`,
+  }),
+
+  defineAction({
+    name: "set_deliverable_metadata",
+    title: "Set deliverable metadata",
+    description:
+      "Replace a deliverable's custom metadata — reference links (label + url) and key/value fields. Sends the FULL desired set; both arrays overwrite what's there. Fetch current state first if you only mean to add.",
+    schema: v.object({
+      deliverableId: Uuid,
+      links: v.optional(v.array(v.object({ label: v.string(), url: v.string() })), []),
+      fields: v.optional(v.array(v.object({ key: v.string(), value: v.string() })), []),
+    }),
+    mutates: true,
+    permission: { resource: "deliverable", action: "update" },
+    run: async ({ deliverableId, links, fields }) => {
+      await setDeliverableMetadata(deliverableId, { links, fields });
+      return { id: deliverableId, links: links.length, fields: fields.length };
+    },
+    summarize: r => {
+      const x = r as { links: number; fields: number };
+      return `${x.links} link(s), ${x.fields} field(s)`;
+    },
   }),
 ];
 

@@ -1,7 +1,8 @@
 import { For, Show, createResource, createSignal } from "solid-js";
 import { Icon } from "@iconify-icon/solid";
-import { listArchivedProjects, restoreProject } from "../lib/api";
+import { deleteProject, listArchivedProjects, restoreProject } from "../lib/api";
 import { deleteEntity, renameEntity } from "../lib/org-api";
+import { confirm } from "../lib/confirm";
 import { NavMenu } from "./NavMenu";
 
 type Section = "rename" | "archived" | "delete";
@@ -16,6 +17,21 @@ function ArchivedProjects(props: { entityId: string | null; onChanged?: () => vo
   );
   async function restore(id: string) {
     await restoreProject(id);
+    await refetch();
+    props.onChanged?.();
+  }
+  async function remove(id: string, name: string) {
+    if (
+      !(await confirm({
+        title: `Delete “${name}”?`,
+        description:
+          "This permanently deletes the archived project and everything under it. This can't be undone.",
+        confirmLabel: "Delete permanently",
+        danger: true,
+      }))
+    )
+      return;
+    await deleteProject(id);
     await refetch();
     props.onChanged?.();
   }
@@ -45,6 +61,13 @@ function ArchivedProjects(props: { entityId: string | null; onChanged?: () => vo
                     onClick={() => void restore(p.id)}
                   >
                     Restore
+                  </button>
+                  <button
+                    class="shrink-0 p-1 rounded text-rose-500 hover:bg-accent-rose cursor-pointer"
+                    title="Delete permanently"
+                    onClick={() => void remove(p.id, p.name)}
+                  >
+                    <Icon icon="iconoir:trash" width="12" />
                   </button>
                 </div>
               )}
@@ -88,7 +111,14 @@ export function EntityOptions(props: {
 
   async function remove() {
     if (!props.entity) return;
-    if (!window.confirm(`Delete ${props.entity.name}? Its projects will be left without an entity.`))
+    if (
+      !(await confirm({
+        title: `Delete ${props.entity.name}?`,
+        description: "Its projects will be left without an entity.",
+        confirmLabel: "Delete",
+        danger: true,
+      }))
+    )
       return;
     await deleteEntity(props.entity.id);
     props.onChanged?.();

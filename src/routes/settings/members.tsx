@@ -16,6 +16,7 @@ import {
   updateMemberRole,
 } from "../../lib/org-api";
 import { useViewerRole } from "../../lib/viewer";
+import { confirm } from "../../lib/confirm";
 import { Avatar } from "../../components/Avatar";
 import { SettingsNav } from "../../components/SettingsNav";
 import { AppFooter } from "../../components/AppFooter";
@@ -116,7 +117,15 @@ export default function MembersPage() {
   }
 
   async function remove(memberId: string, name: string) {
-    if (!window.confirm(`Remove ${name} from the studio?`)) return;
+    if (
+      !(await confirm({
+        title: `Remove ${name}?`,
+        description: `${name} will lose access to this studio.`,
+        confirmLabel: "Remove",
+        danger: true,
+      }))
+    )
+      return;
     setError("");
     try {
       await removeMember(orgId()!, memberId);

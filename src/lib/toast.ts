@@ -14,6 +14,11 @@ export type Toast = {
 const [toasts, setToasts] = createSignal<Toast[]>([]);
 export { toasts };
 
+// Screens raise this while a bottom-center selection toolbar is showing so the
+// toast stack lifts above it instead of covering it (they share the bottom band).
+const [toastRaised, setToastRaised] = createSignal(false);
+export { toastRaised, setToastRaised };
+
 const timers = new Map<string, ReturnType<typeof setTimeout>>();
 
 export function dismissToast(id: string) {

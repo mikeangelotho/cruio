@@ -61,12 +61,15 @@ import { ReviewPlane } from "./ReviewPlane";
 import { ThreadSidebar } from "./ThreadSidebar";
 import { DeliverableTasksPanel } from "./DeliverableTasksPanel";
 import { LibraryPanel } from "./LibraryPanel";
+import { MetadataPanel } from "./MetadataPanel";
 import { Callout } from "./Callout";
 import { AppFooter } from "./AppFooter";
 import { CommandPalette } from "./CommandPalette";
 import { GlobalSearch } from "./GlobalSearch";
 import { createUndoStack } from "../lib/undo";
-import { pushToast } from "../lib/toast";
+import { pushToast, setToastRaised } from "../lib/toast";
+import { confirm, promptText } from "../lib/confirm";
+import { createShareLink } from "../lib/share-api";
 import { AiTrigger } from "./ai/AiTrigger";
 
 export function ProjectCanvas() {
@@ -164,6 +167,7 @@ export function ProjectCanvas() {
   const [notesOpen, setNotesOpen] = createSignal(false);
   const [tasksOpen, setTasksOpen] = createSignal(false);
   const [libraryOpen, setLibraryOpen] = createSignal(false);
+  const [metadataOpen, setMetadataOpen] = createSignal(false);
   const [infoOpen, setInfoOpen] = createSignal(false);
   // When a status-bar count label is clicked, the info modal opens focused on
   // that filtered list of deliverables. Cleared whenever the modal closes, so
@@ -180,25 +184,28 @@ export function ProjectCanvas() {
   const [sidebarOpen, setSidebarOpen] = createSignal(true);
   // The right sidebar hosts one panel at a time (history / notes / tasks /
   // library / the review thread list). Toggling one closes the rest.
-  type RightPanel = "history" | "notes" | "tasks" | "library";
+  type RightPanel = "history" | "notes" | "tasks" | "library" | "metadata";
   function openPanel(which: RightPanel) {
     const isOpen = {
       history: historyOpen(),
       notes: notesOpen(),
       tasks: tasksOpen(),
       library: libraryOpen(),
+      metadata: metadataOpen(),
     }[which];
     batch(() => {
       setHistoryOpen(false);
       setNotesOpen(false);
       setTasksOpen(false);
       setLibraryOpen(false);
+      setMetadataOpen(false);
       if (!isOpen) {
         ({
           history: setHistoryOpen,
           notes: setNotesOpen,
           tasks: setTasksOpen,
           library: setLibraryOpen,
+          metadata: setMetadataOpen,
         })[which](true);
       }
     });
@@ -231,6 +238,7 @@ export function ProjectCanvas() {
   );
   const [ctxMenu, setCtxMenu] = createSignal<MenuState | null>(null);
   const [navRenaming, setNavRenaming] = createSignal(false);
+  const [projRenaming, setProjRenaming] = createSignal(false);
   const [selected, setSelected] = createSignal<Set<string>>(new Set());
   // held-spacebar pan, Figma-style: overrides marquee-select while down
   const [spaceHeld, setSpaceHeld] = createSignal(false);
@@ -541,16 +549,39 @@ export function ProjectCanvas() {
     displacedHome.clear();
   }
 
-  /** Single-click highlight: one card, border only, no checkmark. Distinct
-   * from the multi-select `selected` set (checkmarks). */
+  /** After a group grows, push any sibling (root) groups whose outlines now
+   *  overlap the grown cluster out of the way — moving their member cards
+   *  together — so a new/expanded group never ends up nested under a neighbour.
+   *  Groups are member-derived, so "moving a group" = translating its members. */
+  function separateOverlappingGroups(grownGroupId: string) {
+    const rootId = store.rootGroupOf(grownGroupId);
+    const source = groupOutlineRect(rootId);
+    if (!source) return;
+    for (const g of store.groups()) {
+      if (g.parentGroupId || g.id === rootId) continue; // only other root groups
+      const rect = groupOutlineRect(g.id);
+      if (!rect) continue;
+      const pushed = separate(rect, source);
+      if (!pushed) continue;
+      const dx = pushed.x - rect.x;
+      const dy = pushed.y - rect.y;
+      if (dx === 0 && dy === 0) continue;
+      store.moveGroup(store.membersOfGroup(g.id), dx, dy, true);
+    }
+  }
+
+  /** Retained for camera-focus flows; tap selection now uses the `selected` set
+   * so a tap and a checkbox produce the identical selected state (checkmark). */
   const [activeId, setActiveId] = createSignal<string | null>(null);
 
-  /** Plain click — highlight exactly this card, clearing any multi-selection. */
+  /** Plain tap — select exactly this card (checkmark), replacing any prior
+   * selection. Same result as ticking its checkbox; multi-select only comes from
+   * Shift or the checkboxes (see extendSelection), never from a bare tap. */
   function highlightCard(id: string) {
     batch(() => {
-      setSelected(new Set<string>());
       setSelectedGroups(new Set<string>());
-      setActiveId(id);
+      setActiveId(null);
+      setSelected(new Set<string>([id]));
     });
   }
 
@@ -575,6 +606,13 @@ export function ProjectCanvas() {
     setSelectedGroups(new Set<string>());
     setActiveId(null);
   };
+
+  // Lift the (global) toast stack above the bottom selection toolbar while a
+  // selection is active, so undo/redo toasts don't cover the toolbar buttons.
+  createEffect(() => {
+    setToastRaised(selected().size > 0 || selectedGroups().size > 0);
+  });
+  onCleanup(() => setToastRaised(false));
 
   /** Clicking a group's label selects/deselects the whole group as a unit. */
   function toggleGroupSelect(groupId: string) {
@@ -637,10 +675,11 @@ export function ProjectCanvas() {
     if (members.length === 0) return frame;
     const pad = 14 + 12 * groupDepth(groupId);
     const b = boundsOf(members.map(effCardRect));
-    const memberRect: Rect = { x: b.x - pad, y: b.y - pad, w: b.w + pad * 2, h: b.h + pad * 2 };
-    // Union the stored frame (if any) with the member bounds so a container
-    // grows to include what's dropped in but never shrinks below its frame.
-    return frame ? boundsOf([frame, memberRect]) : memberRect;
+    // Once a group has members its outline is ALWAYS derived from those members —
+    // the stored frame no longer pins the size. This lets the outline shrink and
+    // keeps auto-arrange from fighting a manually-sized frame. (Manual resizing of
+    // populated groups is gone; the frame only positions empty containers above.)
+    return { x: b.x - pad, y: b.y - pad, w: b.w + pad * 2, h: b.h + pad * 2 };
   }
   const [groupPromptOpen, setGroupPromptOpen] = createSignal(false);
   const [renamingGroupId, setRenamingGroupId] = createSignal<string | null>(
@@ -1002,8 +1041,13 @@ export function ProjectCanvas() {
   const canTask = () => store.can("task", "create");
   const canNote = () => store.can("canvasObject", "create");
 
-  function createTaskFromDeliverable(d: Deliverable) {
-    const title = window.prompt("Task title", `Revise ${d.name}`)?.trim();
+  async function createTaskFromDeliverable(d: Deliverable) {
+    const title = (await promptText({
+      title: "New task",
+      label: "Task title",
+      initial: `Revise ${d.name}`,
+      confirmLabel: "Create",
+    }))?.trim();
     if (!title) return;
     const graph = store.state.graph;
     if (!graph) return;
@@ -1012,19 +1056,24 @@ export function ProjectCanvas() {
         projectId: graph.project.id,
         deliverableId: d.id,
       }).catch((err) =>
-        window.alert(String(err instanceof Error ? err.message : err)),
+        pushToast(String(err instanceof Error ? err.message : err)),
       ),
     );
   }
 
   /** Create a task linked to a review thread — the task carries the source
    *  comment (as its description) and the annotationId back-link. */
-  function createTaskFromComment(a: Annotation) {
+  async function createTaskFromComment(a: Annotation) {
     const graph = store.state.graph;
     if (!graph) return;
     const first = a.comments[0]?.body ?? "";
     const suggested = first ? first.slice(0, 80) : "Follow up on comment";
-    const title = window.prompt("Task title", suggested)?.trim();
+    const title = (await promptText({
+      title: "New task",
+      label: "Task title",
+      initial: suggested,
+      confirmLabel: "Create",
+    }))?.trim();
     if (!title) return;
     void import("../lib/task-api").then(({ createTask }) =>
       createTask(newId(), title, {
@@ -1034,7 +1083,7 @@ export function ProjectCanvas() {
         description: first ? `From review comment: “${first}”` : "",
       })
         .then(() => flash("Task created from comment"))
-        .catch((err) => window.alert(String(err instanceof Error ? err.message : err))),
+        .catch((err) => pushToast(String(err instanceof Error ? err.message : err))),
     );
   }
 
@@ -1478,8 +1527,12 @@ export function ProjectCanvas() {
     commitNotePosition(o.id, snapped.x, snapped.y, done);
   }
 
-  function editNoteTags(o: CanvasObject) {
-    const input = window.prompt("Tags (comma-separated)", o.tags.join(", "));
+  async function editNoteTags(o: CanvasObject) {
+    const input = await promptText({
+      title: "Edit tags",
+      label: "Tags (comma-separated)",
+      initial: o.tags.join(", "),
+    });
     if (input === null) return;
     const tags = input
       .split(",")
@@ -1544,8 +1597,15 @@ export function ProjectCanvas() {
     highlightCard(d.id);
   }
 
-  function deleteNoteFromPanel(note: CanvasObject) {
-    if (!window.confirm("Delete this sticky note?")) return;
+  async function deleteNoteFromPanel(note: CanvasObject) {
+    if (
+      !(await confirm({
+        title: "Delete sticky note?",
+        confirmLabel: "Delete",
+        danger: true,
+      }))
+    )
+      return;
     store.removeNote(note.id);
   }
 
@@ -1672,6 +1732,9 @@ export function ProjectCanvas() {
     const free = findFreeSpot(store.deliverables(), base.x, base.y);
     const n = `Deliverable ${store.deliverables().length + 1}`;
     const d = store.addDeliverable(n, free.x, free.y, groupId);
+    // The group just grew — nudge overlapping neighbour groups aside rather than
+    // letting this group's outline expand under them.
+    queueMicrotask(() => separateOverlappingGroups(groupId));
     record("Create deliverable", () => store.removeDeliverable(d.id), () => store.restoreDeliverable(d));
     flash(`Added ${d.name} to “${store.groupById(groupId)?.label ?? "group"}”`);
   }
@@ -1990,14 +2053,17 @@ export function ProjectCanvas() {
 
   // ---- deletion (soft; restorable from History) ----------------------------
 
-  function confirmDeleteVersion(v?: Version) {
+  async function confirmDeleteVersion(v?: Version) {
     const d = current();
     const target = v ?? currentVersion();
     if (!d || !target || !canDeleteVersion()) return;
     if (
-      !window.confirm(
-        `Delete v${target.number} of ${d.name}? You can restore it from History.`,
-      )
+      !(await confirm({
+        title: `Delete v${target.number} of “${d.name}”?`,
+        description: "You can restore it from History.",
+        confirmLabel: "Delete",
+        danger: true,
+      }))
     )
       return;
     batch(() => {
@@ -2015,9 +2081,51 @@ export function ProjectCanvas() {
     flash(`v${target.number} deleted — restore from History (H)`);
   }
 
-  function confirmDeleteDeliverable(d: Deliverable) {
+  async function shareDeliverableLink(d: Deliverable) {
+    if (!store.can("project", "share")) return;
+    try {
+      const { token } = await createShareLink("deliverable", d.id);
+      const url = `${window.location.origin}/s/${token}`;
+      try {
+        await navigator.clipboard.writeText(url);
+        pushToast("Share link copied — anyone with it can view (read-only)");
+      } catch {
+        // clipboard blocked — show the URL so it can be copied manually
+        await promptText({
+          title: "Share link",
+          description: "Anyone with this link can view this deliverable (read-only).",
+          label: "Link",
+          initial: url,
+          confirmLabel: "Done",
+        });
+      }
+    } catch {
+      pushToast("Couldn't create a share link");
+    }
+  }
+
+  function duplicateDeliverableU(d: Deliverable) {
+    if (!canCreate()) return;
+    const copy = store.duplicateDeliverable(d.id);
+    if (!copy) return;
+    record(
+      "Duplicate deliverable",
+      () => store.removeDeliverable(copy.id),
+      () => store.restoreDeliverable(copy),
+    );
+    flash(`Duplicated “${d.name}”`);
+  }
+
+  async function confirmDeleteDeliverable(d: Deliverable) {
     if (!canDeleteDeliverable()) return;
-    if (!window.confirm(`Delete ${d.name}? You can restore it from History.`))
+    if (
+      !(await confirm({
+        title: `Delete “${d.name}”?`,
+        description: "You can restore it from History.",
+        confirmLabel: "Delete",
+        danger: true,
+      }))
+    )
       return;
     if (reviewId() === d.id) exitReview();
     store.removeDeliverable(d.id);
@@ -2025,19 +2133,25 @@ export function ProjectCanvas() {
     flash(`${d.name} deleted — restore from History (H)`);
   }
 
-  function bulkDeleteDeliverables() {
+  async function bulkDeleteDeliverables() {
     if (!canDeleteDeliverable()) return;
     const ids = selected();
     if (
-      !window.confirm(
-        `Delete ${ids.size} deliverable${ids.size === 1 ? "" : "s"}? You can restore them from History.`,
-      )
+      !(await confirm({
+        title: `Delete ${ids.size} deliverable${ids.size === 1 ? "" : "s"}?`,
+        description: "You can restore them from History.",
+        confirmLabel: "Delete",
+        danger: true,
+      }))
     )
       return;
     for (const id of ids) {
       if (reviewId() === id) exitReview();
       store.removeDeliverable(id);
     }
+    // A group selected via its label puts its id in selectedGroups(); remove those
+    // now-empty group rows too so the group doesn't persist (was the reported bug).
+    for (const gid of selectedGroups()) store.removeGroupRow(gid);
     clearSelection();
     flash(
       `${ids.size} deliverable${ids.size === 1 ? "" : "s"} deleted — restore from History (H)`,
@@ -2232,6 +2346,36 @@ export function ProjectCanvas() {
           flash(`Ungrouped “${g.label}”`);
         },
       },
+      { separator: true },
+      {
+        label: "Delete group",
+        icon: "iconoir:trash",
+        danger: true,
+        run: async () => {
+          const members = store.membersOfGroup(g.id);
+          if (
+            !(await confirm({
+              title: `Delete group “${g.label}”?`,
+              description: members.length
+                ? `${members.length} deliverable${members.length === 1 ? "" : "s"} will be deleted too (restorable from History).`
+                : "The empty group will be removed.",
+              confirmLabel: "Delete",
+              danger: true,
+            }))
+          )
+            return;
+          const deleted = store.deleteGroup(g.id);
+          if (selectedGroups().has(g.id) || deleted.length) clearSelection();
+          record(
+            "Delete group",
+            () => {
+              for (const d of deleted) store.restoreDeliverable(d);
+            },
+            () => store.deleteGroup(g.id),
+          );
+          flash(`Deleted group “${g.label}”`);
+        },
+      },
     ];
   }
 
@@ -2275,12 +2419,38 @@ export function ProjectCanvas() {
             },
           ]
         : []),
+      ...(canCreate()
+        ? [
+            {
+              label: "Duplicate",
+              icon: "iconoir:copy",
+              run: () => duplicateDeliverableU(d),
+            },
+          ]
+        : []),
       ...(canTask()
         ? [
             {
               label: "Create task",
               icon: "iconoir:task-list",
               run: () => createTaskFromDeliverable(d),
+            },
+          ]
+        : []),
+      {
+        label: "Metadata",
+        icon: "iconoir:label",
+        run: () => {
+          highlightCard(d.id);
+          openPanel("metadata");
+        },
+      },
+      ...(store.can("project", "share")
+        ? [
+            {
+              label: "Copy share link",
+              icon: "iconoir:share-android",
+              run: () => void shareDeliverableLink(d),
             },
           ]
         : []),
@@ -2425,6 +2595,17 @@ export function ProjectCanvas() {
     }
     if (e.key === "i" || e.key === "I") {
       setInfoOpen((o) => !o);
+      return;
+    }
+    // keyboard zoom: +/= zoom in, -/_ zoom out (mirrors the on-screen +/- buttons)
+    if (e.key === "+" || e.key === "=") {
+      e.preventDefault();
+      zoomAtCenter(1.25);
+      return;
+    }
+    if (e.key === "-" || e.key === "_") {
+      e.preventDefault();
+      zoomAtCenter(0.8);
       return;
     }
 
@@ -2627,9 +2808,45 @@ export function ProjectCanvas() {
             >
               <Icon icon="iconoir:arrow-left" width="16" />
             </button>
-            <span class="font-medium text-neutral-800 truncate">
-              {store.state.graph?.project.name ?? "…"}
-            </span>
+            <Show
+              when={projRenaming() && canEdit()}
+              fallback={
+                <span
+                  class="font-medium text-neutral-800 truncate cursor-text"
+                  title={canEdit() ? "Double-click to rename" : undefined}
+                  onDblClick={() => {
+                    if (canEdit()) setProjRenaming(true);
+                  }}
+                >
+                  {store.state.graph?.project.name ?? "…"}
+                </span>
+              }
+            >
+              <input
+                class="text-sm font-medium text-neutral-800 bg-neutral-50 border border-neutral-200 rounded px-1 py-0.5 outline-none select-text min-w-0"
+                value={store.state.graph?.project.name ?? ""}
+                ref={(el) =>
+                  queueMicrotask(() => {
+                    el.focus();
+                    el.select();
+                  })
+                }
+                onKeyDown={(e) => {
+                  if (e.key === "Enter") (e.currentTarget as HTMLInputElement).blur();
+                  if (e.key === "Escape") {
+                    (e.currentTarget as HTMLInputElement).value =
+                      store.state.graph?.project.name ?? "";
+                    (e.currentTarget as HTMLInputElement).blur();
+                  }
+                }}
+                onBlur={(e) => {
+                  const next = e.currentTarget.value.trim();
+                  const prev = store.state.graph?.project.name ?? "";
+                  if (next && next !== prev) store.setProjectName(next);
+                  setProjRenaming(false);
+                }}
+              />
+            </Show>
             <Show when={store.state.graph?.project.entityName}>
               <span class="bg-muted text-neutral-500 text-xs py-0.5 px-1.5 rounded truncate max-w-32 shrink-0">
                 {store.state.graph!.project.entityName}
@@ -3105,25 +3322,9 @@ export function ProjectCanvas() {
                                     </Show>
                                   </div>
                                 </Show>
-                                {/* resize handle — container (framed) groups only */}
-                                <Show
-                                  when={
-                                    canEdit() &&
-                                    store.groupById(g.id)?.posX != null
-                                  }
-                                >
-                                  <div
-                                    class="absolute bottom-0 right-0 size-3 rounded-sm bg-violet-400 hover:bg-violet-600 pointer-events-auto cursor-nwse-resize"
-                                    style={{
-                                      transform: `scale(${1 / camera.cam.zoom})`,
-                                      "transform-origin": "100% 100%",
-                                    }}
-                                    title="Resize group"
-                                    onPointerDown={(e) =>
-                                      onGroupResizePointerDown(e, g.id)
-                                    }
-                                  />
-                                </Show>
+                                {/* Manual group resizing removed — group bounds are
+                                    always derived from member cards, so there's no
+                                    frame to drag and nothing to fight auto-arrange. */}
                               </div>
                             )}
                           </Show>
@@ -3628,6 +3829,9 @@ export function ProjectCanvas() {
                       <Show
                         when={libraryOpen()}
                         fallback={
+                          <Show
+                            when={metadataOpen()}
+                            fallback={
                           <Show when={current() && sidebarOpen()}>
                             <ThreadSidebar
                               annotations={versionAnnotations()}
@@ -3646,6 +3850,15 @@ export function ProjectCanvas() {
                               onCreateTask={
                                 canTask() ? createTaskFromComment : undefined
                               }
+                            />
+                          </Show>
+                            }
+                          >
+                            <MetadataPanel
+                              deliverable={focusedDeliverable()}
+                              readOnly={!canEdit()}
+                              onSave={(id, m) => store.setDeliverableMetadata(id, m)}
+                              onClose={() => setMetadataOpen(false)}
                             />
                           </Show>
                         }

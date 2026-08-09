@@ -14,7 +14,7 @@ import { timeAgo } from "../../lib/time";
 import { NavMenu } from "../NavMenu";
 import { MessageList } from "./MessageList";
 
-const HIDDEN = ["/sign-in", "/sign-up", "/onboarding", "/invite"];
+const HIDDEN = ["/sign-in", "/sign-up", "/onboarding", "/invite", "/s/"];
 
 const CTX_ICON: Record<ContextItem["kind"], string> = {
   project: "iconoir:folder",
@@ -161,7 +161,7 @@ export function AiPanel() {
         ref={panelEl}
         role="dialog"
         aria-label="Assistant"
-        class="fixed bottom-12 right-4 z-40 w-[380px] max-w-[calc(100vw-2rem)] h-[min(560px,calc(100vh-6rem))] flex flex-col bg-panel border border-neutral-200 rounded-lg shadow-2xl ring-1 ring-black/10 dark:ring-white/15 overflow-hidden transition-[opacity,transform] duration-150 ease-out"
+        class="fixed top-0 right-0 z-40 h-full w-full sm:w-[400px] max-w-full flex flex-col bg-panel border-l border-neutral-200 shadow-2xl ring-1 ring-black/10 dark:ring-white/15 overflow-hidden transition-[opacity,transform] duration-150 ease-out"
       >
         <header class="shrink-0 h-9 pl-3 pr-1.5 flex items-center gap-2 border-b border-neutral-100">
           <span class="text-xs font-medium text-neutral-700">Assistant</span>

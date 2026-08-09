@@ -106,6 +106,24 @@ export interface Approval {
   createdAt: number;
 }
 
+/** A labeled reference URL attached to a deliverable's metadata. */
+export interface MetadataLink {
+  label: string;
+  url: string;
+}
+
+/** A custom key/value field attached to a deliverable's metadata. */
+export interface MetadataField {
+  key: string;
+  value: string;
+}
+
+/** Custom attached metadata for a deliverable (reference links + free fields). */
+export interface DeliverableMetadata {
+  links: MetadataLink[];
+  fields: MetadataField[];
+}
+
 export interface Deliverable {
   id: string;
   projectId: string;
@@ -114,6 +132,8 @@ export interface Deliverable {
   status: DeliverableStatus;
   posX: number;
   posY: number;
+  /** reference links + custom key/value fields (see MetadataPanel) */
+  metadata: DeliverableMetadata;
   /** set when this is a size/format variant grouped with sibling deliverables */
   groupId: string | null;
   /** joined for display */

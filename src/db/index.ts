@@ -130,6 +130,7 @@ CREATE TABLE IF NOT EXISTS deliverables (
   pos_x REAL NOT NULL DEFAULT 0,
   pos_y REAL NOT NULL DEFAULT 0,
   group_id TEXT REFERENCES deliverable_groups(id),
+  metadata TEXT NOT NULL DEFAULT '{}',
   created_at INTEGER NOT NULL,
   deleted_at INTEGER,
   deleted_by TEXT
@@ -211,6 +212,19 @@ CREATE TABLE IF NOT EXISTS history (
   created_at INTEGER NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_history_project ON history(project_id, created_at);
+CREATE TABLE IF NOT EXISTS share_links (
+  id TEXT PRIMARY KEY,
+  token TEXT NOT NULL,
+  subject_type TEXT NOT NULL,
+  subject_id TEXT NOT NULL,
+  organization_id TEXT NOT NULL REFERENCES organization(id),
+  created_by TEXT NOT NULL REFERENCES user(id),
+  created_at INTEGER NOT NULL,
+  revoked_at INTEGER,
+  expires_at INTEGER
+);
+CREATE UNIQUE INDEX IF NOT EXISTS uidx_share_links_token ON share_links(token);
+CREATE INDEX IF NOT EXISTS idx_share_links_subject ON share_links(subject_type, subject_id);
 CREATE TABLE IF NOT EXISTS project_shares (
   id TEXT PRIMARY KEY,
   project_id TEXT NOT NULL REFERENCES projects(id),
@@ -392,6 +406,9 @@ async function migrate() {
     const cols = await columnsOf("deliverables");
     if (!cols.includes("group_id")) {
       await client.execute("ALTER TABLE deliverables ADD COLUMN group_id TEXT REFERENCES deliverable_groups(id)");
+    }
+    if (!cols.includes("metadata")) {
+      await client.execute("ALTER TABLE deliverables ADD COLUMN metadata TEXT NOT NULL DEFAULT '{}'");
     }
   }
 

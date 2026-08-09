@@ -10,9 +10,11 @@ import {
 } from "solid-js";
 import { A, createAsync, revalidate, useNavigate } from "@solidjs/router";
 import { Icon } from "@iconify-icon/solid";
-import { archiveProject, createProject, listProjects, restoreProject, setProjectStatus } from "../lib/api";
+import { archiveProject, createProject, deleteProject, listProjects, renameProject, restoreProject, setProjectStatus } from "../lib/api";
 import { createUndoStack } from "../lib/undo";
-import { pushToast } from "../lib/toast";
+import { confirm, promptText } from "../lib/confirm";
+import { getBoolPref, getPref, setBoolPref, setPref } from "../lib/prefs";
+import { pushToast, setToastRaised } from "../lib/toast";
 import {
   createEntity,
   listEntities,
@@ -82,6 +84,10 @@ export default function Home() {
   // keep the card responsive without a full refetch that would remount it.
   const [statusOverrides, setStatusOverrides] = createSignal<Record<string, ProjectStatus>>({});
   const projectStatus = (p: Project): ProjectStatus => statusOverrides()[p.id] ?? p.status;
+  // Optimistic overlay for inline rename, same rationale as tag/status overlays.
+  const [nameOverrides, setNameOverrides] = createSignal<Record<string, string>>({});
+  const projectName = (p: Project) => nameOverrides()[p.id] ?? p.name;
+  const [renamingId, setRenamingId] = createSignal<string | null>(null);
 
   // ---- undo/redo (per-screen; resets on navigation) ------------------------
   const undo = createUndoStack();
@@ -104,6 +110,39 @@ export default function Home() {
       () => void restoreProject(id).then(() => refetch()),
       () => void archiveProject(id).then(() => refetch()),
     );
+  }
+
+  function applyRename(p: Project, name: string) {
+    const trimmed = name.trim();
+    setRenamingId(null);
+    if (!trimmed || trimmed === projectName(p)) return;
+    const prev = projectName(p);
+    setNameOverrides(o => ({ ...o, [p.id]: trimmed }));
+    void renameProject(p.id, trimmed).then(() => refetch()).catch(() => {
+      setNameOverrides(o => ({ ...o, [p.id]: prev }));
+      void refetch();
+    });
+  }
+
+  // Permanent delete — irreversible, so no undo; the confirm modal is the guard.
+  async function deleteOne(p: Project) {
+    if (
+      !(await confirm({
+        title: `Delete “${projectName(p)}”?`,
+        description:
+          "This permanently deletes the project and all of its deliverables, versions, library files, tasks, and history. This can't be undone.",
+        confirmLabel: "Delete permanently",
+        danger: true,
+      }))
+    )
+      return;
+    setSelected(s => {
+      const n = new Set(s);
+      n.delete(p.id);
+      return n;
+    });
+    void deleteProject(p.id).then(() => refetch());
+    pushToast(`Deleted “${projectName(p)}”`);
   }
 
   function setStatusRaw(id: string, status: ProjectStatus, fallback: ProjectStatus) {
@@ -202,7 +241,8 @@ export default function Home() {
     { value: "tag", label: "By tag" },
     { value: "status", label: "By status" },
   ];
-  const [sortMode, setSortMode] = createSignal<SortMode>("newest");
+  // View/sort prefs persist per-browser (localStorage) so they survive reload.
+  const [sortMode, setSortMode] = createSignal<SortMode>(getPref("cruio_projects_sort", "newest") as SortMode);
   const [tagFilter, setTagFilter] = createSignal<Set<string>>(new Set());
   const [search, setSearch] = createSignal("");
   type GroupMode = "none" | "entity" | "tag" | "status";
@@ -212,9 +252,14 @@ export default function Home() {
     { value: "tag", label: "Tag" },
     { value: "status", label: "Status" },
   ];
-  const [groupMode, setGroupMode] = createSignal<GroupMode>("none");
+  const [groupMode, setGroupMode] = createSignal<GroupMode>(getPref("cruio_projects_group", "none") as GroupMode);
   type ViewMode = "grid" | "list";
-  const [view, setView] = createSignal<ViewMode>("grid");
+  const [view, setView] = createSignal<ViewMode>(getPref("cruio_projects_view", "grid") as ViewMode);
+  const [hideDone, setHideDone] = createSignal(getBoolPref("cruio_projects_hidedone"));
+  createEffect(() => setPref("cruio_projects_sort", sortMode()));
+  createEffect(() => setPref("cruio_projects_group", groupMode()));
+  createEffect(() => setPref("cruio_projects_view", view()));
+  createEffect(() => setBoolPref("cruio_projects_hidedone", hideDone()));
   // collapsible group sections (parity with the Tasks screen)
   const [collapsed, setCollapsed] = createSignal<Set<string>>(new Set());
   function toggleCollapsed(key: string) {
@@ -243,6 +288,7 @@ export default function Home() {
     if (tf.size > 0) list = list.filter(p => projectTags(p).some(t => tf.has(t.id)));
     const q = search().trim().toLowerCase();
     if (q) list = list.filter(p => p.name.toLowerCase().includes(q));
+    if (hideDone()) list = list.filter(p => projectStatus(p) !== "done");
     const mode = sortMode();
     const sorted = [...list];
     sorted.sort((a, b) => {
@@ -317,11 +363,39 @@ export default function Home() {
       return n;
     });
   }
+
+  // Single click selects a project, double click opens it. A short timer lets a
+  // double click cancel the pending single-click select. Clicks on inner controls
+  // (checkbox, kebab, tag menu, links) are ignored so they keep their own behavior.
+  let cardClickTimer: ReturnType<typeof setTimeout> | undefined;
+  const isInnerControl = (e: MouseEvent) =>
+    !!(e.target as HTMLElement).closest("button, a, input, [data-no-nav]");
+  function onProjectClick(p: Project, e: MouseEvent) {
+    if (isInnerControl(e)) return;
+    clearTimeout(cardClickTimer);
+    cardClickTimer = setTimeout(() => toggleSelect(p.id), 200);
+  }
+  function onProjectDblClick(p: Project, e: MouseEvent) {
+    if (isInnerControl(e)) return;
+    clearTimeout(cardClickTimer);
+    navigate(`/p/${p.id}`);
+  }
   const clearSelection = () => setSelected(new Set<string>());
+
+  // Lift the toast stack above the bottom bulk-action bar while selecting.
+  createEffect(() => setToastRaised(selected().size > 0));
+  onCleanup(() => setToastRaised(false));
 
   async function bulkArchive() {
     const ids = selected();
-    if (!window.confirm(`Archive ${ids.size} project${ids.size === 1 ? "" : "s"}? You can restore them from the Archived section.`)) return;
+    if (
+      !(await confirm({
+        title: `Archive ${ids.size} project${ids.size === 1 ? "" : "s"}?`,
+        description: "You can restore them from the Archived section.",
+        confirmLabel: "Archive",
+      }))
+    )
+      return;
     for (const id of ids) archiveOne(id);
     clearSelection();
   }
@@ -339,20 +413,32 @@ export default function Home() {
         },
         ...(isAdmin()
           ? [
+              {
+                label: "Rename",
+                icon: "iconoir:edit-pencil",
+                run: () => setRenamingId(p.id),
+              },
               { separator: true } as const,
               {
                 label: "Archive project",
                 icon: "iconoir:archive",
-                danger: true,
-                run: () => {
+                run: async () => {
                   if (
-                    !window.confirm(
-                      `Archive ${p.name}? You can restore it from the Archived section.`,
-                    )
+                    !(await confirm({
+                      title: `Archive “${projectName(p)}”?`,
+                      description: "You can restore it from the Archived section.",
+                      confirmLabel: "Archive",
+                    }))
                   )
                     return;
                   archiveOne(p.id);
                 },
+              },
+              {
+                label: "Delete project",
+                icon: "iconoir:trash",
+                danger: true,
+                run: () => void deleteOne(p),
               },
             ]
           : []),
@@ -547,7 +633,8 @@ export default function Home() {
         "border-sky-500 ring-2 ring-sky-500": selected().has(p.id),
         "border-neutral-200 hover:border-neutral-300": !selected().has(p.id),
       }}
-      onClick={() => navigate(`/p/${p.id}`)}
+      onClick={(e) => onProjectClick(p, e)}
+      onDblClick={(e) => onProjectDblClick(p, e)}
       onContextMenu={(e) => {
         e.preventDefault();
         openProjectMenu(p, e.clientX, e.clientY);
@@ -566,7 +653,34 @@ export default function Home() {
 
       <div class="p-3.5">
         <div class="flex items-center justify-between gap-2">
-          <span class="text-sm font-medium text-neutral-800 truncate min-w-0">{p.name}</span>
+          <Show
+            when={renamingId() === p.id}
+            fallback={
+              <span
+                class="text-sm font-medium text-neutral-800 truncate min-w-0"
+                onDblClick={(e) => {
+                  e.stopPropagation();
+                  if (isAdmin()) setRenamingId(p.id);
+                }}
+              >
+                {projectName(p)}
+              </span>
+            }
+          >
+            <input
+              class="text-sm font-medium text-neutral-800 min-w-0 flex-1 bg-panel border border-sky-400 rounded px-1 py-0.5 outline-none"
+              value={projectName(p)}
+              ref={(el) => queueMicrotask(() => { el.focus(); el.select(); })}
+              onClick={(e) => e.stopPropagation()}
+              onPointerDown={(e) => e.stopPropagation()}
+              onDblClick={(e) => e.stopPropagation()}
+              onBlur={(e) => applyRename(p, e.currentTarget.value)}
+              onKeyDown={(e) => {
+                if (e.key === "Enter") { e.preventDefault(); e.currentTarget.blur(); }
+                else if (e.key === "Escape") { e.preventDefault(); setRenamingId(null); }
+              }}
+            />
+          </Show>
           <div class="flex items-center gap-1.5 shrink-0">
             {/* entity chip is redundant once scoped into that entity */}
             <Show when={!scope.entity() && groupMode() !== "entity" && p.entityName}>
@@ -613,7 +727,8 @@ export default function Home() {
       data-selectable
       class="group flex items-center gap-3 px-3 py-2.5 hover:bg-neutral-50 cursor-pointer"
       classList={{ "bg-accent-sky": selected().has(p.id) }}
-      onClick={() => navigate(`/p/${p.id}`)}
+      onClick={(e) => onProjectClick(p, e)}
+      onDblClick={(e) => onProjectDblClick(p, e)}
       onContextMenu={(e) => {
         e.preventDefault();
         openProjectMenu(p, e.clientX, e.clientY);
@@ -628,7 +743,34 @@ export default function Home() {
           <img src={fileUrl(p.cover!)} alt="" class="w-full h-full object-cover" draggable={false} />
         </Show>
       </div>
-      <span class="text-sm font-medium text-neutral-800 truncate min-w-0 flex-1 sm:flex-none sm:w-48">{p.name}</span>
+      <Show
+        when={renamingId() === p.id}
+        fallback={
+          <span
+            class="text-sm font-medium text-neutral-800 truncate min-w-0 flex-1 sm:flex-none sm:w-48"
+            onDblClick={(e) => {
+              e.stopPropagation();
+              if (isAdmin()) setRenamingId(p.id);
+            }}
+          >
+            {projectName(p)}
+          </span>
+        }
+      >
+        <input
+          class="text-sm font-medium text-neutral-800 min-w-0 flex-1 sm:flex-none sm:w-48 bg-panel border border-sky-400 rounded px-1 py-0.5 outline-none"
+          value={projectName(p)}
+          ref={(el) => queueMicrotask(() => { el.focus(); el.select(); })}
+          onClick={(e) => e.stopPropagation()}
+          onPointerDown={(e) => e.stopPropagation()}
+          onDblClick={(e) => e.stopPropagation()}
+          onBlur={(e) => applyRename(p, e.currentTarget.value)}
+          onKeyDown={(e) => {
+            if (e.key === "Enter") { e.preventDefault(); e.currentTarget.blur(); }
+            else if (e.key === "Escape") { e.preventDefault(); setRenamingId(null); }
+          }}
+        />
+      </Show>
       <span class="shrink-0 hidden sm:flex items-center gap-1 text-[11px] text-neutral-400">
         <Icon icon="iconoir:media-image-list" width="12" />
         {p.deliverableCount ?? 0}
@@ -716,6 +858,13 @@ export default function Home() {
                   value: sortMode(),
                   options: SORT_OPTIONS,
                   onChange: v => setSortMode(v as SortMode),
+                },
+              ]}
+              toggles={[
+                {
+                  label: "Hide done",
+                  active: hideDone(),
+                  onToggle: () => setHideDone(v => !v),
                 },
               ]}
               tags={{

@@ -1,7 +1,7 @@
-import { A } from "@solidjs/router";
 import { Icon } from "@iconify-icon/solid";
 import { For, Index, Show, createEffect, createSignal, onCleanup } from "solid-js";
 import type { Chat, ToolCall, UiMessage } from "../../lib/ai/useChat";
+import { Markdown } from "./Markdown";
 
 const DOT = {
   running: "bg-neutral-400 animate-pulse",
@@ -50,46 +50,6 @@ function Thinking(props: { text: string }) {
         </p>
       </Show>
     </div>
-  );
-}
-
-// Matches the model's [[project:<id>|Label]] / [[task:<id>|Label]] citation
-// syntax (see prompt.ts). Route mapping mirrors what each page already reads
-// for its own deep-link/highlight handling — project has no query param,
-// task reads ?task=<id> (tasks.tsx).
-const CITATION_RE = /\[\[(project|task):([0-9a-f-]+)\|([^\]]+)\]\]/g;
-
-function citationHref(type: string, id: string): string {
-  return type === "task" ? `/tasks?task=${id}` : `/p/${id}`;
-}
-
-/** Splits assistant text on citation tokens, rendering the rest as plain
- *  text and each citation as a small inline link. Not a full markdown
- *  renderer — just this one documented micro-syntax. */
-function CitedText(props: { text: string }) {
-  const parts = () => {
-    const out: (string | { type: string; id: string; label: string })[] = [];
-    let last = 0;
-    for (const m of props.text.matchAll(CITATION_RE)) {
-      if (m.index! > last) out.push(props.text.slice(last, m.index));
-      out.push({ type: m[1], id: m[2], label: m[3] });
-      last = m.index! + m[0].length;
-    }
-    if (last < props.text.length) out.push(props.text.slice(last));
-    return out;
-  };
-  return (
-    <For each={parts()}>
-      {p =>
-        typeof p === "string" ? (
-          <>{p}</>
-        ) : (
-          <A href={citationHref(p.type, p.id)} class="text-sky-700 hover:text-sky-900 underline underline-offset-2">
-            {p.label}
-          </A>
-        )
-      }
-    </For>
   );
 }
 
@@ -147,9 +107,7 @@ function Turn(props: { message: UiMessage; onSuggestion: (text: string) => void 
           </div>
         </Show>
         <Show when={props.message.text}>
-          <p class="text-sm whitespace-pre-wrap break-words leading-relaxed text-neutral-800">
-            <CitedText text={props.message.text} />
-          </p>
+          <Markdown text={props.message.text} />
         </Show>
         <Show when={props.message.suggestions?.length}>
           <SuggestionChips items={props.message.suggestions!} onPick={props.onSuggestion} />
@@ -165,6 +123,32 @@ const SUGGESTIONS = [
   "Add a task to chase the lookbook edits",
 ];
 
+/**
+ * Branded, animated activity indicator shown while a turn is in flight. Its
+ * label reflects the phase: a running tool's title ("waiting on tool"), else
+ * "Thinking" while the model reasons before any text, else "Working".
+ */
+function WorkingIndicator(props: { chat: Chat }) {
+  const label = () => {
+    const msgs = props.chat.messages();
+    const last = msgs[msgs.length - 1];
+    const running = last?.tools.find(t => t.status === "running");
+    if (running) return running.title;
+    if (last?.thinking && !last?.text) return "Thinking";
+    return "Working";
+  };
+  return (
+    <div class="flex items-center gap-2 px-0.5 text-xs text-neutral-500">
+      <span class="flex items-end gap-0.5" aria-hidden="true">
+        <span class="w-1.5 h-1.5 rounded-full bg-brand animate-bounce" style={{ "animation-delay": "0ms" }} />
+        <span class="w-1.5 h-1.5 rounded-full bg-brand animate-bounce" style={{ "animation-delay": "150ms" }} />
+        <span class="w-1.5 h-1.5 rounded-full bg-brand animate-bounce" style={{ "animation-delay": "300ms" }} />
+      </span>
+      <span class="animate-pulse font-medium text-neutral-600">{label()}…</span>
+    </div>
+  );
+}
+
 export function MessageList(props: { chat: Chat }) {
   let scroller: HTMLDivElement | undefined;
 
@@ -174,18 +158,34 @@ export function MessageList(props: { chat: Chat }) {
   // often is a forced-layout read+write at token cadence (same class of fix
   // as the canvas camera/DotGrid work).
   let scrollRaf: number | null = null;
+  let prevLen = 0;
   onCleanup(() => {
     if (scrollRaf !== null) cancelAnimationFrame(scrollRaf);
   });
   createEffect(() => {
-    props.chat.messages();
+    const msgs = props.chat.messages();
+    const len = msgs.length;
+    const last = msgs[len - 1];
+    // Read the fields that mutate as a turn streams so this effect actually
+    // re-runs per delta — messages() alone returns the store proxy without
+    // tracking any nested change, which is why the view never followed the
+    // stream. busy() is tracked too so the working indicator's appearance
+    // (which changes height) also triggers a scroll.
+    void last?.text;
+    void last?.thinking;
+    void last?.tools.length;
+    void props.chat.busy();
+    const grew = len > prevLen;
+    prevLen = len;
     if (!scroller || scrollRaf !== null) return;
     scrollRaf = requestAnimationFrame(() => {
       scrollRaf = null;
       if (!scroller) return;
+      // A new message (send/turn boundary) always pins to the bottom; while a
+      // single message streams, only follow if the user hasn't scrolled up.
       const nearBottom =
         scroller.scrollHeight - scroller.scrollTop - scroller.clientHeight < 120;
-      if (nearBottom) scroller.scrollTop = scroller.scrollHeight;
+      if (grew || nearBottom) scroller.scrollTop = scroller.scrollHeight;
     });
   });
 
@@ -216,6 +216,9 @@ export function MessageList(props: { chat: Chat }) {
         <Index each={props.chat.messages()}>
           {m => <Turn message={m()} onSuggestion={pickSuggestion} />}
         </Index>
+      </Show>
+      <Show when={props.chat.busy()}>
+        <WorkingIndicator chat={props.chat} />
       </Show>
     </div>
   );

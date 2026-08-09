@@ -1,6 +1,9 @@
-import { and, asc, desc, eq, inArray, isNull } from "drizzle-orm";
+import { and, asc, count, desc, eq, inArray, isNull, ne } from "drizzle-orm";
 import { getDb } from "../db";
 import {
+  aiConversations,
+  aiMessages,
+  aiUsage,
   annotations,
   approvals,
   canvasObjects,
@@ -10,11 +13,15 @@ import {
   deliverableGroups,
   deliverableTags,
   history,
+  invitationGrants,
+  libraryFiles,
+  libraryFolders,
   personalPositions,
   projects,
   projectShares,
   projectTags,
   tags,
+  taskLinks,
   tasks,
   versions,
 } from "../db/schema";
@@ -24,8 +31,11 @@ import type {
   CanvasObject,
   Decision,
   Deliverable,
+  DeliverableMetadata,
   DeliverableStatus,
   HistoryEntry,
+  MetadataField,
+  MetadataLink,
   NoteColor,
   PersonalPosition,
   Project,
@@ -330,6 +340,7 @@ export async function getProjectGraph(
     deliverables: dRows.map(d => ({
       ...(d as unknown as Deliverable),
       status: d.status as DeliverableStatus,
+      metadata: parseMetadata((d as { metadata?: string }).metadata),
       groupLabel: d.groupId ? (groupLabels.get(d.groupId) ?? null) : null,
       tags: dTagRows
         .filter(t => t.deliverableId === d.id)
@@ -420,6 +431,85 @@ export async function renameDeliverable(id: string, name: string): Promise<void>
       detail: `renamed “${prev.name}” to “${name}”`,
     });
   }
+}
+
+/**
+ * Duplicate a deliverable: a fresh deliverable (name + " copy") carrying the
+ * source's spec, tags, group, and its latest version (same file on disk — the
+ * version row references the shared fileName, no copy). Annotations/approvals are
+ * NOT copied (the duplicate starts a clean draft). Ids are client-generated so
+ * the optimistic copy matches the persisted row.
+ */
+export async function duplicateDeliverable(
+  newDeliverableId: string,
+  sourceId: string,
+  newVersionId: string | null,
+  dx: number,
+  dy: number,
+): Promise<void> {
+  "use server";
+  newDeliverableId = parseOrThrow(Id, newDeliverableId);
+  sourceId = parseOrThrow(Id, sourceId);
+  newVersionId = newVersionId ? parseOrThrow(Id, newVersionId) : null;
+  dx = parseOrThrow(FiniteNumber, dx);
+  dy = parseOrThrow(FiniteNumber, dy);
+  const projectId = await resolveDeliverableProject(sourceId);
+  const { session } = await requireProjectAccess(projectId, { resource: "deliverable", action: "create" });
+  const db = await getDb();
+  const [src] = await db.select().from(deliverables).where(eq(deliverables.id, sourceId));
+  if (!src || src.deletedAt) throw new Error("Not found");
+  await db.insert(deliverables).values({
+    id: newDeliverableId,
+    projectId,
+    name: `${src.name} copy`,
+    spec: src.spec,
+    posX: src.posX + dx,
+    posY: src.posY + dy,
+    groupId: src.groupId,
+    metadata: src.metadata,
+    createdAt: Date.now(),
+  });
+  // copy the tag set
+  const srcTags = await db
+    .select({ tagId: deliverableTags.tagId })
+    .from(deliverableTags)
+    .where(eq(deliverableTags.deliverableId, sourceId));
+  for (const t of srcTags) {
+    await db.insert(deliverableTags).values({
+      id: crypto.randomUUID(),
+      deliverableId: newDeliverableId,
+      tagId: t.tagId,
+    });
+  }
+  // copy the latest live version (shares the file on disk)
+  if (newVersionId) {
+    const [latest] = await db
+      .select()
+      .from(versions)
+      .where(and(eq(versions.deliverableId, sourceId), isNull(versions.deletedAt)))
+      .orderBy(desc(versions.number))
+      .limit(1);
+    if (latest) {
+      await db.insert(versions).values({
+        id: newVersionId,
+        deliverableId: newDeliverableId,
+        number: 1,
+        fileName: latest.fileName,
+        width: latest.width,
+        height: latest.height,
+        createdAt: Date.now(),
+      });
+    }
+  }
+  await recordHistory(db, {
+    projectId,
+    deliverableId: newDeliverableId,
+    subjectId: newDeliverableId,
+    userId: session.userId,
+    actorName: session.name,
+    type: "deliverable_created",
+    detail: `duplicated “${src.name}”`,
+  });
 }
 
 /**
@@ -692,6 +782,29 @@ export async function dissolveGroup(groupId: string): Promise<void> {
   });
 }
 
+/**
+ * Delete a group row outright (reparenting child groups up, releasing any live
+ * members). Unlike dissolveGroup this is used after members are already deleted
+ * so the empty group frame doesn't linger. Framed empty containers included.
+ */
+export async function deleteGroup(groupId: string): Promise<void> {
+  "use server";
+  groupId = parseOrThrow(Id, groupId);
+  const db = await getDb();
+  const [g] = await db
+    .select({ projectId: deliverableGroups.projectId })
+    .from(deliverableGroups)
+    .where(eq(deliverableGroups.id, groupId));
+  if (!g) return;
+  await requireProjectAccess(g.projectId, { resource: "deliverable", action: "update" });
+  await db.update(deliverables).set({ groupId: null }).where(eq(deliverables.groupId, groupId));
+  await db
+    .update(deliverableGroups)
+    .set({ parentGroupId: null })
+    .where(eq(deliverableGroups.parentGroupId, groupId));
+  await db.delete(deliverableGroups).where(eq(deliverableGroups.id, groupId));
+}
+
 // ---- canvas objects (sticky notes) ----------------------------------------
 // Board-only working notes: never mirrored into the library.
 
@@ -704,6 +817,40 @@ function parseTags(raw: string): string[] {
   } catch {
     return [];
   }
+}
+
+/** Parse the deliverable.metadata JSON blob into a well-formed shape. */
+function parseMetadata(raw: string | null | undefined): DeliverableMetadata {
+  try {
+    const p = raw ? JSON.parse(raw) : {};
+    const links = Array.isArray(p.links)
+      ? p.links
+          .filter((l: unknown): l is MetadataLink => !!l && typeof (l as MetadataLink).url === "string")
+          .map((l: MetadataLink) => ({ label: String(l.label ?? ""), url: String(l.url) }))
+      : [];
+    const fields = Array.isArray(p.fields)
+      ? p.fields
+          .filter((f: unknown): f is MetadataField => !!f && typeof (f as MetadataField).key === "string")
+          .map((f: MetadataField) => ({ key: String(f.key), value: String(f.value ?? "") }))
+      : [];
+    return { links, fields };
+  } catch {
+    return { links: [], fields: [] };
+  }
+}
+
+/** Replace a deliverable's custom metadata (reference links + key/value fields). */
+export async function setDeliverableMetadata(
+  id: string,
+  metadata: DeliverableMetadata,
+): Promise<void> {
+  "use server";
+  id = parseOrThrow(Id, id);
+  const projectId = await resolveDeliverableProject(id);
+  await requireProjectAccess(projectId, { resource: "deliverable", action: "update" });
+  const clean = parseMetadata(JSON.stringify(metadata ?? {}));
+  const db = await getDb();
+  await db.update(deliverables).set({ metadata: JSON.stringify(clean) }).where(eq(deliverables.id, id));
 }
 
 export async function createCanvasObject(
@@ -1108,6 +1255,23 @@ export async function deleteDeliverable(id: string): Promise<void> {
     .set({ deletedAt, deletedBy: session.userId })
     .where(eq(deliverables.id, id));
   await setDeliverableMirrorsDeleted(db, id, deletedAt, session.userId);
+  // Prune a now-empty derived group (no live members, no own frame) so it stops
+  // lingering in the "Add to group" lists. Framed containers are kept.
+  if (d.groupId) {
+    const remaining = await db
+      .select({ id: deliverables.id })
+      .from(deliverables)
+      .where(and(eq(deliverables.groupId, d.groupId), isNull(deliverables.deletedAt)));
+    if (remaining.length === 0) {
+      const [g] = await db
+        .select({ posX: deliverableGroups.posX })
+        .from(deliverableGroups)
+        .where(eq(deliverableGroups.id, d.groupId));
+      if (g && g.posX === null) {
+        await db.delete(deliverableGroups).where(eq(deliverableGroups.id, d.groupId));
+      }
+    }
+  }
   await recordHistory(db, {
     projectId,
     deliverableId: id,
@@ -1281,6 +1445,137 @@ export async function restoreProject(id: string): Promise<void> {
     type: "project_restored",
     detail: `restored “${p.name}”`,
   });
+}
+
+/**
+ * Workspace-wide "to do" counts for the global nav indicator: open tasks
+ * (not done, not deleted) and deliverables still needing work (not approved,
+ * not deleted, in non-archived projects). Scoped to the active org.
+ */
+export async function openWorkloadCounts(
+  entityId?: string | null,
+): Promise<{ tasks: number; deliverables: number }> {
+  "use server";
+  const session = await requireSession();
+  const orgId = session.activeOrganizationId;
+  if (!orgId) return { tasks: 0, deliverables: 0 };
+  await requireMember(orgId);
+  const scoped = entityId ? parseOrThrow(Id, entityId) : null;
+  const db = await getDb();
+
+  // Open tasks (not done, not deleted). When an entity is selected, scope by the
+  // task's project entity — mirrors listTasks, so project-less tasks (which only
+  // surface under "All Entities") drop out of a specific entity's count.
+  const [t] = scoped
+    ? await db
+        .select({ n: count() })
+        .from(tasks)
+        .innerJoin(projects, eq(projects.id, tasks.projectId))
+        .where(
+          and(
+            eq(tasks.organizationId, orgId),
+            ne(tasks.status, "done"),
+            isNull(tasks.deletedAt),
+            eq(projects.entityId, scoped),
+          ),
+        )
+    : await db
+        .select({ n: count() })
+        .from(tasks)
+        .where(and(eq(tasks.organizationId, orgId), ne(tasks.status, "done"), isNull(tasks.deletedAt)));
+
+  // Deliverables still needing work (not approved), in non-archived projects,
+  // scoped to the selected entity when one is active.
+  const [d] = await db
+    .select({ n: count() })
+    .from(deliverables)
+    .innerJoin(projects, eq(projects.id, deliverables.projectId))
+    .where(
+      and(
+        eq(projects.organizationId, orgId),
+        isNull(projects.archivedAt),
+        isNull(deliverables.deletedAt),
+        ne(deliverables.status, "approved"),
+        ...(scoped ? [eq(projects.entityId, scoped)] : []),
+      ),
+    );
+
+  return { tasks: Number(t?.n ?? 0), deliverables: Number(d?.n ?? 0) };
+}
+
+/** Rename a project (project:update). */
+export async function renameProject(id: string, name: string): Promise<void> {
+  "use server";
+  id = parseOrThrow(Id, id);
+  const trimmed = parseOrThrow(ShortText, name.trim());
+  const db = await getDb();
+  const [p] = await db.select().from(projects).where(eq(projects.id, id));
+  if (!p) throw new Error("Not found");
+  const { role } = await requireMember(p.organizationId);
+  authorize(role, "project", "update");
+  if (trimmed === p.name) return;
+  await db.update(projects).set({ name: trimmed }).where(eq(projects.id, id));
+}
+
+/**
+ * Permanently delete a project and everything under it (deliverables + their
+ * versions/annotations/comments/approvals/tags, groups, notes, library folder +
+ * files, tasks + links, project tags/shares, invitation grants, AI conversations,
+ * and history). Irreversible — the UI gates this behind an explicit confirm
+ * modal. Gated on project:delete (admin+).
+ */
+export async function deleteProject(id: string): Promise<void> {
+  "use server";
+  id = parseOrThrow(Id, id);
+  const db = await getDb();
+  const [p] = await db.select().from(projects).where(eq(projects.id, id));
+  if (!p) throw new Error("Not found");
+  const { role } = await requireMember(p.organizationId);
+  authorize(role, "project", "delete");
+
+  const delIds = (await db.select({ id: deliverables.id }).from(deliverables).where(eq(deliverables.projectId, id))).map(r => r.id);
+  const verIds = delIds.length
+    ? (await db.select({ id: versions.id }).from(versions).where(inArray(versions.deliverableId, delIds))).map(r => r.id)
+    : [];
+  const annIds = delIds.length
+    ? (await db.select({ id: annotations.id }).from(annotations).where(inArray(annotations.deliverableId, delIds))).map(r => r.id)
+    : [];
+  const folderIds = (await db.select({ id: libraryFolders.id }).from(libraryFolders).where(eq(libraryFolders.projectId, id))).map(r => r.id);
+  const noteIds = (await db.select({ id: canvasObjects.id }).from(canvasObjects).where(eq(canvasObjects.projectId, id))).map(r => r.id);
+  const taskIds = (await db.select({ id: tasks.id }).from(tasks).where(eq(tasks.projectId, id))).map(r => r.id);
+  const convoIds = (await db.select({ id: aiConversations.id }).from(aiConversations).where(eq(aiConversations.projectId, id))).map(r => r.id);
+
+  // children first, respecting FK direction (deepest leaves before their parents)
+  if (annIds.length) await db.delete(comments).where(inArray(comments.annotationId, annIds));
+  if (delIds.length) {
+    await db.delete(annotations).where(inArray(annotations.deliverableId, delIds));
+    await db.delete(approvals).where(inArray(approvals.deliverableId, delIds));
+    await db.delete(deliverableTags).where(inArray(deliverableTags.deliverableId, delIds));
+  }
+  if (folderIds.length) await db.delete(libraryFiles).where(inArray(libraryFiles.folderId, folderIds));
+  if (verIds.length) await db.delete(libraryFiles).where(inArray(libraryFiles.versionId, verIds));
+  if (delIds.length) await db.delete(versions).where(inArray(versions.deliverableId, delIds));
+  if (folderIds.length) await db.delete(libraryFolders).where(inArray(libraryFolders.id, folderIds));
+  const subjectIds = [...delIds, ...noteIds];
+  if (subjectIds.length) await db.delete(personalPositions).where(inArray(personalPositions.subjectId, subjectIds));
+  if (taskIds.length) {
+    await db.delete(taskLinks).where(inArray(taskLinks.fromTaskId, taskIds));
+    await db.delete(taskLinks).where(inArray(taskLinks.toTaskId, taskIds));
+  }
+  await db.delete(tasks).where(eq(tasks.projectId, id));
+  await db.delete(canvasObjects).where(eq(canvasObjects.projectId, id));
+  await db.delete(deliverableGroups).where(eq(deliverableGroups.projectId, id));
+  await db.delete(deliverables).where(eq(deliverables.projectId, id));
+  await db.delete(projectTags).where(eq(projectTags.projectId, id));
+  await db.delete(projectShares).where(eq(projectShares.projectId, id));
+  await db.delete(invitationGrants).where(eq(invitationGrants.projectId, id));
+  if (convoIds.length) {
+    await db.delete(aiMessages).where(inArray(aiMessages.conversationId, convoIds));
+    await db.delete(aiUsage).where(inArray(aiUsage.conversationId, convoIds));
+    await db.delete(aiConversations).where(eq(aiConversations.projectId, id));
+  }
+  await db.delete(history).where(eq(history.projectId, id));
+  await db.delete(projects).where(eq(projects.id, id));
 }
 
 /**
