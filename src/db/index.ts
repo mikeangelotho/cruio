@@ -119,7 +119,9 @@ CREATE TABLE IF NOT EXISTS deliverable_groups (
   pos_y REAL,
   w REAL,
   h REAL,
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  archived_at INTEGER,
+  archived_by TEXT
 );
 CREATE TABLE IF NOT EXISTS deliverables (
   id TEXT PRIMARY KEY,
@@ -294,10 +296,17 @@ CREATE TABLE IF NOT EXISTS library_folders (
   id TEXT PRIMARY KEY,
   organization_id TEXT NOT NULL REFERENCES organization(id),
   project_id TEXT REFERENCES projects(id),
+  group_id TEXT REFERENCES deliverable_groups(id),
+  parent_folder_id TEXT,
   name TEXT NOT NULL,
-  created_at INTEGER NOT NULL
+  created_at INTEGER NOT NULL,
+  archived_at INTEGER,
+  archived_by TEXT
 );
-CREATE UNIQUE INDEX IF NOT EXISTS uidx_library_folders_project ON library_folders(project_id);
+-- one root folder per project (group_id null); one folder per canvas group
+CREATE UNIQUE INDEX IF NOT EXISTS uidx_library_folders_project_root ON library_folders(project_id) WHERE group_id IS NULL AND project_id IS NOT NULL;
+CREATE UNIQUE INDEX IF NOT EXISTS uidx_library_folders_group ON library_folders(group_id) WHERE group_id IS NOT NULL;
+CREATE INDEX IF NOT EXISTS idx_library_folders_parent ON library_folders(parent_folder_id);
 CREATE TABLE IF NOT EXISTS library_files (
   id TEXT PRIMARY KEY,
   folder_id TEXT NOT NULL REFERENCES library_folders(id),
@@ -423,6 +432,28 @@ async function migrate() {
       await client.execute("ALTER TABLE deliverable_groups ADD COLUMN w REAL");
       await client.execute("ALTER TABLE deliverable_groups ADD COLUMN h REAL");
     }
+    if (!cols.includes("archived_at")) {
+      await client.execute("ALTER TABLE deliverable_groups ADD COLUMN archived_at INTEGER");
+      await client.execute("ALTER TABLE deliverable_groups ADD COLUMN archived_by TEXT");
+    }
+  }
+
+  // library folders ⟷ canvas groups: group_id links a folder to a canvas group,
+  // parent_folder_id nests folders. The old one-folder-per-project unique index
+  // must go before backfillLibrary can create per-group folders.
+  if (await tableExists("library_folders")) {
+    const cols = await columnsOf("library_folders");
+    if (!cols.includes("group_id")) {
+      await client.execute("ALTER TABLE library_folders ADD COLUMN group_id TEXT REFERENCES deliverable_groups(id)");
+    }
+    if (!cols.includes("parent_folder_id")) {
+      await client.execute("ALTER TABLE library_folders ADD COLUMN parent_folder_id TEXT");
+    }
+    if (!cols.includes("archived_at")) {
+      await client.execute("ALTER TABLE library_folders ADD COLUMN archived_at INTEGER");
+      await client.execute("ALTER TABLE library_folders ADD COLUMN archived_by TEXT");
+    }
+    await client.execute("DROP INDEX IF EXISTS uidx_library_folders_project");
   }
 
   if (await tableExists("canvas_objects")) {
@@ -500,35 +531,105 @@ async function migrate() {
 }
 
 /**
- * Post-DDL reconciler, runs every boot (cheap at this scale). Guarantees:
- * every project has its library folder (named after the project), and every
- * non-deleted version has a mirror row in the project's folder — so any call
- * site missed by the mirroring helpers self-heals on the next boot.
+ * Post-DDL reconciler, runs every boot (cheap at this scale). Guarantees the
+ * library structure matches the canvas: every project has a root folder; every
+ * canvas group has a "group folder" (name = label, nested to match the group
+ * tree); every live version has a mirror in its deliverable's folder (group
+ * folder if grouped, else project root). Self-heals anything the live helpers
+ * (src/lib/library.ts) missed — and performs the one-time migration when the
+ * group_id/parent_folder_id columns first appear.
  */
 async function backfillLibrary() {
   const { statSync } = await import("node:fs");
   const { extname } = await import("node:path");
   const { FILE_TYPES } = await import("../lib/filetypes");
 
-  const missingFolders = await client.execute(`
+  // 1. one ROOT folder per project (group folders are the exception, so match
+  //    specifically on group_id IS NULL).
+  const missingRoots = await client.execute(`
     SELECT p.id, p.organization_id, p.name FROM projects p
-    LEFT JOIN library_folders f ON f.project_id = p.id
+    LEFT JOIN library_folders f ON f.project_id = p.id AND f.group_id IS NULL
     WHERE f.id IS NULL`);
-  for (const r of missingFolders.rows) {
+  for (const r of missingRoots.rows) {
     await client.execute({
       sql: "INSERT INTO library_folders (id, organization_id, project_id, name, created_at) VALUES (?, ?, ?, ?, ?)",
       args: [randomUUID(), r.organization_id as string, r.id as string, r.name as string, Date.now()],
     });
   }
-  // keep project-folder names in sync with project names
+  // keep ROOT folder names in step with their project (group folders follow labels)
   await client.execute(`
     UPDATE library_folders
     SET name = (SELECT name FROM projects WHERE projects.id = library_folders.project_id)
-    WHERE project_id IS NOT NULL`);
+    WHERE project_id IS NOT NULL AND group_id IS NULL`);
 
+  // 2. one GROUP folder per canvas group (mirror of the group).
+  const missingGroupFolders = await client.execute(`
+    SELECT g.id, g.project_id, g.label, p.organization_id
+    FROM deliverable_groups g
+    JOIN projects p ON p.id = g.project_id
+    LEFT JOIN library_folders f ON f.group_id = g.id
+    WHERE f.id IS NULL`);
+  for (const g of missingGroupFolders.rows) {
+    await client.execute({
+      sql: "INSERT INTO library_folders (id, organization_id, project_id, group_id, name, created_at) VALUES (?, ?, ?, ?, ?, ?)",
+      args: [
+        randomUUID(),
+        g.organization_id as string,
+        g.project_id as string,
+        g.id as string,
+        (g.label as string) || "Group",
+        Date.now(),
+      ],
+    });
+  }
+  // nest group folders to match the group tree; top-level groups nest under the
+  // project root folder so the folder tree is uniform. Keep names ↔ labels.
+  await client.execute(`
+    UPDATE library_folders
+    SET parent_folder_id = COALESCE(
+      (SELECT pf.id FROM library_folders pf
+       JOIN deliverable_groups g ON g.id = library_folders.group_id
+       WHERE pf.group_id = g.parent_group_id),
+      (SELECT rf.id FROM library_folders rf
+       WHERE rf.project_id = library_folders.project_id AND rf.group_id IS NULL)
+    )
+    WHERE group_id IS NOT NULL`);
+  await client.execute(`
+    UPDATE library_folders
+    SET name = (SELECT label FROM deliverable_groups WHERE deliverable_groups.id = library_folders.group_id)
+    WHERE group_id IS NOT NULL`);
+
+  // 3. relocate every mirror into its deliverable's folder (group folder if the
+  //    deliverable is grouped, else the project root). JS loop so a mirror whose
+  //    target can't be resolved is skipped rather than nulling a NOT NULL column.
+  const mirrors = await client.execute(`
+    SELECT lf.id, lf.folder_id, d.group_id, d.project_id
+    FROM library_files lf
+    JOIN versions v ON v.id = lf.version_id
+    JOIN deliverables d ON d.id = v.deliverable_id`);
+  for (const m of mirrors.rows) {
+    const target = (
+      await client.execute({
+        sql: `SELECT id FROM library_folders
+              WHERE (? IS NOT NULL AND group_id = ?)
+                 OR (? IS NULL AND project_id = ? AND group_id IS NULL)
+              LIMIT 1`,
+        args: [m.group_id, m.group_id, m.group_id, m.project_id as string],
+      })
+    ).rows[0];
+    if (target && target.id !== m.folder_id) {
+      await client.execute({
+        sql: "UPDATE library_files SET folder_id = ? WHERE id = ?",
+        args: [target.id as string, m.id as string],
+      });
+    }
+  }
+
+  // 4. insert a mirror for any live version that lacks one, into its folder.
   const missingMirrors = await client.execute(`
     SELECT v.id, v.file_name, v.width, v.height, v.number, v.created_at,
-           d.name AS deliverable_name, d.project_id, p.organization_id, p.created_by
+           d.name AS deliverable_name, d.group_id, d.project_id,
+           p.organization_id, p.created_by
     FROM versions v
     JOIN deliverables d ON d.id = v.deliverable_id
     JOIN projects p ON p.id = d.project_id
@@ -537,8 +638,11 @@ async function backfillLibrary() {
   for (const r of missingMirrors.rows) {
     const [folder] = (
       await client.execute({
-        sql: "SELECT id FROM library_folders WHERE project_id = ?",
-        args: [r.project_id as string],
+        sql: `SELECT id FROM library_folders
+              WHERE (? IS NOT NULL AND group_id = ?)
+                 OR (? IS NULL AND project_id = ? AND group_id IS NULL)
+              LIMIT 1`,
+        args: [r.group_id, r.group_id, r.group_id, r.project_id as string],
       })
     ).rows;
     if (!folder) continue;

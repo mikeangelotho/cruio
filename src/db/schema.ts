@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import {
   sqliteTable,
   text,
@@ -55,6 +56,11 @@ export const deliverableGroups = sqliteTable("deliverable_groups", {
   w: real("w"),
   h: real("h"),
   createdAt: integer("created_at").notNull(),
+  // archived groups (and their library folder) drop out of the Library's active
+  // view but stay intact on the canvas and are restorable. Kept in step with the
+  // mirror folder's archivedAt (see library.ts setGroupFolderArchived).
+  archivedAt: integer("archived_at"),
+  archivedBy: text("archived_by"),
 });
 
 export const deliverables = sqliteTable("deliverables", {
@@ -270,10 +276,29 @@ export const libraryFolders = sqliteTable(
       .notNull()
       .references(() => organization.id),
     projectId: text("project_id").references(() => projects.id),
+    // set = this folder is the library mirror of a canvas group (a "group folder")
+    groupId: text("group_id").references(() => deliverableGroups.id),
+    // folder nesting; mirrors deliverableGroups.parentGroupId for group folders
+    parentFolderId: text("parent_folder_id"),
     name: text("name").notNull(),
     createdAt: integer("created_at").notNull(),
+    // archived folders drop out of the Library's active view but keep their
+    // files intact and restorable. Project root folders are never archived
+    // (they follow the project's own archive). Group folders mirror their
+    // group's archivedAt.
+    archivedAt: integer("archived_at"),
+    archivedBy: text("archived_by"),
   },
-  (table) => [uniqueIndex("uidx_library_folders_project").on(table.projectId)],
+  (table) => [
+    // one root folder per project (group folders are the exception)
+    uniqueIndex("uidx_library_folders_project_root")
+      .on(table.projectId)
+      .where(sql`group_id IS NULL AND project_id IS NOT NULL`),
+    uniqueIndex("uidx_library_folders_group")
+      .on(table.groupId)
+      .where(sql`group_id IS NOT NULL`),
+    index("idx_library_folders_parent").on(table.parentFolderId),
+  ],
 );
 
 // Library files. Rows with versionId set are mirrors of deliverable versions —

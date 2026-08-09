@@ -2,6 +2,7 @@ import { Icon } from "@iconify-icon/solid";
 import { For, Index, Show, createEffect, createSignal, onCleanup } from "solid-js";
 import type { Chat, ToolCall, UiMessage } from "../../lib/ai/useChat";
 import { Markdown } from "./Markdown";
+import { RecommendedActions } from "./RecommendedActions";
 
 const DOT = {
   running: "bg-neutral-400 animate-pulse",
@@ -98,19 +99,26 @@ function Turn(props: { message: UiMessage; onSuggestion: (text: string) => void 
         <Show when={props.message.thinking}>
           <Thinking text={props.message.thinking!} />
         </Show>
-        <Show when={props.message.tools.length}>
-          <div class="flex flex-col gap-1">
-            {/* Index, not For: tool_result patches the matching row in place
-                (see useChat.ts) — keying by position keeps this robust even
-                if that ever changes. */}
-            <Index each={props.message.tools}>{t => <ToolRow tool={t()} />}</Index>
-          </div>
-        </Show>
-        <Show when={props.message.text}>
-          <Markdown text={props.message.text} />
-        </Show>
+        {/* Blocks render in stream order so a tool called after some prose sits
+            below that prose. Index, not For: tool_result patches the matching
+            block in place and text deltas append to a block (see useChat.ts) —
+            keying by position avoids tearing down rows mid-stream. */}
+        <Index each={props.message.blocks}>
+          {b => (
+            <Show
+              when={b().kind === "tool"}
+              fallback={
+                <Show when={b().text}>
+                  <Markdown text={b().text!} />
+                </Show>
+              }
+            >
+              <ToolRow tool={b().tool!} />
+            </Show>
+          )}
+        </Index>
         <Show when={props.message.suggestions?.length}>
-          <SuggestionChips items={props.message.suggestions!} onPick={props.onSuggestion} />
+          <RecommendedActions items={props.message.suggestions!} onPick={props.onSuggestion} />
         </Show>
       </div>
     </Show>
@@ -132,9 +140,10 @@ function WorkingIndicator(props: { chat: Chat }) {
   const label = () => {
     const msgs = props.chat.messages();
     const last = msgs[msgs.length - 1];
-    const running = last?.tools.find(t => t.status === "running");
+    const running = last?.blocks.find(b => b.kind === "tool" && b.tool?.status === "running")?.tool;
     if (running) return running.title;
-    if (last?.thinking && !last?.text) return "Thinking";
+    const hasText = last?.blocks.some(b => b.kind === "text" && b.text);
+    if (last?.thinking && !hasText) return "Thinking";
     return "Working";
   };
   return (
@@ -169,11 +178,20 @@ export function MessageList(props: { chat: Chat }) {
     // Read the fields that mutate as a turn streams so this effect actually
     // re-runs per delta — messages() alone returns the store proxy without
     // tracking any nested change, which is why the view never followed the
-    // stream. busy() is tracked too so the working indicator's appearance
-    // (which changes height) also triggers a scroll.
-    void last?.text;
+    // stream. Blocks grow both in count (new text/tool blocks) and in place
+    // (text deltas append to the tail block, tool_result flips a status), so
+    // track length plus each block's text/status. busy() is tracked too so the
+    // working indicator's appearance (which changes height) also triggers a
+    // scroll.
     void last?.thinking;
-    void last?.tools.length;
+    const blocks = last?.blocks;
+    void blocks?.length;
+    if (blocks) {
+      for (let k = 0; k < blocks.length; k++) {
+        void blocks[k].text;
+        void blocks[k].tool?.status;
+      }
+    }
     void props.chat.busy();
     const grew = len > prevLen;
     prevLen = len;
@@ -195,7 +213,13 @@ export function MessageList(props: { chat: Chat }) {
   }
 
   return (
-    <div ref={scroller} class="flex-1 min-h-0 overflow-y-auto px-2.5 py-2 flex flex-col gap-5">
+    <div
+      ref={scroller}
+      role="log"
+      aria-live="polite"
+      aria-label="Assistant conversation"
+      class="flex-1 min-h-0 overflow-y-auto px-2.5 py-2 flex flex-col gap-5"
+    >
       <Show
         when={props.chat.messages().length}
         fallback={

@@ -42,6 +42,8 @@ export function FileCard(props: {
   onToggleSelect?: () => void;
   /** grid thumbnail (default) or compact stacked row */
   layout?: "grid" | "list";
+  /** for a collapsed deliverable: number of versions (badge shown when > 1) */
+  versionCount?: number;
 }) {
   const kind = () => kindOfMime(props.file.mime);
   const ext = () => {
@@ -104,6 +106,9 @@ export function FileCard(props: {
         <p class="flex-1 text-xs font-medium text-neutral-800 truncate" title={props.file.name}>
           {props.file.name}
         </p>
+        <Show when={props.versionCount && props.versionCount > 1}>
+          <span class="shrink-0 text-[10px] text-neutral-400">{props.versionCount} versions</span>
+        </Show>
         <Show when={props.file.versionId}>
           <span class="shrink-0 flex items-center gap-0.5 text-[10px] text-on-accent-sky bg-accent-sky border border-accent-sky-line rounded px-1 py-px">
             <Icon icon="iconoir:frame" width="9" /> canvas
@@ -168,7 +173,12 @@ export function FileCard(props: {
             </span>
           </Show>
         </div>
-        <p class="mt-0.5 text-[10px] text-neutral-400">{formatSize(props.file.size)}</p>
+        <p class="mt-0.5 text-[10px] text-neutral-400">
+          {formatSize(props.file.size)}
+          <Show when={props.versionCount && props.versionCount > 1}>
+            <span> · {props.versionCount} versions</span>
+          </Show>
+        </p>
       </div>
     </div>
   );

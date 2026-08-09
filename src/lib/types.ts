@@ -155,6 +155,8 @@ export interface DeliverableGroup {
   posY: number | null;
   w: number | null;
   h: number | null;
+  /** set = archived from the Library (canvas cluster stays intact); restorable */
+  archivedAt?: number | null;
 }
 
 export type CanvasObjectKind = "note";
@@ -270,14 +272,21 @@ export interface TaskLink {
 
 export interface LibraryFolder {
   id: string;
-  /** set = the auto-created project folder; null = workspace-level folder */
+  /** set = a project folder (root or group); null = workspace-level folder */
   projectId: string | null;
+  /** set = this folder mirrors a canvas group (a "group folder") */
+  groupId: string | null;
+  /** folder nesting; mirrors the canvas group tree for group folders */
+  parentFolderId: string | null;
   name: string;
   createdAt: number;
   /** project folders only: the owning project's entity (drives scoping) */
   entityId: string | null;
   /** joined for display (entity attribution under "All Entities" scope) */
   entityName: string | null;
+  /** set = archived (hidden from the Library's active view); restorable. Never
+   *  set on project root folders. */
+  archivedAt?: number | null;
 }
 
 export interface LibraryFile {

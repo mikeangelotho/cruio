@@ -7,17 +7,22 @@ import { AppNav } from "../components/AppNav";
 import { AppFooter } from "../components/AppFooter";
 import { useScope } from "../components/ScopeProvider";
 import { FileCard } from "../components/FileCard";
-import { ContextMenu, type MenuState } from "../components/ContextMenu";
+import { ContextMenu, type MenuEntry, type MenuState } from "../components/ContextMenu";
 import { EntityAvatar } from "../components/Avatar";
 import {
+  archiveFolder,
   createFolder,
+  createGroupFromDeliverables,
   deleteFile,
   deleteFolder,
   listLibrary,
   moveFile,
+  regroupDeliverables,
   renameFile,
   renameFolder,
+  restoreFolder,
 } from "../lib/library-api";
+import { deleteGroupWithMembers, dissolveGroup } from "../lib/api";
 import { myOrgsQuery, requireUserQuery } from "../lib/org-api";
 import { downloadFile, downloadZip } from "../lib/download";
 import { confirm, promptText } from "../lib/confirm";
@@ -39,9 +44,13 @@ export default function LibraryPage() {
   const scope = useScope();
   const [searchParams] = useSearchParams();
 
+  // "active" is the normal Library; "archived" surfaces archived folders/groups
+  // with a Restore action. Archive hides a folder (and its files) but keeps
+  // everything intact — nothing here is deleted.
+  const [libScope, setLibScope] = createSignal<"active" | "archived">("active");
   const [listing, { refetch }] = createResource(
-    () => ({ org: user()?.activeOrganizationId, entity: scope.entity()?.id ?? null }),
-    ({ entity }) => listLibrary(entity),
+    () => ({ org: user()?.activeOrganizationId, entity: scope.entity()?.id ?? null, s: libScope() }),
+    ({ entity, s }) => listLibrary(entity, s),
   );
   onAiInvalidate(() => void refetch());
 
@@ -73,9 +82,26 @@ export default function LibraryPage() {
   }
   const clearSelection = () => setSelected(new Set<string>());
   const selectedFiles = () => (listing()?.files ?? []).filter(f => selected().has(f.id));
-  // Canvas mirrors (versionId set) are managed from the board — exclude from
-  // library-side move/delete so those stay a canvas-only concern.
-  const movableSelected = () => selectedFiles().filter(f => !f.versionId);
+  // A selection splits into standalone assets (freely moved/deleted) and the
+  // distinct deliverables behind any selected mirror files. Assets move via
+  // moveFile; deliverables regroup (their mirrors follow their canvas group).
+  const selectedAssets = () => selectedFiles().filter(f => !f.versionId);
+  const selectedDeliverableIds = () => [
+    ...new Set(
+      selectedFiles()
+        .filter(f => f.versionId && f.deliverableId)
+        .map(f => f.deliverableId as string),
+    ),
+  ];
+  // Valid move targets: a deliverable selection can only go to its own project's
+  // folders (root + group folders); an asset-only selection can go anywhere.
+  const foldersForSelection = () => {
+    const all = listing()?.folders ?? [];
+    if (!selectedDeliverableIds().length) return all;
+    const mirror = selectedFiles().find(f => f.versionId);
+    const projectId = all.find(f => f.id === mirror?.folderId)?.projectId ?? null;
+    return all.filter(f => f.projectId === projectId);
+  };
 
   // Unified selection, matching the projects/canvas model: plain click selects
   // one (via a short timer so a double-click can open instead), shift = range,
@@ -123,31 +149,39 @@ export default function LibraryPage() {
     const ids = draggingIds();
     setDraggingIds(new Set());
     setDragFolder(null);
-    const files = (listing()?.files ?? []).filter(
-      f => ids.has(f.id) && !f.versionId && f.folderId !== folderId,
-    );
-    if (!files.length) return;
+    const dragged = (listing()?.files ?? []).filter(f => ids.has(f.id));
+    const target = (listing()?.folders ?? []).find(f => f.id === folderId);
+    // group folders hold deliverables only — assets go in plain folders
+    const assets = target?.groupId
+      ? []
+      : dragged.filter(f => !f.versionId && f.folderId !== folderId);
+    const delIds = [
+      ...new Set(dragged.filter(f => f.versionId && f.deliverableId).map(f => f.deliverableId as string)),
+    ];
+    if (target?.groupId && dragged.some(f => !f.versionId)) {
+      setError("Group folders hold deliverables — drop assets into a plain folder.");
+    }
+    if (!assets.length && !delIds.length) return;
     await run(async () => {
-      for (const f of files) await moveFile(f.id, folderId);
+      for (const f of assets) await moveFile(f.id, folderId);
+      // deliverables regroup (into a group folder) or ungroup (into the root)
+      if (delIds.length) await regroupDeliverables(delIds, folderId);
     });
     clearSelection();
-    pushToast(`Moved ${files.length} file${files.length === 1 ? "" : "s"}`);
+    const n = assets.length + delIds.length;
+    pushToast(`Moved ${n} item${n === 1 ? "" : "s"}`);
   }
 
   function openMoveMenu(x: number, y: number) {
-    const movable = movableSelected();
-    if (!movable.length) {
-      setError("Canvas files are managed from the board — select uploaded files to move.");
-      return;
-    }
-    const folders = (listing()?.folders ?? []).filter(f => f.id !== selectedFolder());
+    if (!selectedFiles().length) return;
+    const folders = foldersForSelection().filter(f => f.id !== selectedFolder());
     setCtxMenu({
       x,
       y,
       entries: [
         ...folders.map(f => ({
-          label: `Move to ${f.name}`,
-          icon: "iconoir:folder",
+          label: `${f.groupId ? "Group into" : "Move to"} ${f.name}`,
+          icon: f.groupId ? "iconoir:folder" : "iconoir:folder",
           run: () => void moveSelectedTo(f.id),
         })),
         ...(folders.length ? [{ separator: true } as const] : []),
@@ -160,48 +194,62 @@ export default function LibraryPage() {
     });
   }
   async function moveSelectedTo(folderId: string) {
-    const movable = movableSelected();
+    const target = (listing()?.folders ?? []).find(f => f.id === folderId);
+    // group folders hold deliverables only — assets go in plain folders
+    const assets = target?.groupId ? [] : selectedAssets();
+    const delIds = selectedDeliverableIds();
+    if (target?.groupId && selectedAssets().length) {
+      setError("Group folders hold deliverables — move assets into a plain folder.");
+    }
     await run(async () => {
-      for (const f of movable) await moveFile(f.id, folderId);
+      for (const f of assets) await moveFile(f.id, folderId);
+      if (delIds.length) await regroupDeliverables(delIds, folderId);
     });
     clearSelection();
-    pushToast(`Moved ${movable.length} file${movable.length === 1 ? "" : "s"}`);
+    const n = assets.length + delIds.length;
+    pushToast(`Moved ${n} item${n === 1 ? "" : "s"}`);
   }
   async function moveToNewFolder() {
     const name = (await promptText({
       title: "New folder",
       label: "Folder name",
-      confirmLabel: "Create & move",
+      confirmLabel: "Create",
     }))?.trim();
     if (!name) return;
-    const movable = movableSelected();
+    const assets = selectedAssets();
+    const delIds = selectedDeliverableIds();
     await run(async () => {
-      const folder = await createFolder(name);
-      for (const f of movable) await moveFile(f.id, folder.id);
-      setSelectedFolder(folder.id);
+      if (delIds.length && !assets.length) {
+        // pure deliverable selection → a canvas group (its group folder appears)
+        await createGroupFromDeliverables(delIds, name);
+      } else {
+        const folder = await createFolder(name);
+        for (const f of assets) await moveFile(f.id, folder.id);
+        setSelectedFolder(folder.id);
+      }
     });
     clearSelection();
-    pushToast(`Moved ${movable.length} file${movable.length === 1 ? "" : "s"} to ${name}`);
+    pushToast(delIds.length && !assets.length ? `Grouped as “${name}”` : `Created “${name}”`);
   }
   async function deleteSelected() {
-    const movable = movableSelected();
-    if (!movable.length) {
-      setError("Canvas files are deleted from the board, not the library.");
+    const assets = selectedAssets();
+    if (!assets.length) {
+      setError("Deliverable files are deleted from the canvas, not the library.");
       return;
     }
     if (
       !(await confirm({
-        title: `Delete ${movable.length} file${movable.length === 1 ? "" : "s"}?`,
+        title: `Delete ${assets.length} file${assets.length === 1 ? "" : "s"}?`,
         confirmLabel: "Delete",
         danger: true,
       }))
     )
       return;
     await run(async () => {
-      for (const f of movable) await deleteFile(f.id);
+      for (const f of assets) await deleteFile(f.id);
     });
     clearSelection();
-    pushToast(`Deleted ${movable.length} file${movable.length === 1 ? "" : "s"}`);
+    pushToast(`Deleted ${assets.length} file${assets.length === 1 ? "" : "s"}`);
   }
   function downloadSelected() {
     void downloadZip(selectedFiles().map(f => ({ name: f.fileName, displayName: f.name })));
@@ -236,14 +284,38 @@ export default function LibraryPage() {
   const canUpload = () => myRole() !== undefined && myRole() !== "guest";
 
   const workspaceFolders = () => (listing()?.folders ?? []).filter(f => !f.projectId);
-  const projectFolders = () => (listing()?.folders ?? []).filter(f => f.projectId);
+  // top-level project entries are the ROOT folders; group folders nest under them
+  const projectFolders = () => (listing()?.folders ?? []).filter(f => f.projectId && !f.groupId);
   const currentFolder = createMemo(() =>
     (listing()?.folders ?? []).find(f => f.id === selectedFolder()),
   );
-  const visibleFiles = createMemo(() => {
+  const visibleFilesRaw = createMemo(() => {
     const files = listing()?.files ?? [];
     const sel = selectedFolder();
     return sel ? files.filter(f => f.folderId === sel) : files;
+  });
+  // Collapse a deliverable's version mirrors into one card (the latest version);
+  // standalone assets pass through untouched. One card per deliverable.
+  const visibleFiles = createMemo(() => {
+    const latest = new Map<string, LibraryFile>();
+    const out: LibraryFile[] = [];
+    for (const f of visibleFilesRaw()) {
+      if (f.versionId && f.deliverableId) {
+        const cur = latest.get(f.deliverableId);
+        if (!cur || f.createdAt > cur.createdAt) latest.set(f.deliverableId, f);
+      } else {
+        out.push(f);
+      }
+    }
+    return [...latest.values(), ...out];
+  });
+  // version count per deliverable, for the collapsed card's badge
+  const versionCounts = createMemo(() => {
+    const m = new Map<string, number>();
+    for (const f of visibleFilesRaw()) {
+      if (f.versionId && f.deliverableId) m.set(f.deliverableId, (m.get(f.deliverableId) ?? 0) + 1);
+    }
+    return m;
   });
 
   async function run(action: () => Promise<unknown>) {
@@ -319,11 +391,127 @@ export default function LibraryPage() {
   });
 
   function openFolderMenu(f: LibraryFolder, x: number, y: number) {
-    if (!isAdmin() || f.projectId) return;
-    setCtxMenu({
-      x,
-      y,
-      entries: [
+    if (!isAdmin()) return;
+    const isGroup = !!f.groupId;
+    const isProjectRoot = !!f.projectId && !f.groupId;
+    const deselectIfOpen = () => {
+      if (selectedFolder() === f.id) setSelectedFolder(null);
+    };
+
+    // Archived view: the only action is to bring it back.
+    if (f.archivedAt != null) {
+      setCtxMenu({
+        x,
+        y,
+        entries: [
+          {
+            label: "Restore",
+            icon: "iconoir:archive",
+            run: () =>
+              void run(async () => {
+                await restoreFolder(f.id);
+                pushToast(`Restored “${f.name}”`);
+              }),
+          },
+        ],
+      });
+      return;
+    }
+
+    // Project ROOT folders follow their project — explain, don't offer actions.
+    if (isProjectRoot) {
+      setCtxMenu({
+        x,
+        y,
+        entries: [
+          {
+            label: "Managed with its project",
+            icon: "iconoir:info-circle",
+            disabled: true,
+            hint: "auto",
+          },
+        ],
+      });
+      return;
+    }
+
+    const entries: MenuEntry[] = [];
+
+    if (isGroup) {
+      entries.push(
+        {
+          label: "Ungroup",
+          icon: "iconoir:link-slash",
+          run: async () => {
+            if (
+              !(await confirm({
+                title: "Ungroup",
+                description:
+                  "Removes the group. Its files are kept and moved to the project folder.",
+                confirmLabel: "Ungroup",
+              }))
+            )
+              return;
+            deselectIfOpen();
+            void run(async () => {
+              await dissolveGroup(f.groupId!);
+              pushToast(`Ungrouped “${f.name}”`);
+            });
+          },
+        },
+        {
+          label: "Archive group",
+          icon: "iconoir:archive",
+          run: async () => {
+            if (
+              !(await confirm({
+                title: "Archive group",
+                description:
+                  "Hidden from the Library until you restore it. The canvas cluster is unchanged and nothing inside is deleted.",
+                confirmLabel: "Archive",
+              }))
+            )
+              return;
+            deselectIfOpen();
+            void run(async () => {
+              await archiveFolder(f.id);
+              pushToast(`Archived “${f.name}”`);
+            });
+          },
+        },
+        { separator: true },
+        {
+          label: "Delete group",
+          icon: "iconoir:trash",
+          danger: true,
+          run: async () => {
+            const n = new Set(
+              (listing()?.files ?? [])
+                .filter(x => x.folderId === f.id && x.deliverableId)
+                .map(x => x.deliverableId),
+            ).size;
+            if (
+              !(await confirm({
+                title: `Delete group “${f.name}”?`,
+                description: n
+                  ? `The group and its ${n} deliverable${n === 1 ? "" : "s"} will be deleted too (restorable from History).`
+                  : "The empty group will be removed.",
+                confirmLabel: "Delete",
+                danger: true,
+              }))
+            )
+              return;
+            deselectIfOpen();
+            void run(async () => {
+              await deleteGroupWithMembers(f.groupId!);
+              pushToast(`Deleted “${f.name}”`);
+            });
+          },
+        },
+      );
+    } else {
+      // Workspace folder.
+      entries.push(
         {
           label: "Rename folder",
           icon: "iconoir:edit-pencil",
@@ -336,7 +524,26 @@ export default function LibraryPage() {
             if (name && name !== f.name) void run(() => renameFolder(f.id, name));
           },
         },
-        { separator: true } as const,
+        {
+          label: "Archive folder",
+          icon: "iconoir:archive",
+          run: async () => {
+            if (
+              !(await confirm({
+                title: "Archive folder",
+                description: "Hidden from the Library until you restore it. Files inside are kept.",
+                confirmLabel: "Archive",
+              }))
+            )
+              return;
+            deselectIfOpen();
+            void run(async () => {
+              await archiveFolder(f.id);
+              pushToast(`Archived “${f.name}”`);
+            });
+          },
+        },
+        { separator: true },
         {
           label: "Delete folder",
           icon: "iconoir:trash",
@@ -345,18 +552,20 @@ export default function LibraryPage() {
             if (
               !(await confirm({
                 title: "Delete folder",
-                description: `Delete “${f.name}”? The folder must be empty.`,
+                description: `Delete “${f.name}”? The folder must be empty first — the files inside aren't deleted.`,
                 confirmLabel: "Delete",
                 danger: true,
               }))
             )
               return;
-            if (selectedFolder() === f.id) setSelectedFolder(null);
+            deselectIfOpen();
             void run(() => deleteFolder(f.id));
           },
         },
-      ],
-    });
+      );
+    }
+
+    setCtxMenu({ x, y, entries });
   }
 
   function openFileMenu(file: LibraryFile, x: number, y: number) {
@@ -450,9 +659,13 @@ export default function LibraryPage() {
     await run(() => createFolder(name));
   }
 
-  const folderRow = (f: LibraryFolder, icon: string) => (
+  const childFolders = (parentId: string | null) =>
+    (listing()?.folders ?? []).filter(f => (f.parentFolderId ?? null) === parentId);
+
+  const folderRow = (f: LibraryFolder, icon: string, depth = 0) => (
     <button
-      class="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md text-left text-xs cursor-pointer"
+      class="w-full flex items-center gap-2 pr-2.5 py-1.5 rounded-md text-left text-xs cursor-pointer"
+      style={{ "padding-left": `${10 + depth * 14}px` }}
       classList={{
         "bg-neutral-200/70 text-neutral-800 font-medium": selectedFolder() === f.id && dragFolder() !== f.id,
         "text-neutral-600 hover:bg-neutral-200/40": selectedFolder() !== f.id && dragFolder() !== f.id,
@@ -461,6 +674,10 @@ export default function LibraryPage() {
       onClick={() => {
         setSelectedFolder(selectedFolder() === f.id ? null : f.id);
         setRailOpen(false);
+      }}
+      onDblClick={() => {
+        // a group folder is the library face of a canvas group — open it there
+        if (f.groupId && f.projectId) navigate(`/p/${f.projectId}`);
       }}
       onContextMenu={e => {
         e.preventDefault();
@@ -477,15 +694,31 @@ export default function LibraryPage() {
         void dropOnFolder(f.id);
       }}
     >
-      <Icon icon={icon} width="13" class="text-neutral-400 shrink-0" />
+      <Icon
+        icon={f.groupId ? "iconoir:folder-plus" : icon}
+        width="13"
+        class="text-neutral-400 shrink-0"
+      />
       <span class="flex-1 truncate">{f.name}</span>
-      <Show when={!scope.entity() && f.entityName}>
+      <Show when={!scope.entity() && f.entityName && depth === 0}>
         <EntityAvatar name={f.entityName!} size={13} />
       </Show>
       <span class="text-[10px] text-neutral-400">
         {(listing()?.files ?? []).filter(x => x.folderId === f.id).length}
       </span>
     </button>
+  );
+
+  // Recursive folder tree (project root → its group folders → nested groups).
+  const folderTree = (parentId: string | null, icon: string, depth: number) => (
+    <For each={childFolders(parentId)}>
+      {f => (
+        <>
+          {folderRow(f, icon, depth)}
+          {folderTree(f.id, icon, depth + 1)}
+        </>
+      )}
+    </For>
   );
 
   /** entity name of the folder a file lives in — attribution under "All" scope */
@@ -528,6 +761,39 @@ export default function LibraryPage() {
               All files
             </button>
 
+            <button
+              class="w-full flex items-center gap-2 px-2.5 py-1.5 rounded-md text-left text-xs cursor-pointer mb-2"
+              classList={{
+                "bg-neutral-200/70 text-neutral-800 font-medium": libScope() === "archived",
+                "text-neutral-600 hover:bg-neutral-200/40": libScope() === "active",
+              }}
+              onClick={() => {
+                setLibScope(s => (s === "active" ? "archived" : "active"));
+                setSelectedFolder(null);
+                setRailOpen(false);
+              }}
+            >
+              <Icon icon="iconoir:archive" width="13" class="text-neutral-400" />
+              {libScope() === "active" ? "Archived" : "Back to active"}
+            </button>
+
+            <Show
+              when={libScope() === "active"}
+              fallback={
+                <div>
+                  <p class="px-2.5 pt-2 pb-1 text-[10px] uppercase tracking-wide text-neutral-400">
+                    Archived
+                  </p>
+                  <For each={listing()?.folders ?? []}>
+                    {f => folderRow(f, f.groupId ? "iconoir:folder-plus" : "iconoir:folder")}
+                  </For>
+                  <Show when={(listing()?.folders ?? []).length === 0}>
+                    <p class="px-2.5 py-1 text-[10px] text-neutral-400">Nothing archived.</p>
+                  </Show>
+                </div>
+              }
+            >
+
             <div class="flex items-center justify-between px-2.5 pt-2 pb-1">
               <span class="text-[10px] uppercase tracking-wide text-neutral-400">Workspace</span>
               <Show when={isAdmin()}>
@@ -565,13 +831,22 @@ export default function LibraryPage() {
                 <EntityAvatar name={scope.entity()!.name} size={12} />
               </Show>
             </div>
-            <For each={projectFolders()}>{f => folderRow(f, "iconoir:frame")}</For>
+            <For each={projectFolders()}>
+              {f => (
+                <>
+                  {folderRow(f, "iconoir:frame")}
+                  {folderTree(f.id, "iconoir:folder", 1)}
+                </>
+              )}
+            </For>
             <Show when={projectFolders().length === 0}>
               <p class="px-2.5 py-1 text-[10px] text-neutral-400">
                 {scope.entity()
                   ? "No projects for this entity."
                   : "Project folders appear when projects are created."}
               </p>
+            </Show>
+
             </Show>
           </aside>
 
@@ -662,18 +937,28 @@ export default function LibraryPage() {
               when={visibleFiles().length > 0}
               fallback={
                 <Show when={!listing.loading}>
-                  <div class="text-center py-20 text-neutral-400">
-                    <Icon icon="iconoir:media-image-folder" width="36" />
-                    <p class="mt-3 text-sm text-neutral-500 font-medium">
+                  <div class="flex flex-col items-center justify-center text-center py-20">
+                    <div class="flex items-center justify-center size-12 rounded-full bg-muted text-neutral-400 mb-3">
+                      <Icon icon="iconoir:media-image-folder" width="24" />
+                    </div>
+                    <h2 class="text-sm font-medium text-neutral-700">
                       {currentFolder() ? "This folder is empty" : "No files yet"}
-                    </p>
-                    <p class="mt-1 text-xs">
+                    </h2>
+                    <p class="text-xs text-neutral-400 mt-1 max-w-xs">
                       {canUpload()
                         ? currentFolder()
-                          ? "Drop files here or use Upload."
-                          : "Select a folder, then drop files or use Upload."
+                          ? "Drop files here or upload to add assets to this folder."
+                          : "Select a folder, then drop files or upload to start your library."
                         : "Files shared with you will appear here."}
                     </p>
+                    <Show when={canUpload() && uploadTargetId()}>
+                      <button
+                        class="mt-4 flex items-center gap-1 text-xs bg-brand text-on-brand rounded-md px-3 py-1.5 hover:bg-neutral-700 cursor-pointer"
+                        onClick={pickAndUpload}
+                      >
+                        <Icon icon="iconoir:upload" width="14" /> Upload
+                      </button>
+                    </Show>
                   </div>
                 </Show>
               }
@@ -687,6 +972,7 @@ export default function LibraryPage() {
                         <FileCard
                           file={file}
                           layout="list"
+                          versionCount={file.deliverableId ? versionCounts().get(file.deliverableId) : undefined}
                           entityName={scope.entity() ? null : fileEntityName(file)}
                           onClick={e => onFileSingleClick(file, e)}
                           onDblClick={() => onFileDblClick(file)}
@@ -707,6 +993,7 @@ export default function LibraryPage() {
                     {file => (
                       <FileCard
                         file={file}
+                        versionCount={file.deliverableId ? versionCounts().get(file.deliverableId) : undefined}
                         entityName={scope.entity() ? null : fileEntityName(file)}
                         onClick={e => onFileSingleClick(file, e)}
                         onDblClick={() => onFileDblClick(file)}

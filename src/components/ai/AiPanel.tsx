@@ -161,9 +161,9 @@ export function AiPanel() {
         ref={panelEl}
         role="dialog"
         aria-label="Assistant"
-        class="fixed top-0 right-0 z-40 h-full w-full sm:w-[400px] max-w-full flex flex-col bg-panel border-l border-neutral-200 shadow-2xl ring-1 ring-black/10 dark:ring-white/15 overflow-hidden transition-[opacity,transform] duration-150 ease-out"
+        class="fixed top-0 right-0 z-40 h-full w-full sm:w-[400px] max-w-full flex flex-col bg-panel border-l border-line shadow-2xl ring-1 ring-black/10 dark:ring-white/15 overflow-hidden transition-[opacity,transform] duration-150 ease-out"
       >
-        <header class="shrink-0 h-9 pl-3 pr-1.5 flex items-center gap-2 border-b border-neutral-100">
+        <header class="shrink-0 h-9 pl-3 pr-1.5 flex items-center gap-2 border-b border-hairline">
           <span class="text-xs font-medium text-neutral-700">Assistant</span>
           <span class="flex-1" />
           <NavMenu
@@ -179,7 +179,7 @@ export function AiPanel() {
                 }}
                 title="History"
                 aria-label="Conversation history"
-                class="w-6 h-6 grid place-items-center rounded-md text-neutral-500 hover:text-neutral-800 hover:bg-neutral-100 transition-colors"
+                class="w-6 h-6 grid place-items-center rounded-md text-neutral-500 hover:text-neutral-800 hover:bg-muted transition-colors"
               >
                 <Icon icon="iconoir:clock-rotate-right" width="14" />
               </button>
@@ -202,7 +202,7 @@ export function AiPanel() {
                           void chat.load(c.id);
                           close();
                         }}
-                        class="block w-full text-left px-3 py-1.5 hover:bg-neutral-50 transition-colors"
+                        class="block w-full text-left px-3 py-1.5 hover:bg-muted transition-colors"
                       >
                         <p class="text-xs text-neutral-800 truncate">
                           {c.title || "New chat"}
@@ -220,7 +220,7 @@ export function AiPanel() {
             onClick={chat.reset}
             title="New chat"
             aria-label="New chat"
-            class="w-6 h-6 grid place-items-center rounded-md text-neutral-500 hover:text-neutral-800 hover:bg-neutral-100 transition-colors"
+            class="w-6 h-6 grid place-items-center rounded-md text-neutral-500 hover:text-neutral-800 hover:bg-muted transition-colors"
           >
             <Icon icon="iconoir:plus" width="14" />
           </button>
@@ -229,7 +229,7 @@ export function AiPanel() {
             onClick={minimizeAiPanel}
             title="Minimize"
             aria-label="Minimize assistant"
-            class="w-6 h-6 grid place-items-center rounded-md text-neutral-500 hover:text-neutral-800 hover:bg-neutral-100 transition-colors"
+            class="w-6 h-6 grid place-items-center rounded-md text-neutral-500 hover:text-neutral-800 hover:bg-muted transition-colors"
           >
             <Icon icon="iconoir:minus" width="14" />
           </button>
@@ -247,7 +247,7 @@ export function AiPanel() {
           <div class="mb-2 flex flex-wrap items-center gap-1">
             <For each={chips()}>
               {c => (
-                <span class="flex items-center gap-1 rounded bg-neutral-100 text-neutral-600 px-1.5 py-0.5 text-[10px]">
+                <span class="flex items-center gap-1 rounded bg-muted text-neutral-600 px-1.5 py-0.5 text-[10px]">
                   <Icon icon={CTX_ICON[c.kind]} width="10" class="shrink-0 text-neutral-400" />
                   <span class="truncate max-w-[120px]">{c.label}</span>
                   <button
@@ -270,7 +270,7 @@ export function AiPanel() {
                   type="button"
                   title="Add context"
                   aria-label="Add context"
-                  class="flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] text-neutral-500 hover:text-neutral-800 hover:bg-neutral-100 cursor-pointer"
+                  class="flex items-center gap-0.5 rounded px-1.5 py-0.5 text-[10px] text-neutral-500 hover:text-neutral-800 hover:bg-muted cursor-pointer"
                   onClick={() => {
                     setAddTick(t => t + 1);
                     toggle();
@@ -296,7 +296,7 @@ export function AiPanel() {
                       <button
                         type="button"
                         disabled={presentKeys().has(`entity:${e.id}`)}
-                        class="w-full flex items-center gap-2 px-2 py-1.5 text-left text-xs text-neutral-700 enabled:hover:bg-neutral-50 enabled:cursor-pointer disabled:opacity-40"
+                        class="w-full flex items-center gap-2 px-2 py-1.5 text-left text-xs text-neutral-700 enabled:hover:bg-muted enabled:cursor-pointer disabled:opacity-40"
                         onClick={() => {
                           addChip({ kind: "entity", id: e.id, label: e.name });
                           close();
@@ -318,7 +318,7 @@ export function AiPanel() {
                       <button
                         type="button"
                         disabled={presentKeys().has(`project:${p.id}`)}
-                        class="w-full flex items-center gap-2 px-2 py-1.5 text-left text-xs text-neutral-700 enabled:hover:bg-neutral-50 enabled:cursor-pointer disabled:opacity-40"
+                        class="w-full flex items-center gap-2 px-2 py-1.5 text-left text-xs text-neutral-700 enabled:hover:bg-muted enabled:cursor-pointer disabled:opacity-40"
                         onClick={() => {
                           addChip({ kind: "project", id: p.id, label: p.name });
                           close();
@@ -346,7 +346,7 @@ export function AiPanel() {
           </div>
 
           <form
-            class="rounded-lg border border-neutral-200 bg-canvas focus-within:border-sky-500 transition-colors"
+            class="rounded-lg border border-line bg-canvas focus-within:border-sky-500 transition-colors"
             onSubmit={e => {
               e.preventDefault();
               void chat.send();
@@ -384,7 +384,7 @@ export function AiPanel() {
                     onClick={chat.stop}
                     title="Stop"
                     aria-label="Stop"
-                    class="w-6 h-6 grid place-items-center rounded-md text-neutral-500 hover:text-neutral-800 hover:bg-neutral-100 transition-colors"
+                    class="w-6 h-6 grid place-items-center rounded-md text-neutral-500 hover:text-neutral-800 hover:bg-muted transition-colors"
                   >
                     <Icon icon="iconoir:square" width="12" />
                   </button>
@@ -395,7 +395,7 @@ export function AiPanel() {
                   disabled={!chat.input().trim()}
                   title="Send"
                   aria-label="Send"
-                  class="w-6 h-6 grid place-items-center rounded-md text-neutral-500 enabled:hover:text-neutral-800 enabled:hover:bg-neutral-100 disabled:opacity-30 transition-colors"
+                  class="w-6 h-6 grid place-items-center rounded-md text-neutral-500 enabled:hover:text-neutral-800 enabled:hover:bg-muted disabled:opacity-30 transition-colors"
                 >
                   <Icon icon="iconoir:arrow-up" width="14" />
                 </button>

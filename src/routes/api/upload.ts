@@ -94,6 +94,7 @@ export async function POST(event: { request: Request }) {
     { id: deliverable.projectId, organizationId: access.project.organizationId },
     deliverable.name,
     access.session.userId,
+    deliverableId,
   );
 
   // A new version puts the deliverable (back) into review.

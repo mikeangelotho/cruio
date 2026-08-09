@@ -1,6 +1,6 @@
 import type Anthropic from "@anthropic-ai/sdk";
 import { MODEL, PROTOCOL, anthropic, baseParams, isAnthropic } from "./model";
-import { SYSTEM_PROMPT, contextHint, pageContext, type ContextItem } from "./prompt";
+import { SYSTEM_PROMPT, contextHint, fenceUntrusted, pageContext, type ContextItem } from "./prompt";
 import { ACTIONS_BY_NAME, invokeAction, toolDefinitions } from "../actions";
 import { runOpenAiTurn } from "./openai";
 
@@ -226,7 +226,7 @@ export async function runAgentLoop(opts: {
         results.push({
           type: "tool_result",
           tool_use_id: use.id,
-          content: JSON.stringify(outcome.result ?? null),
+          content: fenceUntrusted(JSON.stringify(outcome.result ?? null), `tool="${use.name}"`),
         });
       } else {
         opts.emit({

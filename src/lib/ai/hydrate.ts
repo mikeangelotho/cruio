@@ -1,6 +1,7 @@
 import { ACTIONS_BY_NAME } from "../actions";
 import type { StoredMessage } from "./conversations";
-import type { ToolCall, UiMessage } from "./useChat";
+import type { Block, ToolCall, UiMessage } from "./useChat";
+import { NEXT_STEPS_RE } from "./useChat";
 
 // Server-only: reconstructs the UI's UiMessage[] shape from the raw Anthropic
 // content-block JSON persisted per turn. This is a one-shot bulk mapping over
@@ -51,15 +52,14 @@ export function hydrateMessages(stored: StoredMessage[]): UiMessage[] {
         .filter(b => b.type === "text")
         .map(b => b.text ?? "")
         .join("");
-      out.push({ role: "user", text, tools: [] });
+      out.push({ role: "user", text, blocks: [] });
       continue;
     }
 
-    // Assistant turn.
-    const text = blocks
-      .filter(b => b.type === "text")
-      .map(b => b.text ?? "")
-      .join("");
+    // Assistant turn. thinking is hoisted into its own leading disclosure;
+    // text and tool_use blocks are kept in their original order so the
+    // rehydrated transcript reads exactly as it did live (a tool called after
+    // some prose renders below that prose).
     const thinking = blocks
       .filter(b => b.type === "thinking")
       .map(b => b.thinking ?? "")
@@ -68,19 +68,39 @@ export function hydrateMessages(stored: StoredMessage[]): UiMessage[] {
     const next = stored[i + 1];
     const results = next && next.role === "user" ? blocksOf(next).filter(b => b.type === "tool_result") : [];
 
-    const tools: ToolCall[] = blocks
-      .filter(b => b.type === "tool_use")
-      .map(b => {
+    const uiBlocks: Block[] = [];
+    for (const b of blocks) {
+      if (b.type === "text") {
+        uiBlocks.push({ kind: "text", text: b.text ?? "" });
+      } else if (b.type === "tool_use") {
         const result = results.find(r => r.tool_use_id === b.id);
-        return {
+        const tool: ToolCall = {
           id: b.id!,
           name: b.name!,
           title: ACTIONS_BY_NAME.get(b.name!)?.title ?? b.name!,
           status: result ? (result.is_error ? "error" : "ok") : "running",
         };
-      });
+        uiBlocks.push({ kind: "tool", tool });
+      }
+    }
 
-    out.push({ role: "assistant", text, thinking: thinking || undefined, tools });
+    // Mirror the live path: strip the trailing "Next: a | b | c" line off the
+    // last text block and surface it as suggestion chips instead of raw prose.
+    let suggestions: string[] | undefined;
+    for (let k = uiBlocks.length - 1; k >= 0; k--) {
+      if (uiBlocks[k].kind !== "text") continue;
+      const match = (uiBlocks[k].text ?? "").match(NEXT_STEPS_RE);
+      if (match) {
+        const parsed = match[1].split("|").map(s => s.trim()).filter(Boolean).slice(0, 3);
+        if (parsed.length) {
+          suggestions = parsed;
+          uiBlocks[k].text = (uiBlocks[k].text ?? "").replace(NEXT_STEPS_RE, "");
+        }
+      }
+      break;
+    }
+
+    out.push({ role: "assistant", text: "", thinking: thinking || undefined, blocks: uiBlocks, suggestions });
   }
 
   return out;

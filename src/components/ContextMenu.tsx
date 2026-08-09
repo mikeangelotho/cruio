@@ -7,7 +7,11 @@ export type MenuEntry =
       icon: string;
       hint?: string;
       danger?: boolean;
-      run: () => void;
+      /** Non-actionable, muted row — used to explain why an action isn't
+       *  available (e.g. project folders follow their project). `run` is
+       *  ignored; provide `hint` for the short reason. */
+      disabled?: boolean;
+      run?: () => void;
     }
   | { separator: true };
 
@@ -69,6 +73,17 @@ export function ContextMenu(props: { state: MenuState | null; onClose: () => voi
             {entry =>
               "separator" in entry ? (
                 <div class="my-1 border-t border-neutral-100" />
+              ) : entry.disabled ? (
+                <div
+                  class="w-full flex items-center gap-2 px-3 py-1.5 text-left text-xs text-neutral-400 cursor-default"
+                  aria-disabled="true"
+                >
+                  <Icon icon={entry.icon} width="13" class="text-neutral-300" />
+                  <span class="flex-1 truncate">{entry.label}</span>
+                  <Show when={entry.hint}>
+                    <span class="text-[10px] text-neutral-400">{entry.hint}</span>
+                  </Show>
+                </div>
               ) : (
                 <button
                   class="w-full flex items-center gap-2 px-3 py-1.5 text-left text-xs cursor-pointer"
@@ -78,7 +93,7 @@ export function ContextMenu(props: { state: MenuState | null; onClose: () => voi
                   }}
                   onClick={() => {
                     props.onClose();
-                    entry.run();
+                    entry.run?.();
                   }}
                 >
                   <Icon

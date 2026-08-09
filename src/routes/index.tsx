@@ -988,18 +988,26 @@ export default function Home() {
               when={(filteredProjects() ?? []).length > 0}
               fallback={
                 <Show when={!projects.loading}>
-                  <div class="text-center py-20 text-neutral-400">
-                    <Icon icon="iconoir:folder" width="36" />
-                    <p class="mt-3 text-sm text-neutral-500 font-medium">
-                      No projects yet
-                    </p>
-                    <p class="mt-1 text-xs">
+                  <div class="flex flex-col items-center justify-center text-center py-20">
+                    <div class="flex items-center justify-center size-12 rounded-full bg-muted text-neutral-400 mb-3">
+                      <Icon icon="iconoir:folder" width="24" />
+                    </div>
+                    <h2 class="text-sm font-medium text-neutral-700">No projects yet</h2>
+                    <p class="text-xs text-neutral-400 mt-1 max-w-xs">
                       {isAdmin()
-                        ? "Create your first project to open its canvas."
+                        ? "Projects hold your deliverables and their review rounds. Create your first one to open its canvas."
                         : myRole() === "guest"
                           ? "Projects shared with you will appear here."
                           : "Projects in your studio will appear here."}
                     </p>
+                    <Show when={isAdmin()}>
+                      <button
+                        class="mt-4 flex items-center gap-1 text-xs bg-brand text-on-brand rounded-md px-3 py-1.5 hover:bg-neutral-700 cursor-pointer"
+                        onClick={() => setCreating(true)}
+                      >
+                        <Icon icon="iconoir:plus" width="14" /> New project
+                      </button>
+                    </Show>
                   </div>
                 </Show>
               }

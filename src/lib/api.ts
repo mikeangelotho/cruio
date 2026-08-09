@@ -60,6 +60,11 @@ import {
 } from "./guard";
 import {
   createProjectFolder,
+  deleteGroupFolder,
+  ensureGroupFolder,
+  relocateDeliverableMirrors,
+  renameGroupFolder,
+  setGroupFolderParent,
   setDeliverableMirrorsDeleted,
   setMirrorDeleted,
 } from "./library";
@@ -532,7 +537,7 @@ export async function groupDeliverables(
   label = parseOrThrow(ShortText, label);
   parentGroupId = parentGroupId ? parseOrThrow(Id, parentGroupId) : null;
   const projectId = await resolveDeliverableProject(ids[0]);
-  const { session } = await requireProjectAccess(projectId, { resource: "deliverable", action: "update" });
+  const { session, project } = await requireProjectAccess(projectId, { resource: "deliverable", action: "update" });
   const db = await getDb();
   if (parentGroupId) {
     const [p] = await db
@@ -543,6 +548,9 @@ export async function groupDeliverables(
   }
   await db.insert(deliverableGroups).values({ id: groupId, projectId, label, parentGroupId, createdAt: Date.now() });
   await db.update(deliverables).set({ groupId }).where(inArray(deliverables.id, ids));
+  // library side: create the group's folder and move members' mirrors into it
+  await ensureGroupFolder(db, { id: groupId, projectId, organizationId: project.organizationId, label, parentGroupId });
+  for (const did of ids) await relocateDeliverableMirrors(db, did);
   await recordHistory(db, {
     projectId,
     userId: session.userId,
@@ -578,7 +586,7 @@ export async function createGroup(
   w = parseOrThrow(FiniteNumber, w);
   h = parseOrThrow(FiniteNumber, h);
   parentGroupId = parentGroupId ? parseOrThrow(Id, parentGroupId) : null;
-  const { session } = await requireProjectAccess(projectId, { resource: "deliverable", action: "update" });
+  const { session, project } = await requireProjectAccess(projectId, { resource: "deliverable", action: "update" });
   const db = await getDb();
   if (parentGroupId) {
     const [p] = await db
@@ -588,6 +596,7 @@ export async function createGroup(
     if (!p || p.projectId !== projectId) throw new Error("Unknown parent group");
   }
   await db.insert(deliverableGroups).values({ id, projectId, label, parentGroupId, posX, posY, w, h, createdAt: Date.now() });
+  await ensureGroupFolder(db, { id, projectId, organizationId: project.organizationId, label, parentGroupId });
   await recordHistory(db, {
     projectId,
     userId: session.userId,
@@ -631,6 +640,7 @@ export async function ungroupDeliverable(id: string): Promise<void> {
   if (!d?.groupId) return;
   const groupId = d.groupId;
   await db.update(deliverables).set({ groupId: null }).where(eq(deliverables.id, id));
+  await relocateDeliverableMirrors(db, id); // groupId now null → project root folder
   const remaining = await db.select({ id: deliverables.id }).from(deliverables).where(eq(deliverables.groupId, groupId));
   if (remaining.length === 0) {
     // Only auto-delete derived groups. A container with its own frame persists
@@ -641,6 +651,7 @@ export async function ungroupDeliverable(id: string): Promise<void> {
       .where(eq(deliverableGroups.id, groupId));
     if (g && g.posX === null) {
       await db.delete(deliverableGroups).where(eq(deliverableGroups.id, groupId));
+      await deleteGroupFolder(db, groupId);
     }
   }
 }
@@ -659,6 +670,7 @@ export async function addDeliverableToGroup(deliverableId: string, groupId: stri
     .where(eq(deliverableGroups.id, groupId));
   if (!g || g.projectId !== projectId) throw new Error("Unknown group");
   await db.update(deliverables).set({ groupId }).where(eq(deliverables.id, deliverableId));
+  await relocateDeliverableMirrors(db, deliverableId); // into the group's folder
   await recordHistory(db, {
     projectId,
     deliverableId,
@@ -679,6 +691,7 @@ export async function renameGroup(groupId: string, label: string): Promise<void>
   await requireProjectAccess(g.projectId, { resource: "deliverable", action: "update" });
   const db = await getDb();
   await db.update(deliverableGroups).set({ label }).where(eq(deliverableGroups.id, groupId));
+  await renameGroupFolder(db, groupId, label);
 }
 
 /** Nest existing groups under a new labeled parent group. */
@@ -696,9 +709,12 @@ export async function groupGroups(parentId: string, childGroupIds: string[], lab
   if (children.length !== ids.length) throw new Error("Unknown group");
   const projectId = children[0].projectId;
   if (children.some(c => c.projectId !== projectId)) throw new Error("Groups must belong to one project");
-  const { session } = await requireProjectAccess(projectId, { resource: "deliverable", action: "update" });
+  const { session, project } = await requireProjectAccess(projectId, { resource: "deliverable", action: "update" });
   await db.insert(deliverableGroups).values({ id: parentId, projectId, label, createdAt: Date.now() });
   await db.update(deliverableGroups).set({ parentGroupId: parentId }).where(inArray(deliverableGroups.id, ids));
+  // library side: new parent group folder, and nest the child group folders under it
+  await ensureGroupFolder(db, { id: parentId, projectId, organizationId: project.organizationId, label, parentGroupId: null });
+  for (const cid of ids) await setGroupFolderParent(db, cid, parentId);
   await recordHistory(db, {
     projectId,
     userId: session.userId,
@@ -744,6 +760,7 @@ export async function setGroupParent(
     }
   }
   await db.update(deliverableGroups).set({ parentGroupId }).where(eq(deliverableGroups.id, childGroupId));
+  await setGroupFolderParent(db, childGroupId, parentGroupId);
   await recordHistory(db, {
     projectId: child.projectId,
     userId: session.userId,
@@ -767,12 +784,19 @@ export async function dissolveGroup(groupId: string): Promise<void> {
     .where(eq(deliverableGroups.id, groupId));
   if (!g) return;
   const { session } = await requireProjectAccess(g.projectId, { resource: "deliverable", action: "update" });
+  const members = await db.select({ id: deliverables.id }).from(deliverables).where(eq(deliverables.groupId, groupId));
+  const childGroups = await db.select({ id: deliverableGroups.id }).from(deliverableGroups).where(eq(deliverableGroups.parentGroupId, groupId));
   await db.update(deliverables).set({ groupId: null }).where(eq(deliverables.groupId, groupId));
   await db
     .update(deliverableGroups)
     .set({ parentGroupId: null })
     .where(eq(deliverableGroups.parentGroupId, groupId));
   await db.delete(deliverableGroups).where(eq(deliverableGroups.id, groupId));
+  // library side: released members' mirrors → root; child group folders → top
+  // level (their groups are now top-level); then drop the dissolved group folder.
+  for (const m of members) await relocateDeliverableMirrors(db, m.id);
+  for (const c of childGroups) await setGroupFolderParent(db, c.id, null);
+  await deleteGroupFolder(db, groupId);
   await recordHistory(db, {
     projectId: g.projectId,
     userId: session.userId,
@@ -783,11 +807,14 @@ export async function dissolveGroup(groupId: string): Promise<void> {
 }
 
 /**
- * Delete a group row outright (reparenting child groups up, releasing any live
- * members). Unlike dissolveGroup this is used after members are already deleted
- * so the empty group frame doesn't linger. Framed empty containers included.
+ * Remove one group ROW only, reparenting child groups up and releasing any live
+ * members back to the project root (mirrors follow). This is the "members are
+ * already handled" path — call it after the members have been deleted or moved
+ * out (see store.removeGroupRow). It deliberately does NOT delete deliverables;
+ * to delete a group together with its contents use {@link deleteGroupWithMembers},
+ * and to keep the files while dissolving the container use {@link dissolveGroup}.
  */
-export async function deleteGroup(groupId: string): Promise<void> {
+export async function deleteEmptyGroup(groupId: string): Promise<void> {
   "use server";
   groupId = parseOrThrow(Id, groupId);
   const db = await getDb();
@@ -797,12 +824,97 @@ export async function deleteGroup(groupId: string): Promise<void> {
     .where(eq(deliverableGroups.id, groupId));
   if (!g) return;
   await requireProjectAccess(g.projectId, { resource: "deliverable", action: "update" });
+  const members = await db.select({ id: deliverables.id }).from(deliverables).where(eq(deliverables.groupId, groupId));
+  const childGroups = await db.select({ id: deliverableGroups.id }).from(deliverableGroups).where(eq(deliverableGroups.parentGroupId, groupId));
   await db.update(deliverables).set({ groupId: null }).where(eq(deliverables.groupId, groupId));
   await db
     .update(deliverableGroups)
     .set({ parentGroupId: null })
     .where(eq(deliverableGroups.parentGroupId, groupId));
   await db.delete(deliverableGroups).where(eq(deliverableGroups.id, groupId));
+  for (const m of members) await relocateDeliverableMirrors(db, m.id);
+  for (const c of childGroups) await setGroupFolderParent(db, c.id, null);
+  await deleteGroupFolder(db, groupId);
+}
+
+/**
+ * Delete a group AND its contents in one atomic server call: soft-deletes every
+ * live deliverable in the group and its nested subgroups (mirrors + history
+ * follow, exactly like {@link deleteDeliverable}), then removes all of those
+ * group rows and their folders. Returns the soft-deleted member ids so a caller
+ * can offer undo (restorable from History).
+ *
+ * Self-contained on purpose: previously the "delete the contents too" behavior
+ * lived only in the canvas store, so any other caller hitting the bare group
+ * delete silently orphaned members to the root. Every caller — the canvas store,
+ * an AI action, a future API — now gets the same result from here.
+ */
+export async function deleteGroupWithMembers(groupId: string): Promise<string[]> {
+  "use server";
+  groupId = parseOrThrow(Id, groupId);
+  const db = await getDb();
+  const [g] = await db
+    .select({ projectId: deliverableGroups.projectId })
+    .from(deliverableGroups)
+    .where(eq(deliverableGroups.id, groupId));
+  if (!g) return [];
+  const { session } = await requireProjectAccess(g.projectId, {
+    resource: "deliverable",
+    action: "delete",
+  });
+
+  // The group plus every descendant group in the project (BFS over parent links).
+  const projectGroups = await db
+    .select({ id: deliverableGroups.id, parentGroupId: deliverableGroups.parentGroupId })
+    .from(deliverableGroups)
+    .where(eq(deliverableGroups.projectId, g.projectId));
+  const groupIds = new Set<string>([groupId]);
+  for (let grew = true; grew; ) {
+    grew = false;
+    for (const row of projectGroups) {
+      if (row.parentGroupId && groupIds.has(row.parentGroupId) && !groupIds.has(row.id)) {
+        groupIds.add(row.id);
+        grew = true;
+      }
+    }
+  }
+  const ids = [...groupIds];
+
+  // Soft-delete the live members across all of those groups.
+  const members = await db
+    .select({ id: deliverables.id, name: deliverables.name })
+    .from(deliverables)
+    .where(and(inArray(deliverables.groupId, ids), isNull(deliverables.deletedAt)));
+  const deletedAt = Date.now();
+  for (const m of members) {
+    // Release the member from its group and move its (now soft-deleted) mirror
+    // rows to the project root BEFORE the group folder is deleted — otherwise
+    // they'd be left pointing at a folder that no longer exists, and a later
+    // restore would resurrect the deliverable into a group that's gone.
+    await db
+      .update(deliverables)
+      .set({ deletedAt, deletedBy: session.userId, groupId: null })
+      .where(eq(deliverables.id, m.id));
+    await setDeliverableMirrorsDeleted(db, m.id, deletedAt, session.userId);
+    await relocateDeliverableMirrors(db, m.id);
+    await recordHistory(db, {
+      projectId: g.projectId,
+      deliverableId: m.id,
+      subjectId: m.id,
+      userId: session.userId,
+      actorName: session.name,
+      type: "deliverable_deleted",
+      detail: `deleted “${m.name}”`,
+    });
+  }
+
+  // Remove the group rows and their folders (now emptied of live members).
+  for (const gid of ids) {
+    await deleteGroupFolder(db, gid);
+    await db.delete(deliverableGroups).where(eq(deliverableGroups.id, gid));
+  }
+
+  return members.map(m => m.id);
 }
 
 // ---- canvas objects (sticky notes) ----------------------------------------

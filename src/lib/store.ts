@@ -416,12 +416,13 @@ export function createProjectStore(projectId: string) {
         if (i >= 0) list.splice(i, 1);
       }));
     });
-    void api.deleteGroup(groupId);
+    void api.deleteEmptyGroup(groupId);
   }
 
   /** Delete a whole group: soft-delete its member deliverables and remove the
    * group row (and descendant group rows). Returns the deleted members so a
-   * caller can offer undo. */
+   * caller can offer undo. The server does the whole thing atomically in
+   * deleteGroupWithMembers — the client only mirrors it optimistically here. */
   function deleteGroup(groupId: string): Deliverable[] {
     const ids = groupWithDescendants(groupId);
     const members = deliverables().filter(d => d.groupId && ids.has(d.groupId));
@@ -437,8 +438,7 @@ export function createProjectStore(projectId: string) {
         }
       }));
     });
-    for (const m of members) void api.deleteDeliverable(m.id);
-    void api.deleteGroup(groupId);
+    void api.deleteGroupWithMembers(groupId);
     return members;
   }
 

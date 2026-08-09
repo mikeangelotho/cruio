@@ -2,6 +2,7 @@ import { randomUUID } from "node:crypto";
 import { and, asc, eq, inArray, isNull } from "drizzle-orm";
 import { getDb } from "../db";
 import {
+  deliverables,
   entities,
   libraryFiles,
   libraryFolders,
@@ -13,8 +14,12 @@ import {
   authorize,
   requireFolderAccess,
   requireMember,
+  requireProjectAccess,
   requireSession,
 } from "./guard";
+import { addDeliverableToGroup, groupDeliverables, ungroupDeliverable } from "./api";
+import { setGroupArchived } from "./library";
+import { newId } from "./id";
 import type { LibraryFile, LibraryFolder } from "./types";
 import { Id, ShortText, parseOrThrow } from "./validate";
 
@@ -33,7 +38,10 @@ export interface LibraryListing {
  * project folders to that entity's projects (validated against the org);
  * workspace folders are org-level and always included for non-guests.
  */
-export async function listLibrary(entityId: string | null): Promise<LibraryListing> {
+export async function listLibrary(
+  entityId: string | null,
+  scope: "active" | "archived" = "active",
+): Promise<LibraryListing> {
   "use server";
   const session = await requireSession();
   const orgId = session.activeOrganizationId;
@@ -56,14 +64,24 @@ export async function listLibrary(entityId: string | null): Promise<LibraryListi
     .orderBy(asc(libraryFolders.name));
 
   let folders = rows
-    .filter(r => !r.f.projectId || r.archivedAt == null)
+    .filter(r => {
+      // Project folders vanish when their PROJECT is archived (either scope).
+      if (r.f.projectId && r.archivedAt != null) return false;
+      // Then split by the folder's OWN archive state: the active view hides
+      // archived folders; the archived view shows only them.
+      const folderArchived = r.f.archivedAt != null;
+      return scope === "archived" ? folderArchived : !folderArchived;
+    })
     .map(r => ({
       id: r.f.id,
       projectId: r.f.projectId,
+      groupId: r.f.groupId ?? null,
+      parentFolderId: r.f.parentFolderId ?? null,
       name: r.f.name,
       createdAt: r.f.createdAt,
       entityId: r.entityId ?? null,
       entityName: r.entityName ?? null,
+      archivedAt: r.f.archivedAt ?? null,
     }));
 
   if (role === "guest") {
@@ -196,6 +214,8 @@ export async function createFolder(name: string): Promise<LibraryFolder> {
   return {
     id: row.id,
     projectId: null,
+    groupId: null,
+    parentFolderId: null,
     name: row.name,
     createdAt: row.createdAt,
     entityId: null,
@@ -232,6 +252,46 @@ export async function deleteFolder(id: string): Promise<void> {
   if (live) throw new Error("Move or delete the files in this folder first");
   await db.delete(libraryFiles).where(eq(libraryFiles.folderId, folderId));
   await db.delete(libraryFolders).where(eq(libraryFolders.id, folderId));
+}
+
+/**
+ * Archive a folder — hides it and its files from the Library's active view while
+ * leaving everything intact and restorable. Works on workspace folders and on
+ * group folders (which archive their canvas group in lockstep). Project root
+ * folders can't be archived on their own — they follow the project's archive.
+ */
+export async function archiveFolder(id: string): Promise<void> {
+  "use server";
+  const folderId = parseOrThrow(Id, id);
+  const { folder, session } = await requireFolderAccess(folderId, "manage");
+  if (folder.projectId && !folder.groupId) {
+    throw new Error("Project folders follow their project's archive");
+  }
+  const db = await getDb();
+  if (folder.groupId) {
+    await setGroupArchived(db, folder.groupId, Date.now(), session.userId);
+  } else {
+    await db
+      .update(libraryFolders)
+      .set({ archivedAt: Date.now(), archivedBy: session.userId })
+      .where(eq(libraryFolders.id, folderId));
+  }
+}
+
+/** Restore an archived folder (workspace or group folder) to the active view. */
+export async function restoreFolder(id: string): Promise<void> {
+  "use server";
+  const folderId = parseOrThrow(Id, id);
+  const { folder } = await requireFolderAccess(folderId, "manage");
+  const db = await getDb();
+  if (folder.groupId) {
+    await setGroupArchived(db, folder.groupId, null, null);
+  } else {
+    await db
+      .update(libraryFolders)
+      .set({ archivedAt: null, archivedBy: null })
+      .where(eq(libraryFolders.id, folderId));
+  }
 }
 
 async function requireEditableFile(id: string) {
@@ -282,4 +342,68 @@ export async function restoreFile(id: string): Promise<void> {
     .update(libraryFiles)
     .set({ deletedAt: null, deletedBy: null })
     .where(eq(libraryFiles.id, fileId));
+}
+
+/**
+ * Move deliverables between a project's folders from the library side — the
+ * bidirectional half of folder ⟺ canvas group. Dropping deliverable cards into
+ * a group folder groups them on the canvas; into the project root ungroups them.
+ * Mirror files never move by raw folderId; they follow their deliverable's group
+ * (relocateDeliverableMirrors), so this delegates to the canvas group ops.
+ */
+export async function regroupDeliverables(
+  deliverableIds: string[],
+  targetFolderId: string,
+): Promise<void> {
+  "use server";
+  const ids = deliverableIds.map(i => parseOrThrow(Id, i));
+  const folderId = parseOrThrow(Id, targetFolderId);
+  if (!ids.length) return;
+  const db = await getDb();
+  const [target] = await db.select().from(libraryFolders).where(eq(libraryFolders.id, folderId));
+  if (!target) throw new Error("Folder not found");
+  if (!target.projectId) {
+    throw new Error("Deliverables can only be organized within their project's folders");
+  }
+  const dels = await db
+    .select({ id: deliverables.id, projectId: deliverables.projectId })
+    .from(deliverables)
+    .where(inArray(deliverables.id, ids));
+  if (dels.length !== ids.length) throw new Error("Unknown deliverable");
+  if (dels.some(d => d.projectId !== target.projectId)) {
+    throw new Error("Deliverables must belong to the folder's project");
+  }
+  await requireProjectAccess(target.projectId, { resource: "deliverable", action: "update" });
+  for (const id of ids) {
+    if (target.groupId) await addDeliverableToGroup(id, target.groupId);
+    else await ungroupDeliverable(id);
+  }
+}
+
+/**
+ * "New folder from a pure-deliverable selection" — creates a canvas group (and,
+ * via the sync helpers, its group folder). All deliverables must be in one
+ * project. For mixed/asset selections the caller uses createFolder instead.
+ */
+export async function createGroupFromDeliverables(
+  deliverableIds: string[],
+  label: string,
+): Promise<{ groupId: string }> {
+  "use server";
+  const ids = deliverableIds.map(i => parseOrThrow(Id, i));
+  const trimmed = parseOrThrow(ShortText, label);
+  if (ids.length < 1) throw new Error("Select at least one deliverable");
+  const db = await getDb();
+  const dels = await db
+    .select({ projectId: deliverables.projectId })
+    .from(deliverables)
+    .where(inArray(deliverables.id, ids));
+  if (dels.length !== ids.length) throw new Error("Unknown deliverable");
+  const projectId = dels[0].projectId;
+  if (dels.some(d => d.projectId !== projectId)) {
+    throw new Error("Deliverables in a canvas group must belong to one project");
+  }
+  const groupId = newId();
+  await groupDeliverables(groupId, ids, trimmed);
+  return { groupId };
 }
